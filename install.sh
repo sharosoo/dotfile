@@ -61,6 +61,24 @@ backup_config() {
 install_homebrew() {
     if ! command -v brew &> /dev/null; then
         log_info "Installing Homebrew..."
+        
+        # On Linux, check if /home/linuxbrew/.linuxbrew exists and is owned by another user
+        if [[ "$OS" == "linux" ]] && [[ -d "/home/linuxbrew/.linuxbrew" ]]; then
+            local linuxbrew_owner=$(stat -c '%U' /home/linuxbrew/.linuxbrew 2>/dev/null || echo "unknown")
+            if [[ "$linuxbrew_owner" != "$USER" ]] && [[ "$linuxbrew_owner" != "unknown" ]]; then
+                log_warning "Homebrew is already installed by user '$linuxbrew_owner'"
+                log_info "Using existing Homebrew installation..."
+                
+                # Add existing Homebrew to PATH
+                echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.zprofile
+                eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+                
+                log_success "Using existing Homebrew installation"
+                return
+            fi
+        fi
+        
+        # Install Homebrew
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
         
         # Add Homebrew to PATH
@@ -75,6 +93,17 @@ install_homebrew() {
         log_success "Homebrew installed"
     else
         log_info "Homebrew already installed"
+        
+        # Ensure Homebrew is properly configured in shell
+        if [[ "$OS" == "macos" ]]; then
+            if ! grep -q "/opt/homebrew/bin/brew shellenv" ~/.zprofile 2>/dev/null; then
+                echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+            fi
+        else
+            if ! grep -q "/home/linuxbrew/.linuxbrew/bin/brew shellenv" ~/.zprofile 2>/dev/null; then
+                echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.zprofile
+            fi
+        fi
     fi
 }
 
