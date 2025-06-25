@@ -1,0 +1,87 @@
+# Dotfiles .gitignore
+# This file is managed by dotfiles - https://github.com/sharosoo/dotfile
+
+# General
+.DS_Store
+.AppleDouble
+.LSOverride
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Environment files (IMPORTANT: Never commit secrets)
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Backup files
+*.backup
+*.bak
+*.old
+.dotfiles_backup_*
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Nvim/Vim
+.netrwhist
+*.vim
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# Node
+node_modules/
+.npm
+
+# Ruby
+*.gem
+.bundle/
+
+# macOS
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# Linux
+.directory
+.Trash-*
+
+# Private/Local configuration
+private/
+local/
+*.local
+
+# Claude Code
+.claude/
+!.claude/settings.json
+
+# Warp
+.warp/
+
+# Keep these files
+!.env.example
+!.gitignore
+!.claude/settings.local.json
