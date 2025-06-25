@@ -165,9 +165,35 @@ install_nvim_plugins() {
 
 # Set ZSH as default shell
 set_default_shell() {
-    if [[ "$SHELL" != "$(which zsh)" ]]; then
+    local zsh_path
+    
+    # Try to find zsh
+    if command -v brew &> /dev/null; then
+        # Use Homebrew zsh if available
+        if [[ "$OS" == "macos" ]]; then
+            zsh_path="/opt/homebrew/bin/zsh"
+        else
+            zsh_path="/home/linuxbrew/.linuxbrew/bin/zsh"
+        fi
+        
+        # Check if Homebrew zsh exists and add to /etc/shells if needed
+        if [[ -f "$zsh_path" ]]; then
+            if ! grep -q "$zsh_path" /etc/shells; then
+                log_info "Adding Homebrew zsh to /etc/shells..."
+                echo "$zsh_path" | sudo tee -a /etc/shells > /dev/null
+            fi
+        else
+            # Fall back to system zsh
+            zsh_path="$(which zsh)"
+        fi
+    else
+        # Use system zsh
+        zsh_path="$(which zsh)"
+    fi
+    
+    if [[ "$SHELL" != "$zsh_path" ]]; then
         log_info "Setting ZSH as default shell..."
-        chsh -s "$(which zsh)"
+        chsh -s "$zsh_path"
         log_success "Default shell set to ZSH"
     else
         log_info "ZSH is already the default shell"
