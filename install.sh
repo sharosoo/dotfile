@@ -78,15 +78,41 @@ install_homebrew() {
     fi
 }
 
+# Install ZSH via system package manager if needed
+install_zsh() {
+    if command -v zsh &> /dev/null; then
+        log_info "ZSH already available on system"
+        return
+    fi
+    
+    log_info "Installing ZSH via system package manager..."
+    
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update && sudo apt-get install -y zsh
+    elif command -v yum &> /dev/null; then
+        sudo yum install -y zsh
+    elif command -v dnf &> /dev/null; then
+        sudo dnf install -y zsh
+    elif command -v pacman &> /dev/null; then
+        sudo pacman -S --noconfirm zsh
+    elif command -v zypper &> /dev/null; then
+        sudo zypper install -y zsh
+    else
+        log_error "No supported package manager found. Please install zsh manually."
+        exit 1
+    fi
+    
+    log_success "ZSH installed via system package manager"
+}
+
 # Install packages via Homebrew
 install_packages() {
     log_info "Installing packages..."
     
-    # Essential packages
+    # Essential packages (removed zsh since it's handled separately)
     local packages=(
         "git"
         "neovim"
-        "zsh"
         "starship"
         "fzf"
         "ripgrep"
@@ -167,34 +193,40 @@ install_nvim_plugins() {
 set_default_shell() {
     local zsh_path
     
-    # Try to find zsh
-    if command -v brew &> /dev/null; then
-        # Use Homebrew zsh if available
+    # Find available zsh binary - prefer system zsh for better compatibility
+    if command -v zsh &> /dev/null; then
+        zsh_path="$(which zsh)"
+        log_info "Found system zsh at: $zsh_path"
+    elif command -v brew &> /dev/null; then
+        # Fall back to Homebrew zsh if system zsh not available
         if [[ "$OS" == "macos" ]]; then
             zsh_path="/opt/homebrew/bin/zsh"
         else
             zsh_path="/home/linuxbrew/.linuxbrew/bin/zsh"
         fi
         
-        # Check if Homebrew zsh exists and add to /etc/shells if needed
         if [[ -f "$zsh_path" ]]; then
-            if ! grep -q "$zsh_path" /etc/shells; then
-                log_info "Adding Homebrew zsh to /etc/shells..."
-                echo "$zsh_path" | sudo tee -a /etc/shells > /dev/null
-            fi
+            log_info "Using Homebrew zsh at: $zsh_path"
         else
-            # Fall back to system zsh
-            zsh_path="$(which zsh)"
+            log_error "No zsh found. Please install zsh first."
+            return 1
         fi
     else
-        # Use system zsh
-        zsh_path="$(which zsh)"
+        log_error "No zsh found. Please install zsh first."
+        return 1
     fi
     
+    # Add zsh to /etc/shells if not already present
+    if ! grep -q "^$zsh_path$" /etc/shells 2>/dev/null; then
+        log_info "Adding $zsh_path to /etc/shells..."
+        echo "$zsh_path" | sudo tee -a /etc/shells > /dev/null
+    fi
+    
+    # Change default shell if not already set
     if [[ "$SHELL" != "$zsh_path" ]]; then
         log_info "Setting ZSH as default shell..."
         chsh -s "$zsh_path"
-        log_success "Default shell set to ZSH"
+        log_success "Default shell set to ZSH: $zsh_path"
     else
         log_info "ZSH is already the default shell"
     fi
@@ -256,6 +288,9 @@ main() {
     
     # Create backup
     backup_config
+    
+    # Install ZSH first (system package manager)
+    install_zsh
     
     # Install Homebrew
     install_homebrew
