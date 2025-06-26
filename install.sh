@@ -312,19 +312,31 @@ install_rustup() {
     log_success "Rustup installed."
 }
 
-# Install NVM (Node Version Manager)
-install_nvm() {
-    if [[ -d "$HOME/.nvm" ]]; then
-        log_info "NVM already installed."
+# Install Volta (JavaScript Tool Manager)
+install_volta() {
+    if command -v volta &> /dev/null; then
+        log_info "Volta already installed."
         return
     fi
-    log_info "Installing NVM..."
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-    # Source NVM for current session
-    export NVM_DIR="$HOME/.nvm"
-    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
-    [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
-    log_success "NVM installed."
+    
+    log_info "Installing Volta..."
+    
+    # Download and install Volta
+    curl https://get.volta.sh | bash -s -- --skip-setup
+    
+    # Add Volta to PATH for current session
+    export VOLTA_HOME="$HOME/.volta"
+    export PATH="$VOLTA_HOME/bin:$PATH"
+    
+    # Install Node.js LTS by default
+    if command -v volta &> /dev/null; then
+        log_info "Installing Node.js LTS via Volta..."
+        volta install node@lts
+        log_success "Volta and Node.js LTS installed."
+    else
+        log_error "Failed to install Volta."
+        return 1
+    fi
 }
 
 # Install Docker
@@ -372,10 +384,33 @@ install_glab() {
         return
     fi
     log_info "Installing glab..."
-    # Using official installation script for Debian/Ubuntu
-    curl -sL "https://packages.gitlab.com/install/repositories/gitlab/glab/script.deb.sh" | sudo bash
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y glab
-    log_success "glab installed."
+    
+    # For apt-based systems, try to install from universe repository first
+    if [[ "$PACKAGE_MANAGER" == "apt" ]]; then
+        if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y glab 2>/dev/null; then
+            log_success "glab installed via apt."
+            return
+        fi
+    fi
+    
+    # Fallback: Download binary directly
+    log_info "Installing glab via direct download..."
+    GLAB_VERSION=$(curl -s https://api.github.com/repos/gitlab-org/cli/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+    
+    if [[ -z "$GLAB_VERSION" || "$GLAB_VERSION" == "null" ]]; then
+        log_error "Failed to get glab version from GitHub API"
+        return 1
+    fi
+    
+    if curl -Lo /tmp/glab.tar.gz "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_Linux_x86_64.tar.gz" && \
+       sudo tar -C /usr/local/bin -xzf /tmp/glab.tar.gz bin/glab && \
+       sudo chmod +x /usr/local/bin/glab; then
+        rm -f /tmp/glab.tar.gz
+        log_success "glab installed."
+    else
+        log_error "Failed to install glab."
+        return 1
+    fi
 }
 
 # Install yq (YAML processor)
@@ -415,12 +450,26 @@ install_prettyping() {
         return
     fi
     log_info "Installing prettyping..."
-    if ! command -v pip3 &> /dev/null; then
-        log_warning "pip3 not found. Cannot install prettyping. Please install python3-pip first."
-        return
+    
+    # Method 1: Try to install from system package manager
+    if [[ "$PACKAGE_MANAGER" == "apt" ]]; then
+        if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y prettyping 2>/dev/null; then
+            log_success "prettyping installed via apt."
+            return
+        fi
     fi
-    pip3 install prettyping
-    log_success "prettyping installed."
+    
+    # Method 2: Download directly to ~/.local/bin
+    log_info "Installing prettyping manually..."
+    mkdir -p ~/.local/bin
+    
+    if curl -o ~/.local/bin/prettyping https://raw.githubusercontent.com/denilsonsa/prettyping/master/prettyping && \
+       chmod +x ~/.local/bin/prettyping; then
+        log_success "prettyping installed."
+    else
+        log_error "Failed to install prettyping."
+        return 1
+    fi
 }
 
 # Install Antidote (ZSH plugin manager)
@@ -434,6 +483,38 @@ install_antidote() {
     log_success "Antidote installed."
 }
 
+# Install GitHub CLI
+install_gh() {
+    if command -v gh &> /dev/null; then
+        log_info "GitHub CLI already installed."
+        return
+    fi
+    log_info "Installing GitHub CLI..."
+    
+    if [[ "$PACKAGE_MANAGER" == "apt" ]]; then
+        # Add GitHub CLI repo and install
+        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+        sudo apt-get update
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y gh
+    else
+        # Fallback to downloading binary
+        GH_VERSION=$(curl -s https://api.github.com/repos/cli/cli/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+        
+        if [[ -z "$GH_VERSION" || "$GH_VERSION" == "null" ]]; then
+            log_error "Failed to get GitHub CLI version"
+            return 1
+        fi
+        
+        curl -Lo gh.tar.gz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"
+        tar xf gh.tar.gz
+        sudo mv gh_${GH_VERSION}_linux_amd64/bin/gh /usr/local/bin/
+        rm -rf gh.tar.gz gh_${GH_VERSION}_linux_amd64
+    fi
+    
+    log_success "GitHub CLI installed."
+}
+
 # Install pnpm
 install_pnpm() {
     if command -v pnpm &> /dev/null; then
@@ -441,12 +522,40 @@ install_pnpm() {
         return
     fi
     log_info "Installing pnpm..."
+    
+    # Check if npm is available
     if ! command -v npm &> /dev/null; then
-        log_warning "npm not found. Cannot install pnpm. Please install Node.js via NVM first."
-        return
+        # Try to load Volta first
+        if [[ -d "$HOME/.volta" ]]; then
+            export VOLTA_HOME="$HOME/.volta"
+            export PATH="$VOLTA_HOME/bin:$PATH"
+        fi
+        
+        # Check again
+        if ! command -v npm &> /dev/null; then
+            log_warning "npm not found. Cannot install pnpm. Please install Node.js via Volta first."
+            return 1
+        fi
     fi
-    npm install -g pnpm
-    log_success "pnpm installed."
+    
+    # Try to install pnpm using npm
+    if ! npm install -g pnpm 2>/dev/null; then
+        log_warning "Failed to install pnpm globally. Trying alternative method..."
+        
+        # Alternative: Install using standalone script
+        curl -fsSL https://get.pnpm.io/install.sh | sh -
+        
+        # Add pnpm to PATH for current session
+        export PNPM_HOME="$HOME/.local/share/pnpm"
+        export PATH="$PNPM_HOME:$PATH"
+    fi
+    
+    if command -v pnpm &> /dev/null; then
+        log_success "pnpm installed."
+    else
+        log_error "Failed to install pnpm."
+        return 1
+    fi
 }
 
 # Function to call all Linux-specific tool installations
@@ -463,7 +572,7 @@ install_linux_specific_tools() {
         install_zoxide || failed_tools+=("zoxide")
         install_lazygit || failed_tools+=("lazygit")
         install_rustup || failed_tools+=("rustup")
-        install_nvm || failed_tools+=("nvm")
+        install_volta || failed_tools+=("volta")
         install_docker || failed_tools+=("docker")
         install_kubectl || failed_tools+=("kubectl")
         install_helm || failed_tools+=("helm")
@@ -471,6 +580,7 @@ install_linux_specific_tools() {
         install_yq || failed_tools+=("yq")
         install_prettyping || failed_tools+=("prettyping")
         install_antidote || failed_tools+=("antidote")
+        install_gh || failed_tools+=("gh")
         install_pnpm || failed_tools+=("pnpm")
         
         # Report results

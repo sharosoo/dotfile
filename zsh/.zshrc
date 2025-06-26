@@ -28,10 +28,6 @@ export CPPFLAGS="-I/opt/homebrew/include"
 export LDFLAGS="-L/opt/homebrew/lib"
 export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig"
 
-# Java Environment Manager
-export PATH="$HOME/.jenv/bin:$PATH"
-command -v jenv >/dev/null 2>&1 && eval "$(jenv init -)"
-
 # Go Version Manager
 [[ -s "/Users/jh/.gvm/scripts/gvm" ]] && source "/Users/jh/.gvm/scripts/gvm"
 
@@ -40,24 +36,10 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 # Node.js Package Managers
 export PATH="$HOME/.local/share/pnpm:$PATH"
-export BUN_INSTALL="$HOME/.bun"
-export PATH="$BUN_INSTALL/bin:$PATH"
 
-# Node Version Manager
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
-
-# Auto-switch Node versions based on .nvmrc
-load-nvm-or-default() {
-  if [ -f "$(nvm_find_nvmrc)" ]; then
-    nvm use --silent
-  else
-    if [ "$(nvm current)" = "none" ]; then
-      nvm use default --silent
-    fi
-  fi
-}
+# Volta - JavaScript Tool Manager
+export VOLTA_HOME="$HOME/.volta"
+export PATH="$VOLTA_HOME/bin:$PATH"
 
 # Python Virtual Environment Auto-activation
 load_venv() {
@@ -74,11 +56,9 @@ load_venv() {
 
 # Hook Functions
 autoload -U add-zsh-hook
-add-zsh-hook chpwd load-nvm-or-default
 add-zsh-hook chpwd load_venv
 
 # Initialize on shell start
-load-nvm-or-default
 load_venv
 
 # Path Additions
@@ -97,9 +77,6 @@ if [[ -f /opt/homebrew/opt/antidote/share/antidote/antidote.zsh ]]; then
     ohmyzsh/ohmyzsh path:plugins/git
 EOF
 fi
-
-# Starship Prompt
-command -v starship >/dev/null 2>&1 && eval "$(starship init zsh)"
 
 # Neovim aliases (ensure consistency)
 alias vi="nvim"

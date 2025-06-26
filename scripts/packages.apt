@@ -66,7 +66,7 @@ unzip
 
 # Packages that often require custom installation or are not directly in apt base repos:
 # eza, bat, zoxide, dust, duf, procs, sd, gh, glab, lazygit, diff-so-fancy
-# nvm, yarn, rust (via rustup)
+# volta, rust (via rustup)
 # awscli, azure-cli, doctl
 # docker, docker-compose, kubectl, helm, minikube
 # Fonts (often manual or specific font packages)
