@@ -74,7 +74,7 @@ alias preview="fzf --preview 'bat --color \"always\" {}'"
 command -v tldr >/dev/null 2>&1 && alias help='tldr'
 
 # GitHub CLI integration
-command -v gh >/dev/null 2>&1 && alias git='gh'
+# command -v gh >/dev/null 2>&1 && alias git='gh'
 
 # Utility Functions
 # =================
