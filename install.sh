@@ -273,10 +273,29 @@ install_lazygit() {
         return
     fi
     log_info "Installing lazygit..."
-    LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\\K[^"]*')
-    curl -Lo lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz"
-    sudo tar xf lazygit.tar.gz -C /usr/local/bin lazygit
-    rm lazygit.tar.gz
+    
+    # Get the latest version with better error handling
+    LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | jq -r '.tag_name' | sed 's/^v//')
+    
+    if [[ -z "$LAZYGIT_VERSION" || "$LAZYGIT_VERSION" == "null" ]]; then
+        log_error "Failed to get lazygit version from GitHub API"
+        return 1
+    fi
+    
+    log_info "Downloading lazygit version ${LAZYGIT_VERSION}..."
+    
+    if ! curl -Lo lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/download/v${LAZYGIT_VERSION}/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz"; then
+        log_error "Failed to download lazygit"
+        return 1
+    fi
+    
+    if ! sudo tar xf lazygit.tar.gz -C /usr/local/bin lazygit; then
+        log_error "Failed to extract lazygit"
+        rm -f lazygit.tar.gz
+        return 1
+    fi
+    
+    rm -f lazygit.tar.gz
     log_success "lazygit installed."
 }
 
@@ -366,8 +385,25 @@ install_yq() {
         return
     fi
     log_info "Installing yq..."
-    YQ_VERSION=$(curl -s https://api.github.com/repos/mikefarah/yq/releases/latest | grep -Po '"tag_name": "v\\K[^"]*')
-    wget "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -O ~/.local/bin/yq
+    
+    # Ensure ~/.local/bin exists
+    mkdir -p ~/.local/bin
+    
+    # Get the latest version with better error handling
+    YQ_VERSION=$(curl -s https://api.github.com/repos/mikefarah/yq/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+    
+    if [[ -z "$YQ_VERSION" || "$YQ_VERSION" == "null" ]]; then
+        log_error "Failed to get yq version from GitHub API"
+        return 1
+    fi
+    
+    log_info "Downloading yq version ${YQ_VERSION}..."
+    
+    if ! wget "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" -O ~/.local/bin/yq; then
+        log_error "Failed to download yq"
+        return 1
+    fi
+    
     chmod +x ~/.local/bin/yq
     log_success "yq installed."
 }
@@ -417,20 +453,34 @@ install_pnpm() {
 install_linux_specific_tools() {
     if [[ "$OS" == "linux" ]]; then
         log_info "Starting Linux-specific tool installations..."
-        install_eza
-        install_bat
-        install_zoxide
-        install_lazygit
-        install_rustup
-        install_nvm
-        install_docker
-        install_kubectl
-        install_helm
-        install_glab
-        install_yq
-        install_prettyping
-        install_antidote
-        install_pnpm
+        
+        # Array to track failed installations
+        local failed_tools=()
+        
+        # Install each tool and track failures
+        install_eza || failed_tools+=("eza")
+        install_bat || failed_tools+=("bat")
+        install_zoxide || failed_tools+=("zoxide")
+        install_lazygit || failed_tools+=("lazygit")
+        install_rustup || failed_tools+=("rustup")
+        install_nvm || failed_tools+=("nvm")
+        install_docker || failed_tools+=("docker")
+        install_kubectl || failed_tools+=("kubectl")
+        install_helm || failed_tools+=("helm")
+        install_glab || failed_tools+=("glab")
+        install_yq || failed_tools+=("yq")
+        install_prettyping || failed_tools+=("prettyping")
+        install_antidote || failed_tools+=("antidote")
+        install_pnpm || failed_tools+=("pnpm")
+        
+        # Report results
+        if [[ ${#failed_tools[@]} -eq 0 ]]; then
+            log_success "All Linux-specific tools installed successfully."
+        else
+            log_warning "Some tools failed to install: ${failed_tools[*]}"
+            log_info "You can try installing them manually later."
+        fi
+        
         log_success "Finished Linux-specific tool installations."
     fi
 }
