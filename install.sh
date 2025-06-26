@@ -136,7 +136,7 @@ install_zsh() {
         fi
         log_info "Using '$PACKAGE_MANAGER' to install zsh."
         case "$PACKAGE_MANAGER" in
-            "apt")    sudo apt-get update && sudo apt-get install -y zsh ;;
+            "apt")    sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y zsh ;;
             "yum")    sudo yum install -y zsh ;;
             "dnf")    sudo dnf install -y zsh ;;
             "pacman") sudo pacman -S --noconfirm zsh ;;
@@ -193,8 +193,12 @@ install_packages() {
 
         case "$PACKAGE_MANAGER" in
             "apt")
+                # Pre-configure iperf3 to not start as a daemon
+                echo "iperf3 iperf3/start_daemon boolean false" | sudo debconf-set-selections
+                
                 sudo apt-get update
-                echo "$packages_to_install" | xargs sudo apt-get install -y
+                # Use DEBIAN_FRONTEND=noninteractive to avoid interactive prompts
+                echo "$packages_to_install" | xargs sudo DEBIAN_FRONTEND=noninteractive apt-get install -y
                 ;;
             "yum")
                 echo "$packages_to_install" | xargs sudo yum install -y
@@ -229,7 +233,7 @@ install_eza() {
     echo "deb [signed-by=/etc/apt/keyrings/gierens.gpg] http://deb.gierens.de stable main" | sudo tee /etc/apt/sources.list.d/gierens.list
     sudo chmod 644 /etc/apt/keyrings/gierens.gpg
     sudo apt-get update
-    sudo apt-get install -y eza
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y eza
     log_success "eza installed."
 }
 
@@ -241,7 +245,7 @@ install_bat() {
     fi
     log_info "Installing bat..."
     # Using official recommended installation for Debian/Ubuntu
-    sudo apt-get install -y bat
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y bat
     # Create symlink for 'batcat' to 'bat' if needed
     if ! command -v bat &> /dev/null && command -v batcat &> /dev/null; then
         log_info "Creating symlink for batcat to bat."
@@ -351,7 +355,7 @@ install_glab() {
     log_info "Installing glab..."
     # Using official installation script for Debian/Ubuntu
     curl -sL "https://packages.gitlab.com/install/repositories/gitlab/glab/script.deb.sh" | sudo bash
-    sudo apt-get install -y glab
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y glab
     log_success "glab installed."
 }
 
