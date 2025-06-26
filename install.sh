@@ -394,17 +394,6 @@ install_antidote() {
     log_success "Antidote installed."
 }
 
-# Install Jenv (Java environment manager)
-install_jenv() {
-    if [[ -d "$HOME/.jenv" ]]; then
-        log_info "jenv already installed."
-        return
-    fi
-    log_info "Installing jenv..."
-    git clone https://github.com/jenv/jenv.git "$HOME/.jenv"
-    log_success "jenv installed."
-}
-
 # Install pnpm
 install_pnpm() {
     if command -v pnpm &> /dev/null; then
@@ -418,32 +407,6 @@ install_pnpm() {
     fi
     npm install -g pnpm
     log_success "pnpm installed."
-}
-
-# Install Yarn
-install_yarn() {
-    if command -v yarn &> /dev/null; then
-        log_info "Yarn already installed."
-        return
-    fi
-    log_info "Installing Yarn..."
-    if ! command -v npm &> /dev/null; then
-        log_warning "npm not found. Cannot install Yarn. Please install Node.js via NVM first."
-        return
-    fi
-    npm install -g yarn
-    log_success "Yarn installed."
-}
-
-# Install Starship
-install_starship() {
-    if command -v starship &> /dev/null; then
-        log_info "Starship already installed."
-        return
-    fi
-    log_info "Installing Starship..."
-    curl -sS https://starship.rs/install.sh | sh -s -- -y
-    log_success "Starship installed."
 }
 
 # Function to call all Linux-specific tool installations
@@ -463,10 +426,7 @@ install_linux_specific_tools() {
         install_yq
         install_prettyping
         install_antidote
-        install_jenv
         install_pnpm
-        install_yarn
-        install_starship
         log_success "Finished Linux-specific tool installations."
     fi
 }
