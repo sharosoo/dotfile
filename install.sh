@@ -133,7 +133,7 @@ install_zsh() {
         if [[ "$PACKAGE_MANAGER" == "unknown" ]]; then
             log_error "Cannot install ZSH. Unknown package manager."
             exit 1
-        }
+        fi
         log_info "Using '$PACKAGE_MANAGER' to install zsh."
         case "$PACKAGE_MANAGER" in
             "apt")    sudo apt-get update && sudo apt-get install -y zsh ;;
@@ -158,7 +158,7 @@ install_packages() {
         if ! command -v brew &> /dev/null; then
             log_error "Homebrew is not installed. Please run the installer again."
             exit 1
-        }
+        fi
         log_info "Using Homebrew to install packages from Brewfile..."
         if [[ -f "Brewfile" ]]; then
             brew bundle
@@ -171,7 +171,7 @@ install_packages() {
         if [[ "$PACKAGE_MANAGER" == "unknown" ]]; then
             log_warning "Skipping package installation due to unknown package manager."
             return
-        }
+        fi
 
         local package_file="scripts/packages.$PACKAGE_MANAGER"
         if [[ ! -f "$package_file" ]]; then
@@ -179,7 +179,7 @@ install_packages() {
             log_info "Please create it and list the packages you want to install, one per line."
             log_info "An example file can be found at 'scripts/packages.apt.example'."
             return
-        }
+        fi
 
         log_info "Installing packages from '$package_file' using '$PACKAGE_MANAGER'..."
         
@@ -294,7 +294,7 @@ install_nvm() {
     if [[ -d "$HOME/.nvm" ]]; then
         log_info "NVM already installed."
         return
-    }
+    fi
     log_info "Installing NVM..."
     curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
     # Source NVM for current session
@@ -435,6 +435,17 @@ install_yarn() {
     log_success "Yarn installed."
 }
 
+# Install Starship
+install_starship() {
+    if command -v starship &> /dev/null; then
+        log_info "Starship already installed."
+        return
+    fi
+    log_info "Installing Starship..."
+    curl -sS https://starship.rs/install.sh | sh -s -- -y
+    log_success "Starship installed."
+}
+
 # Function to call all Linux-specific tool installations
 install_linux_specific_tools() {
     if [[ "$OS" == "linux" ]]; then
@@ -455,6 +466,7 @@ install_linux_specific_tools() {
         install_jenv
         install_pnpm
         install_yarn
+        install_starship
         log_success "Finished Linux-specific tool installations."
     fi
 }
