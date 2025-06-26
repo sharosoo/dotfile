@@ -9,6 +9,8 @@ return {
     dependencies = {
       "hrsh7th/cmp-nvim-lsp",
       { "antosha417/nvim-lsp-file-operations", config = true },
+      "williamboman/mason.nvim",
+      "williamboman/mason-lspconfig.nvim",
     },
     config = function()
       local lspconfig = require("lspconfig")
@@ -86,6 +88,8 @@ return {
         "rust_analyzer",
         "clangd",
         "jdtls",
+        "terraformls",
+        "tflint",
       }
 
       for _, server in ipairs(servers) do
@@ -174,6 +178,8 @@ return {
           "pyright",
           "gopls",
           "rust_analyzer",
+          "terraformls",
+          "tflint",
         },
         automatic_installation = true,
       })
@@ -240,6 +246,7 @@ return {
           formatting.gofumpt,
           formatting.goimports,
           formatting.rustfmt,
+          formatting.terraform_fmt,
           diagnostics.eslint_d.with({
             condition = function(utils)
               return utils.root_has_file({ ".eslintrc.js", ".eslintrc.json" })
@@ -247,6 +254,7 @@ return {
           }),
           diagnostics.pylint,
           diagnostics.golangci_lint,
+          diagnostics.terraform_validate,
         },
         on_attach = function(current_client, bufnr)
           if current_client.supports_method("textDocument/formatting") then

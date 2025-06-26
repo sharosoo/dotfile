@@ -205,6 +205,8 @@ return {
           "java",
           "c",
           "cpp",
+          "hcl",
+          "terraform",
         },
         incremental_selection = {
           enable = true,

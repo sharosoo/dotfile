@@ -98,6 +98,20 @@ autocmd("FileType", {
   end,
 })
 
+-- Terraform file settings
+augroup("TerraformSettings", { clear = true })
+autocmd("BufRead,BufNewFile", {
+  group = "TerraformSettings",
+  pattern = { "*.tf", "*.tfvars", "*.hcl" },
+  callback = function()
+    vim.bo.filetype = "terraform"
+    vim.bo.commentstring = "# %s"
+    vim.bo.tabstop = 2
+    vim.bo.shiftwidth = 2
+    vim.bo.expandtab = true
+  end,
+})
+
 -- Transparent background adjustments
 augroup("TransparentBackground", { clear = true })
 autocmd("ColorScheme", {
