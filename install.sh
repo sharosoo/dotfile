@@ -11,6 +11,10 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Global variables
+OS=""
+PACKAGE_MANAGER=""
+
 # Logging functions
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
@@ -38,6 +42,49 @@ detect_os() {
     log_info "Detected OS: $OS"
 }
 
+# Linux Package Manager Detection
+detect_package_manager() {
+    if [[ "$OS" == "linux" ]]; then
+        if command -v apt-get &> /dev/null; then
+            PACKAGE_MANAGER="apt"
+        elif command -v yum &> /dev/null; then
+            PACKAGE_MANAGER="yum"
+        elif command -v dnf &> /dev/null; then
+            PACKAGE_MANAGER="dnf"
+        elif command -v pacman &> /dev/null; then
+            PACKAGE_MANAGER="pacman"
+        elif command -v zypper &> /dev/null; then
+            PACKAGE_MANAGER="zypper"
+        else
+            log_warning "Could not detect a supported package manager (apt, yum, dnf, pacman, zypper)."
+            PACKAGE_MANAGER="unknown"
+        fi
+        log_info "Detected Package Manager: $PACKAGE_MANAGER"
+    fi
+}
+
+# Uninstall existing Linuxbrew if requested
+prompt_and_uninstall_linuxbrew() {
+    if [[ "$OS" == "linux" ]] && [[ -f "/home/linuxbrew/.linuxbrew/bin/brew" ]]; then
+        log_warning "Existing Linuxbrew installation found."
+        read -p "Do you want to uninstall it and use the system package manager ($PACKAGE_MANAGER)? (y/N) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Uninstalling Linuxbrew..."
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"
+            
+            # Clean up shell profile
+            if [[ -f "$HOME/.zprofile" ]]; then
+                sed -i.bak '/eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"/d' "$HOME/.zprofile"
+            fi
+            
+            log_success "Linuxbrew uninstalled successfully."
+        else
+            log_info "Skipping Linuxbrew uninstallation. The script will proceed, but may have conflicts."
+        fi
+    fi
+}
+
 # Backup existing configuration
 backup_config() {
     local timestamp=$(date +%Y%m%d_%H%M%S)
@@ -57,53 +104,19 @@ backup_config() {
     log_success "Backup completed at: $backup_dir"
 }
 
-# Install Homebrew (macOS/Linux)
-install_homebrew() {
+# Install Homebrew (macOS only)
+install_homebrew_macos() {
     if ! command -v brew &> /dev/null; then
-        log_info "Installing Homebrew..."
-        
-        # On Linux, check if /home/linuxbrew/.linuxbrew exists and is owned by another user
-        if [[ "$OS" == "linux" ]] && [[ -d "/home/linuxbrew/.linuxbrew" ]]; then
-            local linuxbrew_owner=$(stat -c '%U' /home/linuxbrew/.linuxbrew 2>/dev/null || echo "unknown")
-            if [[ "$linuxbrew_owner" != "$USER" ]] && [[ "$linuxbrew_owner" != "unknown" ]]; then
-                log_warning "Homebrew is already installed by user '$linuxbrew_owner'"
-                log_info "Using existing Homebrew installation..."
-                
-                # Add existing Homebrew to PATH
-                echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.zprofile
-                eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-                
-                log_success "Using existing Homebrew installation"
-                return
-            fi
-        fi
-        
-        # Install Homebrew
+        log_info "Installing Homebrew for macOS..."
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
         
         # Add Homebrew to PATH
-        if [[ "$OS" == "macos" ]]; then
-            echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
-            eval "$(/opt/homebrew/bin/brew shellenv)"
-        else
-            echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.zprofile
-            eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-        fi
+        echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+        eval "$(/opt/homebrew/bin/brew shellenv)"
         
         log_success "Homebrew installed"
     else
         log_info "Homebrew already installed"
-        
-        # Ensure Homebrew is properly configured in shell
-        if [[ "$OS" == "macos" ]]; then
-            if ! grep -q "/opt/homebrew/bin/brew shellenv" ~/.zprofile 2>/dev/null; then
-                echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
-            fi
-        else
-            if ! grep -q "/home/linuxbrew/.linuxbrew/bin/brew shellenv" ~/.zprofile 2>/dev/null; then
-                echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.zprofile
-            fi
-        fi
     fi
 }
 
@@ -116,66 +129,89 @@ install_zsh() {
     
     log_info "Installing ZSH via system package manager..."
     
-    if command -v apt-get &> /dev/null; then
-        sudo apt-get update && sudo apt-get install -y zsh
-    elif command -v yum &> /dev/null; then
-        sudo yum install -y zsh
-    elif command -v dnf &> /dev/null; then
-        sudo dnf install -y zsh
-    elif command -v pacman &> /dev/null; then
-        sudo pacman -S --noconfirm zsh
-    elif command -v zypper &> /dev/null; then
-        sudo zypper install -y zsh
-    else
-        log_error "No supported package manager found. Please install zsh manually."
-        exit 1
+    if [[ "$OS" == "linux" ]]; then
+        if [[ "$PACKAGE_MANAGER" == "unknown" ]]; then
+            log_error "Cannot install ZSH. Unknown package manager."
+            exit 1
+        fi
+        log_info "Using '$PACKAGE_MANAGER' to install zsh."
+        case "$PACKAGE_MANAGER" in
+            "apt")    sudo apt-get update && sudo apt-get install -y zsh ;;
+            "yum")    sudo yum install -y zsh ;;
+            "dnf")    sudo dnf install -y zsh ;;
+            "pacman") sudo pacman -S --noconfirm zsh ;;
+            "zypper") sudo zypper install -y zsh ;;
+        esac
+    elif [[ "$OS" == "macos" ]]; then
+         log_error "ZSH not found on macOS. Please install it via Homebrew or manually."
+         exit 1
     fi
     
     log_success "ZSH installed via system package manager"
 }
 
-# Install packages via Homebrew
+# Install packages based on OS
 install_packages() {
-    log_info "Installing packages..."
-    
-    # Essential packages (removed zsh since it's handled separately)
-    local packages=(
-        "git"
-        "neovim"
-        "starship"
-        "fzf"
-        "ripgrep"
-        "fd"
-        "eza"
-        "bat"
-        "prettyping"
-        "tldr"
-        "jq"
-        "yq"
-        "tmux"
-        "antidote"
-        "gh"
-        "gitui"
-        "lazygit"
-        "python3"
-        "node"
-        "go"
-        "rust"
-        "jenv"
-        "nvm"
-        "pnpm"
-    )
-    
-    for package in "${packages[@]}"; do
-        if brew list "$package" &> /dev/null; then
-            log_info "$package already installed"
-        else
-            log_info "Installing $package..."
-            brew install "$package"
+    log_info "Installing packages for $OS..."
+
+    if [[ "$OS" == "macos" ]]; then
+        if ! command -v brew &> /dev/null; then
+            log_error "Homebrew is not installed. Please run the installer again."
+            exit 1
         fi
-    done
-    
-    log_success "Packages installed"
+        log_info "Using Homebrew to install packages from Brewfile..."
+        if [[ -f "Brewfile" ]]; then
+            brew bundle
+            log_success "Packages from Brewfile installed."
+        else
+            log_warning "Brewfile not found. Skipping package installation."
+        fi
+
+    elif [[ "$OS" == "linux" ]]; then
+        if [[ "$PACKAGE_MANAGER" == "unknown" ]]; then
+            log_warning "Skipping package installation due to unknown package manager."
+            return
+        fi
+
+        local package_file="scripts/packages.$PACKAGE_MANAGER"
+        if [[ ! -f "$package_file" ]]; then
+            log_warning "Package file '$package_file' not found."
+            log_info "Please create it and list the packages you want to install, one per line."
+            log_info "An example file can be found at 'scripts/packages.apt.example'."
+            return
+        fi
+
+        log_info "Installing packages from '$package_file' using '$PACKAGE_MANAGER'..."
+        
+        # Read packages, ignoring comments and empty lines
+        local packages_to_install=$(grep -vE '^\s*#|^\s*$' "$package_file")
+
+        if [[ -z "$packages_to_install" ]]; then
+            log_info "No packages to install in '$package_file'."
+            return
+        fi
+
+        case "$PACKAGE_MANAGER" in
+            "apt")
+                sudo apt-get update
+                echo "$packages_to_install" | xargs sudo apt-get install -y
+                ;;
+            "yum")
+                echo "$packages_to_install" | xargs sudo yum install -y
+                ;;
+            "dnf")
+                echo "$packages_to_install" | xargs sudo dnf install -y
+                ;;
+            "pacman")
+                local packages=$(echo "$packages_to_install")
+                sudo pacman -S --noconfirm $packages
+                ;;
+            "zypper")
+                echo "$packages_to_install" | xargs sudo zypper install -y
+                ;;
+        esac
+        log_success "Packages from '$package_file' installed."
+    fi
 }
 
 # Create necessary directories
@@ -220,31 +256,15 @@ install_nvim_plugins() {
 
 # Set ZSH as default shell
 set_default_shell() {
-    local zsh_path
-    
-    # Find available zsh binary - prefer system zsh for better compatibility
-    if command -v zsh &> /dev/null; then
-        zsh_path="$(which zsh)"
-        log_info "Found system zsh at: $zsh_path"
-    elif command -v brew &> /dev/null; then
-        # Fall back to Homebrew zsh if system zsh not available
-        if [[ "$OS" == "macos" ]]; then
-            zsh_path="/opt/homebrew/bin/zsh"
-        else
-            zsh_path="/home/linuxbrew/.linuxbrew/bin/zsh"
-        fi
-        
-        if [[ -f "$zsh_path" ]]; then
-            log_info "Using Homebrew zsh at: $zsh_path"
-        else
-            log_error "No zsh found. Please install zsh first."
-            return 1
-        fi
-    else
-        log_error "No zsh found. Please install zsh first."
+    local zsh_path=$(which zsh)
+
+    if [[ -z "$zsh_path" ]]; then
+        log_error "zsh not found in PATH. Cannot set as default shell."
         return 1
     fi
     
+    log_info "Found zsh at: $zsh_path"
+
     # Add zsh to /etc/shells if not already present
     if ! grep -q "^$zsh_path$" /etc/shells 2>/dev/null; then
         log_info "Adding $zsh_path to /etc/shells..."
@@ -285,29 +305,23 @@ EOF
 # Warp terminal setup
 setup_warp() {
     log_info "Setting up Warp terminal compatibility..."
-    
-    # Create Warp configuration directory if it doesn't exist
     mkdir -p ~/.warp
-    
-    # Add Warp-specific configurations to .zshrc if needed
-    if ! grep -q "WARP_TERMINAL_COMPAT" ~/.zshrc; then
-        log_info "Warp terminal compatibility already configured"
-    fi
-    
     log_success "Warp terminal setup complete"
 }
 
 # Main installation
 main() {
-    echo "==================================="
-    echo "  Dotfiles Installation Script"
-    echo "==================================="
+    echo "===================================="
+    echo "   Dotfiles Installation Script   "
+    echo "===================================="
     echo
     
-    # Detect OS
     detect_os
+    detect_package_manager
     
-    # Ask for confirmation
+    # Prompt to uninstall Linuxbrew if it exists
+    prompt_and_uninstall_linuxbrew
+
     read -p "This will install dotfiles and may overwrite existing configurations. Continue? (y/N) " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -315,34 +329,20 @@ main() {
         exit 0
     fi
     
-    # Create backup
     backup_config
     
-    # Install ZSH first (system package manager)
+    if [[ "$OS" == "macos" ]]; then
+        install_homebrew_macos
+    fi
+    
     install_zsh
-    
-    # Install Homebrew
-    install_homebrew
-    
-    # Install packages
     install_packages
     
-    # Create directories
     create_directories
-    
-    # Link configuration files
     link_configs
-    
-    # Install Neovim plugins
     install_nvim_plugins
-    
-    # Set default shell
     set_default_shell
-    
-    # Create environment template
     create_env_template
-    
-    # Setup Warp
     setup_warp
     
     echo
@@ -350,10 +350,10 @@ main() {
     echo
     echo "Next steps:"
     echo "1. Restart your terminal or run: source ~/.zshrc"
-    echo "2. Configure your API keys in ~/.env.local"
-    echo "3. Run :checkhealth in Neovim to verify setup"
+    echo "2. For Linux, create your package list at 'scripts/packages.<distro>' if you haven't already."
+    echo "3. Configure your API keys in ~/.env.local"
+    echo "4. Run :checkhealth in Neovim to verify setup"
     echo
-    echo "To rollback, restore from backup directory created at the beginning"
 }
 
 # Run main function

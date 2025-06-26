@@ -126,7 +126,7 @@ return {
       end
 
       -- TypeScript
-      lspconfig["tsserver"].setup({
+      lspconfig["ts_ls"].setup({
         capabilities = capabilities,
         on_attach = on_attach,
         init_options = {
@@ -162,7 +162,7 @@ return {
 
       mason_lspconfig.setup({
         ensure_installed = {
-          "tsserver",
+          "ts_ls",
           "html",
           "cssls",
           "tailwindcss",
