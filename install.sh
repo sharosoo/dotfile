@@ -75,7 +75,7 @@ prompt_and_uninstall_linuxbrew() {
             
             # Clean up shell profile
             if [[ -f "$HOME/.zprofile" ]]; then
-                sed -i.bak '/eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"/d' "$HOME/.zprofile"
+                sed -i.bak '/eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"'/d "$HOME/.zprofile"
             fi
             
             log_success "Linuxbrew uninstalled successfully."
@@ -133,7 +133,7 @@ install_zsh() {
         if [[ "$PACKAGE_MANAGER" == "unknown" ]]; then
             log_error "Cannot install ZSH. Unknown package manager."
             exit 1
-        fi
+        }
         log_info "Using '$PACKAGE_MANAGER' to install zsh."
         case "$PACKAGE_MANAGER" in
             "apt")    sudo apt-get update && sudo apt-get install -y zsh ;;
@@ -158,7 +158,7 @@ install_packages() {
         if ! command -v brew &> /dev/null; then
             log_error "Homebrew is not installed. Please run the installer again."
             exit 1
-        fi
+        }
         log_info "Using Homebrew to install packages from Brewfile..."
         if [[ -f "Brewfile" ]]; then
             brew bundle
@@ -171,7 +171,7 @@ install_packages() {
         if [[ "$PACKAGE_MANAGER" == "unknown" ]]; then
             log_warning "Skipping package installation due to unknown package manager."
             return
-        fi
+        }
 
         local package_file="scripts/packages.$PACKAGE_MANAGER"
         if [[ ! -f "$package_file" ]]; then
@@ -179,7 +179,7 @@ install_packages() {
             log_info "Please create it and list the packages you want to install, one per line."
             log_info "An example file can be found at 'scripts/packages.apt.example'."
             return
-        fi
+        }
 
         log_info "Installing packages from '$package_file' using '$PACKAGE_MANAGER'..."
         
@@ -211,6 +211,251 @@ install_packages() {
                 ;;
         esac
         log_success "Packages from '$package_file' installed."
+    fi
+}
+
+# --- Linux Specific Tool Installations ---
+
+# Install eza (ls replacement)
+install_eza() {
+    if command -v eza &> /dev/null; then
+        log_info "eza already installed."
+        return
+    fi
+    log_info "Installing eza..."
+    # Using official recommended installation for Debian/Ubuntu
+    sudo mkdir -p /etc/apt/keyrings
+    wget -qO- https://raw.githubusercontent.com/eza-community/eza/main/deb.asc | sudo gpg --dearmor -o /etc/apt/keyrings/gierens.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/gierens.gpg] http://deb.gierens.de stable main" | sudo tee /etc/apt/sources.list.d/gierens.list
+    sudo chmod 644 /etc/apt/keyrings/gierens.gpg
+    sudo apt-get update
+    sudo apt-get install -y eza
+    log_success "eza installed."
+}
+
+# Install bat (cat replacement)
+install_bat() {
+    if command -v bat &> /dev/null; then
+        log_info "bat already installed."
+        return
+    fi
+    log_info "Installing bat..."
+    # Using official recommended installation for Debian/Ubuntu
+    sudo apt-get install -y bat
+    # Create symlink for 'batcat' to 'bat' if needed
+    if ! command -v bat &> /dev/null && command -v batcat &> /dev/null; then
+        log_info "Creating symlink for batcat to bat."
+        mkdir -p ~/.local/bin
+        ln -s "$(which batcat)" ~/.local/bin/bat
+    fi
+    log_success "bat installed."
+}
+
+# Install zoxide (cd replacement)
+install_zoxide() {
+    if command -v zoxide &> /dev/null; then
+        log_info "zoxide already installed."
+        return
+    fi
+    log_info "Installing zoxide..."
+    curl -sSfL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | bash
+    log_success "zoxide installed."
+}
+
+# Install lazygit
+install_lazygit() {
+    if command -v lazygit &> /dev/null; then
+        log_info "lazygit already installed."
+        return
+    fi
+    log_info "Installing lazygit..."
+    LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\\K[^"]*')
+    curl -Lo lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz"
+    sudo tar xf lazygit.tar.gz -C /usr/local/bin lazygit
+    rm lazygit.tar.gz
+    log_success "lazygit installed."
+}
+
+# Install Rustup (Rust toolchain installer)
+install_rustup() {
+    if command -v rustup &> /dev/null; then
+        log_info "Rustup already installed."
+        return
+    fi
+    log_info "Installing Rustup..."
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    # Source cargo env for current session
+    source "$HOME/.cargo/env"
+    log_success "Rustup installed."
+}
+
+# Install NVM (Node Version Manager)
+install_nvm() {
+    if [[ -d "$HOME/.nvm" ]]; then
+        log_info "NVM already installed."
+        return
+    }
+    log_info "Installing NVM..."
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+    # Source NVM for current session
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
+    [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+    log_success "NVM installed."
+}
+
+# Install Docker
+install_docker() {
+    if command -v docker &> /dev/null; then
+        log_info "Docker already installed."
+        return
+    fi
+    log_info "Installing Docker..."
+    curl -fsSL https://get.docker.com -o get-docker.sh
+    sudo sh get-docker.sh
+    rm get-docker.sh
+    sudo usermod -aG docker "$USER"
+    log_success "Docker installed. Please log out and log back in for user group changes to take effect."
+}
+
+# Install Kubectl
+install_kubectl() {
+    if command -v kubectl &> /dev/null; then
+        log_info "kubectl already installed."
+        return
+    fi
+    log_info "Installing kubectl..."
+    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+    rm kubectl
+    log_success "kubectl installed."
+}
+
+# Install Helm
+install_helm() {
+    if command -v helm &> /dev/null; then
+        log_info "Helm already installed."
+        return
+    fi
+    log_info "Installing Helm..."
+    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    log_success "Helm installed."
+}
+
+# Install Glab (GitLab CLI)
+install_glab() {
+    if command -v glab &> /dev/null; then
+        log_info "glab already installed."
+        return
+    fi
+    log_info "Installing glab..."
+    # Using official installation script for Debian/Ubuntu
+    curl -sL "https://packages.gitlab.com/install/repositories/gitlab/glab/script.deb.sh" | sudo bash
+    sudo apt-get install -y glab
+    log_success "glab installed."
+}
+
+# Install yq (YAML processor)
+install_yq() {
+    if command -v yq &> /dev/null; then
+        log_info "yq already installed."
+        return
+    fi
+    log_info "Installing yq..."
+    YQ_VERSION=$(curl -s https://api.github.com/repos/mikefarah/yq/releases/latest | grep -Po '"tag_name": "v\\K[^"]*')
+    wget "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -O ~/.local/bin/yq
+    chmod +x ~/.local/bin/yq
+    log_success "yq installed."
+}
+
+# Install prettyping
+install_prettyping() {
+    if command -v prettyping &> /dev/null; then
+        log_info "prettyping already installed."
+        return
+    fi
+    log_info "Installing prettyping..."
+    if ! command -v pip3 &> /dev/null; then
+        log_warning "pip3 not found. Cannot install prettyping. Please install python3-pip first."
+        return
+    fi
+    pip3 install prettyping
+    log_success "prettyping installed."
+}
+
+# Install Antidote (ZSH plugin manager)
+install_antidote() {
+    if [[ -d "$HOME/.antidote" ]]; then
+        log_info "Antidote already installed."
+        return
+    fi
+    log_info "Installing Antidote..."
+    git clone --depth=1 https://github.com/mattmc3/antidote.git "$HOME/.antidote"
+    log_success "Antidote installed."
+}
+
+# Install Jenv (Java environment manager)
+install_jenv() {
+    if [[ -d "$HOME/.jenv" ]]; then
+        log_info "jenv already installed."
+        return
+    fi
+    log_info "Installing jenv..."
+    git clone https://github.com/jenv/jenv.git "$HOME/.jenv"
+    log_success "jenv installed."
+}
+
+# Install pnpm
+install_pnpm() {
+    if command -v pnpm &> /dev/null; then
+        log_info "pnpm already installed."
+        return
+    fi
+    log_info "Installing pnpm..."
+    if ! command -v npm &> /dev/null; then
+        log_warning "npm not found. Cannot install pnpm. Please install Node.js via NVM first."
+        return
+    fi
+    npm install -g pnpm
+    log_success "pnpm installed."
+}
+
+# Install Yarn
+install_yarn() {
+    if command -v yarn &> /dev/null; then
+        log_info "Yarn already installed."
+        return
+    fi
+    log_info "Installing Yarn..."
+    if ! command -v npm &> /dev/null; then
+        log_warning "npm not found. Cannot install Yarn. Please install Node.js via NVM first."
+        return
+    fi
+    npm install -g yarn
+    log_success "Yarn installed."
+}
+
+# Function to call all Linux-specific tool installations
+install_linux_specific_tools() {
+    if [[ "$OS" == "linux" ]]; then
+        log_info "Starting Linux-specific tool installations..."
+        install_eza
+        install_bat
+        install_zoxide
+        install_lazygit
+        install_rustup
+        install_nvm
+        install_docker
+        install_kubectl
+        install_helm
+        install_glab
+        install_yq
+        install_prettyping
+        install_antidote
+        install_jenv
+        install_pnpm
+        install_yarn
+        log_success "Finished Linux-specific tool installations."
     fi
 }
 
@@ -247,11 +492,28 @@ link_configs() {
     log_success "Configuration files linked"
 }
 
+# Remove Amazon Q related content from .zshrc
+remove_amazon_q_from_zshrc() {
+    if [[ -f "$HOME/.zshrc" ]]; then
+        log_info "Removing Amazon Q related content from ~/.zshrc..."
+        # Remove lines containing 'Amazon Q' or 'aws-shell-prompt'
+        sed -i.bak '/Amazon Q/d' "$HOME/.zshrc"
+        sed -i.bak '/aws-shell-prompt/d' "$HOME/.zshrc"
+        log_success "Amazon Q related content removed from ~/.zshrc."
+    else
+        log_warning "~/.zshrc not found. Skipping Amazon Q content removal."
+    fi
+}
+
 # Install Neovim plugins
 install_nvim_plugins() {
-    log_info "Installing Neovim plugins..."
-    nvim --headless "+Lazy! sync" +qa
-    log_success "Neovim plugins installed"
+    log_info "Installing Neovim plugins... (Requires nvim to be in PATH)"
+    if command -v nvim &> /dev/null; then
+        nvim --headless "+Lazy! sync" +qa
+        log_success "Neovim plugins installed"
+    else
+        log_warning "Neovim not found in PATH. Skipping Neovim plugin installation. Please ensure Neovim is installed and in your PATH."
+    fi
 }
 
 # Set ZSH as default shell
@@ -338,8 +600,12 @@ main() {
     install_zsh
     install_packages
     
+    # Install Linux-specific tools if on Linux
+    install_linux_specific_tools
+    
     create_directories
     link_configs
+    remove_amazon_q_from_zshrc # Call the new function here
     install_nvim_plugins
     set_default_shell
     create_env_template
@@ -350,9 +616,10 @@ main() {
     echo
     echo "Next steps:"
     echo "1. Restart your terminal or run: source ~/.zshrc"
-    echo "2. For Linux, create your package list at 'scripts/packages.<distro>' if you haven't already."
+    echo "2. For Linux, ensure your package list at 'scripts/packages.<distro>' is up-to-date."
     echo "3. Configure your API keys in ~/.env.local"
     echo "4. Run :checkhealth in Neovim to verify setup"
+    echo "5. If Docker was installed, log out and log back in for user group changes to take effect."
     echo
 }
 
