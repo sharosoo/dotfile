@@ -108,3 +108,42 @@ case "$(uname -s)" in
     alias open='xdg-open'
     ;;
 esac
+
+# Git Hub Clone - Clone GitHub repos to organized workspace
+ghc() {
+  local url=$1
+  local repo=""
+  local org=""
+  
+  if [[ "$url" == https://github.com/* ]]; then
+    repo=${url##*/}
+    repo=${repo%.git}
+    echo $repo
+    org=${url%/*}
+    org=${org##*/}
+  elif [[ "$url" == git@github.com:* ]]; then
+    orgrepo=${url#*:}
+    org=${orgrepo%%/*}
+    repo=${orgrepo##*/}
+    repo=${repo%.git}
+  else
+    echo "Invalid git URL."
+    return 1
+  fi
+  
+  local dir=~/workspaces/$org/$repo
+  mkdir -p $dir
+  git clone $url $dir
+}
+
+# Git Hub Change Directory - Navigate to GitHub repos in workspace
+ghcd() {
+  local repo=$1
+  local dir
+  IFS=$'\n' dir=($(find ~/workspaces -mindepth 2 -maxdepth 2 -type d -iname "*$repo*" -print | fzf -1 -0 --header "Select a repository:"))
+  if [[ -n $dir ]]; then
+    cd "$dir"
+  else
+    echo "No matching repository found."
+  fi
+}
