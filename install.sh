@@ -625,6 +625,15 @@ link_configs() {
     ln -sf "$dotfiles_dir/nvim/init.lua" ~/.config/nvim/init.lua
     ln -sf "$dotfiles_dir/nvim/lua" ~/.config/nvim/
     
+    # Tmux configuration
+    if [[ -f "$dotfiles_dir/.tmux.conf" ]]; then
+        ln -sf "$dotfiles_dir/.tmux.conf" ~/.tmux.conf
+        # Reload tmux if it's running
+        if command -v tmux &>/dev/null && pgrep -x "tmux" > /dev/null; then
+            tmux source-file ~/.tmux.conf 2>/dev/null
+        fi
+    fi
+    
     log_success "Configuration files linked"
 }
 
