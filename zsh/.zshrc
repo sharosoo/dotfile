@@ -84,5 +84,6 @@ alias vim="nvim"
 alias vimdiff="nvim -d"
 
 # Auto-Warpify
-# Auto-Warpify - Only run in Warp terminal
-[[ "$TERM_PROGRAM" == "WarpTerminal" ]] && [[ "$-" == *i* ]] && printf '\eP$f{"hook": "SourcedRcFileForWarp", "value": { "shell": "zsh", "uname": "'$(uname)'" }}\x9c'
+# This hook allows Warp terminal to detect shell initialization
+# Works for both local and SSH sessions
+[[ "$-" == *i* ]] && printf '\eP$f{"hook": "SourcedRcFileForWarp", "value": { "shell": "zsh", "uname": "'$(uname)'" }}\x9c'
