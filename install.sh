@@ -615,8 +615,20 @@ link_configs() {
     log_info "Linking configuration files from $dotfiles_dir..."
     
     # ZSH configurations
+    # Remove existing .zshrc if it's not a symlink or points to wrong location
+    if [[ -e ~/.zshrc ]] && [[ ! -L ~/.zshrc || "$(readlink ~/.zshrc)" != "$dotfiles_dir/zsh/.zshrc" ]]; then
+        log_warning "Existing ~/.zshrc found (not a proper symlink). Backing up..."
+        mv ~/.zshrc ~/.zshrc.bak
+    fi
     ln -sf "$dotfiles_dir/zsh/.zshrc" ~/.zshrc
+    
+    # Same for .zprofile
+    if [[ -e ~/.zprofile ]] && [[ ! -L ~/.zprofile || "$(readlink ~/.zprofile)" != "$dotfiles_dir/zsh/.zprofile" ]]; then
+        log_warning "Existing ~/.zprofile found (not a proper symlink). Backing up..."
+        mv ~/.zprofile ~/.zprofile.bak
+    fi
     ln -sf "$dotfiles_dir/zsh/.zprofile" ~/.zprofile
+    
     ln -sf "$dotfiles_dir/zsh/aliases.zsh" ~/.config/zsh/aliases.zsh
     ln -sf "$dotfiles_dir/zsh/completions.zsh" ~/.config/zsh/completions.zsh
     ln -sf "$dotfiles_dir/zsh/environment.zsh" ~/.config/zsh/environment.zsh
@@ -638,16 +650,9 @@ link_configs() {
 }
 
 # Remove Amazon Q related content from .zshrc
+# NOTE: This function is deprecated as .zshrc is now managed by dotfiles
 remove_amazon_q_from_zshrc() {
-    if [[ -f "$HOME/.zshrc" ]]; then
-        log_info "Removing Amazon Q related content from ~/.zshrc..."
-        # Remove lines containing 'Amazon Q' or 'aws-shell-prompt'
-        sed -i.bak '/Amazon Q/d' "$HOME/.zshrc"
-        sed -i.bak '/aws-shell-prompt/d' "$HOME/.zshrc"
-        log_success "Amazon Q related content removed from ~/.zshrc."
-    else
-        log_warning "~/.zshrc not found. Skipping Amazon Q content removal."
-    fi
+    log_info "Skipping Amazon Q removal - .zshrc is managed by dotfiles"
 }
 
 # Install Neovim plugins
