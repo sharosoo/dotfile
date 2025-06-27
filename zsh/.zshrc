@@ -84,4 +84,5 @@ alias vim="nvim"
 alias vimdiff="nvim -d"
 
 # Auto-Warpify
-[[ "$-" == *i* ]] && printf '\eP$f{"hook": "SourcedRcFileForWarp", "value": { "shell": "zsh", "uname": "'$(uname)'" }}\x9c'
+# Auto-Warpify - Only run in Warp terminal
+[[ "$TERM_PROGRAM" == "WarpTerminal" ]] && [[ "$-" == *i* ]] && printf '\eP$f{"hook": "SourcedRcFileForWarp", "value": { "shell": "zsh", "uname": "'$(uname)'" }}\x9c'
