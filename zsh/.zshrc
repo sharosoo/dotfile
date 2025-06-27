@@ -35,7 +35,10 @@ export LDFLAGS="-L/opt/homebrew/lib"
 export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig"
 
 # Go Version Manager
-[[ -s "/Users/jh/.gvm/scripts/gvm" ]] && source "/Users/jh/.gvm/scripts/gvm"
+# Prevent recursion by checking if GVM functions are already loaded
+if ! command -v gvm >/dev/null 2>&1 && [[ -s "$HOME/.gvm/scripts/gvm" ]]; then
+  source "$HOME/.gvm/scripts/gvm"
+fi
 
 # Rust
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -70,7 +73,7 @@ load_venv
 # Path Additions
 export PATH="/opt/homebrew/opt/postgresql@17/bin:$PATH"
 export PATH="$HOME/go/bin:$PATH"
-export PATH=$PATH:/Users/jh/workspaces/patrickchugh/terravision
+export PATH=$PATH:$HOME/workspaces/patrickchugh/terravision
 
 # Plugin Management
 # =================
