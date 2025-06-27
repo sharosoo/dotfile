@@ -1,10 +1,6 @@
 # ZProfile Configuration
 # This file is managed by dotfiles - https://github.com/sharosoo/dotfile
 
-# For SSH sessions, ensure .zshrc is sourced
-if [[ -n "$SSH_CONNECTION" ]] && [[ -f "$HOME/.zshrc" ]]; then
-    source "$HOME/.zshrc"
-fi
 
 # Amazon Q Integration (if installed)
 [[ -f "${HOME}/Library/Application Support/amazon-q/shell/zprofile.pre.zsh" ]] && builtin source "${HOME}/Library/Application Support/amazon-q/shell/zprofile.pre.zsh"
