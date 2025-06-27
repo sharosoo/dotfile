@@ -1,6 +1,11 @@
 # Zsh Configuration
 # This file is managed by dotfiles - https://github.com/sharosoo/dotfile
 
+# Auto-Warpify - Must be at the top to ensure it runs even if sourcing fails
+# This hook allows Warp terminal to detect shell initialization
+# Works for both local and SSH sessions
+[[ "$-" == *i* ]] && printf '\eP$f{"hook": "SourcedRcFileForWarp", "value": { "shell": "zsh", "uname": "'$(uname)'" }}\x9c'
+
 # VS Code Shell Integration
 [[ "$TERM_PROGRAM" == "vscode" ]] && . "$(code --locate-shell-integration-path zsh)"
 
@@ -11,10 +16,11 @@ export WARP_TERMINAL_COMPAT="${TERM_PROGRAM}"
 # ZSH Configuration Directory
 export ZDOTDIR="${HOME}/.config/zsh"
 
-# Source configuration files
-source $ZDOTDIR/aliases.zsh
-source $ZDOTDIR/completions.zsh
-source $ZDOTDIR/environment.zsh
+# Source configuration files from the correct location
+# These files are symlinked by install.sh to the actual dotfiles
+[[ -f $ZDOTDIR/aliases.zsh ]] && source $ZDOTDIR/aliases.zsh
+[[ -f $ZDOTDIR/completions.zsh ]] && source $ZDOTDIR/completions.zsh
+[[ -f $ZDOTDIR/environment.zsh ]] && source $ZDOTDIR/environment.zsh
 
 # Source profile for machine-specific settings
 [[ -f ~/.zprofile ]] && source ~/.zprofile
@@ -82,8 +88,3 @@ fi
 alias vi="nvim"
 alias vim="nvim"
 alias vimdiff="nvim -d"
-
-# Auto-Warpify
-# This hook allows Warp terminal to detect shell initialization
-# Works for both local and SSH sessions
-[[ "$-" == *i* ]] && printf '\eP$f{"hook": "SourcedRcFileForWarp", "value": { "shell": "zsh", "uname": "'$(uname)'" }}\x9c'
