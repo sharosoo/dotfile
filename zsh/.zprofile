@@ -1,6 +1,15 @@
 # ZProfile Configuration
 # This file is managed by dotfiles - https://github.com/sharosoo/dotfile
 
+# Debug logging for .zprofile
+echo "[DEBUG] Loading ~/.zprofile at $(date)" >> /tmp/zshrc_debug.log
+
+# For Warp SSH sessions, ensure .zshrc is sourced
+if [[ -n "$WARP_IS_SUBSHELL" ]] && [[ -n "$SSH_CONNECTION" ]]; then
+    echo "[DEBUG] Warp SSH detected in .zprofile, sourcing .zshrc" >> /tmp/zshrc_debug.log
+    [[ -f "$HOME/.zshrc" ]] && source "$HOME/.zshrc"
+fi
+
 # Amazon Q Integration (if installed)
 [[ -f "${HOME}/Library/Application Support/amazon-q/shell/zprofile.pre.zsh" ]] && builtin source "${HOME}/Library/Application Support/amazon-q/shell/zprofile.pre.zsh"
 

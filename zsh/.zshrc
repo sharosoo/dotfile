@@ -16,6 +16,14 @@ echo "[DEBUG] SSH_CONNECTION=$SSH_CONNECTION" >> /tmp/zshrc_debug.log
 # Warp may set WARP_IS_SUBSHELL which can affect sourcing
 if [[ -n "$WARP_IS_SUBSHELL" ]]; then
     echo "[DEBUG] Detected WARP_IS_SUBSHELL, continuing with sourcing" >> /tmp/zshrc_debug.log
+    # Unset ZLE to prevent conflicts with Warp's handling
+    unsetopt ZLE 2>/dev/null || true
+fi
+
+# Force interactive mode for Warp SSH if needed
+if [[ -n "$SSH_CONNECTION" ]] && [[ -n "$WARP_IS_SUBSHELL" ]]; then
+    echo "[DEBUG] Forcing interactive mode for Warp SSH" >> /tmp/zshrc_debug.log
+    set -o interactive
 fi
 
 # VS Code Shell Integration

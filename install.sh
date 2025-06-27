@@ -629,6 +629,13 @@ link_configs() {
     fi
     ln -sf "$dotfiles_dir/zsh/.zprofile" ~/.zprofile
     
+    # Same for .zshenv (important for Warp SSH compatibility)
+    if [[ -e ~/.zshenv ]] && [[ ! -L ~/.zshenv || "$(readlink ~/.zshenv)" != "$dotfiles_dir/zsh/.zshenv" ]]; then
+        log_warning "Existing ~/.zshenv found (not a proper symlink). Backing up..."
+        mv ~/.zshenv ~/.zshenv.bak
+    fi
+    ln -sf "$dotfiles_dir/zsh/.zshenv" ~/.zshenv
+    
     ln -sf "$dotfiles_dir/zsh/aliases.zsh" ~/.config/zsh/aliases.zsh
     ln -sf "$dotfiles_dir/zsh/completions.zsh" ~/.config/zsh/completions.zsh
     ln -sf "$dotfiles_dir/zsh/environment.zsh" ~/.config/zsh/environment.zsh
