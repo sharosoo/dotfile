@@ -558,6 +558,32 @@ install_pnpm() {
     fi
 }
 
+# Install Neovim 0.10+
+install_neovim() {
+    if command -v nvim &> /dev/null; then
+        local current_version=$(nvim --version | head -n1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "0.0.0")
+        local major_version=$(echo $current_version | cut -d. -f2)
+        
+        if [ "$major_version" -ge 10 ]; then
+            log_info "Neovim $current_version already installed and meets requirements."
+            return
+        else
+            log_info "Neovim $current_version is too old, upgrading..."
+        fi
+    fi
+    
+    log_info "Installing Neovim 0.10+..."
+    
+    # Run the neovim installation script
+    local dotfiles_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [[ -f "$dotfiles_dir/scripts/install_neovim.sh" ]]; then
+        bash "$dotfiles_dir/scripts/install_neovim.sh"
+    else
+        log_error "Neovim installation script not found."
+        return 1
+    fi
+}
+
 # Function to call all Linux-specific tool installations
 install_linux_specific_tools() {
     if [[ "$OS" == "linux" ]]; then
@@ -567,6 +593,7 @@ install_linux_specific_tools() {
         local failed_tools=()
         
         # Install each tool and track failures
+        install_neovim || failed_tools+=("neovim")
         install_eza || failed_tools+=("eza")
         install_bat || failed_tools+=("bat")
         install_zoxide || failed_tools+=("zoxide")
