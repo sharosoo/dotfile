@@ -641,8 +641,18 @@ link_configs() {
     ln -sf "$dotfiles_dir/zsh/environment.zsh" ~/.config/zsh/environment.zsh
     
     # Neovim configuration
-    ln -sf "$dotfiles_dir/nvim/init.lua" ~/.config/nvim/init.lua
-    ln -sf "$dotfiles_dir/nvim/lua" ~/.config/nvim/
+    # Remove existing nvim config directory if it's not empty
+    if [[ -d ~/.config/nvim ]] && [[ ! -L ~/.config/nvim ]]; then
+        log_warning "Existing ~/.config/nvim directory found. Backing up..."
+        mv ~/.config/nvim ~/.config/nvim.bak.$(date +%Y%m%d_%H%M%S)
+    fi
+    
+    # Create fresh nvim config directory
+    rm -rf ~/.config/nvim
+    mkdir -p ~/.config/nvim
+    
+    # Copy nvim configuration files (not symlink to avoid issues)
+    cp -r "$dotfiles_dir/nvim/"* ~/.config/nvim/
     
     # Tmux configuration
     if [[ -f "$dotfiles_dir/.tmux.conf" ]]; then
