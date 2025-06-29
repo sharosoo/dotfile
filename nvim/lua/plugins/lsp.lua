@@ -1,6 +1,54 @@
 -- LSP Plugins Configuration
 -- This file is managed by dotfiles - https://github.com/sharosoo/dotfile
 
+-- Shared configuration for all LSP servers
+local get_common_on_attach = function()
+  return function(client, bufnr)
+    local opts = { noremap = true, silent = true, buffer = bufnr }
+    local keymap = vim.keymap
+    
+    -- Keybindings
+    opts.desc = "Show LSP references"
+    keymap.set("n", "gR", "<cmd>Telescope lsp_references<CR>", opts)
+    
+    opts.desc = "Go to declaration"
+    keymap.set("n", "gD", vim.lsp.buf.declaration, opts)
+    
+    opts.desc = "Show LSP definitions"
+    keymap.set("n", "gd", "<cmd>Telescope lsp_definitions<CR>", opts)
+    
+    opts.desc = "Show LSP implementations"
+    keymap.set("n", "gi", "<cmd>Telescope lsp_implementations<CR>", opts)
+    
+    opts.desc = "Show LSP type definitions"
+    keymap.set("n", "gt", "<cmd>Telescope lsp_type_definitions<CR>", opts)
+    
+    opts.desc = "See available code actions"
+    keymap.set({ "n", "v" }, "<leader>ca", vim.lsp.buf.code_action, opts)
+    
+    opts.desc = "Smart rename"
+    keymap.set("n", "<leader>rn", vim.lsp.buf.rename, opts)
+    
+    opts.desc = "Show buffer diagnostics"
+    keymap.set("n", "<leader>D", "<cmd>Telescope diagnostics bufnr=0<CR>", opts)
+    
+    opts.desc = "Show line diagnostics"
+    keymap.set("n", "<leader>d", vim.diagnostic.open_float, opts)
+    
+    opts.desc = "Go to previous diagnostic"
+    keymap.set("n", "[d", vim.diagnostic.goto_prev, opts)
+    
+    opts.desc = "Go to next diagnostic"
+    keymap.set("n", "]d", vim.diagnostic.goto_next, opts)
+    
+    opts.desc = "Show documentation for what is under cursor"
+    keymap.set("n", "K", vim.lsp.buf.hover, opts)
+    
+    opts.desc = "Restart LSP"
+    keymap.set("n", "<leader>rs", ":LspRestart<CR>", opts)
+  end
+end
+
 return {
   -- LSP Config
   {
@@ -16,52 +64,7 @@ return {
       local lspconfig = require("lspconfig")
       local cmp_nvim_lsp = require("cmp_nvim_lsp")
 
-      local keymap = vim.keymap
-
-      local opts = { noremap = true, silent = true }
-      local on_attach = function(client, bufnr)
-        opts.buffer = bufnr
-
-        -- Keybindings
-        opts.desc = "Show LSP references"
-        keymap.set("n", "gR", "<cmd>Telescope lsp_references<CR>", opts)
-
-        opts.desc = "Go to declaration"
-        keymap.set("n", "gD", vim.lsp.buf.declaration, opts)
-
-        opts.desc = "Show LSP definitions"
-        keymap.set("n", "gd", "<cmd>Telescope lsp_definitions<CR>", opts)
-
-        opts.desc = "Show LSP implementations"
-        keymap.set("n", "gi", "<cmd>Telescope lsp_implementations<CR>", opts)
-
-        opts.desc = "Show LSP type definitions"
-        keymap.set("n", "gt", "<cmd>Telescope lsp_type_definitions<CR>", opts)
-
-        opts.desc = "See available code actions"
-        keymap.set({ "n", "v" }, "<leader>ca", vim.lsp.buf.code_action, opts)
-
-        opts.desc = "Smart rename"
-        keymap.set("n", "<leader>rn", vim.lsp.buf.rename, opts)
-
-        opts.desc = "Show buffer diagnostics"
-        keymap.set("n", "<leader>D", "<cmd>Telescope diagnostics bufnr=0<CR>", opts)
-
-        opts.desc = "Show line diagnostics"
-        keymap.set("n", "<leader>d", vim.diagnostic.open_float, opts)
-
-        opts.desc = "Go to previous diagnostic"
-        keymap.set("n", "[d", vim.diagnostic.goto_prev, opts)
-
-        opts.desc = "Go to next diagnostic"
-        keymap.set("n", "]d", vim.diagnostic.goto_next, opts)
-
-        opts.desc = "Show documentation for what is under cursor"
-        keymap.set("n", "K", vim.lsp.buf.hover, opts)
-
-        opts.desc = "Restart LSP"
-        keymap.set("n", "<leader>rs", ":LspRestart<CR>", opts)
-      end
+      local on_attach = get_common_on_attach()
 
       -- Used to enable autocompletion
       local capabilities = cmp_nvim_lsp.default_capabilities()
@@ -73,72 +76,8 @@ return {
         vim.fn.sign_define(hl, { text = icon, texthl = hl, numhl = "" })
       end
 
-      -- Configure servers
-      local servers = {
-        "html",
-        "cssls",
-        "tailwindcss",
-        "svelte",
-        "lua_ls",
-        "graphql",
-        "emmet_ls",
-        "prismals",
-        "pyright",
-        "gopls",
-        "rust_analyzer",
-        "clangd",
-        "jdtls",
-        "terraformls",
-        "tflint",
-      }
-
-      for _, server in ipairs(servers) do
-        local server_config = {
-          capabilities = capabilities,
-          on_attach = on_attach,
-        }
-
-        -- Server specific configurations
-        if server == "lua_ls" then
-          server_config.settings = {
-            Lua = {
-              diagnostics = {
-                globals = { "vim" },
-              },
-              workspace = {
-                library = {
-                  [vim.fn.expand("$VIMRUNTIME/lua")] = true,
-                  [vim.fn.stdpath("config") .. "/lua"] = true,
-                },
-              },
-            },
-          }
-        elseif server == "emmet_ls" then
-          server_config.filetypes = {
-            "html",
-            "typescriptreact",
-            "javascriptreact",
-            "css",
-            "sass",
-            "scss",
-            "less",
-            "svelte",
-          }
-        end
-
-        lspconfig[server].setup(server_config)
-      end
-
-      -- TypeScript
-      lspconfig["ts_ls"].setup({
-        capabilities = capabilities,
-        on_attach = on_attach,
-        init_options = {
-          preferences = {
-            disableSuggestions = true,
-          },
-        },
-      })
+      -- Manual server configurations are now handled by mason-lspconfig.setup_handlers
+      -- This prevents duplicate configurations and potential conflicts
     end,
   },
 
@@ -178,6 +117,8 @@ return {
           "pyright",
           "gopls",
           "rust_analyzer",
+          "clangd",
+          "jdtls",
           "terraformls",
           "tflint",
         },
@@ -186,15 +127,21 @@ return {
 
       mason_lspconfig.setup_handlers({
         function(server_name)
+          local lspconfig = require("lspconfig")
+          local cmp_nvim_lsp = require("cmp_nvim_lsp")
+          
           lspconfig[server_name].setup({
-            capabilities = capabilities,
-            on_attach = on_attach,
+            capabilities = cmp_nvim_lsp.default_capabilities(),
+            on_attach = get_common_on_attach(),
           })
         end,
         ["lua_ls"] = function()
+          local lspconfig = require("lspconfig")
+          local cmp_nvim_lsp = require("cmp_nvim_lsp")
+          
           lspconfig.lua_ls.setup({
-            capabilities = capabilities,
-            on_attach = on_attach,
+            capabilities = cmp_nvim_lsp.default_capabilities(),
+            on_attach = get_common_on_attach(),
             settings = {
               Lua = {
                 diagnostics = {
@@ -206,6 +153,39 @@ return {
                     [vim.fn.stdpath("config") .. "/lua"] = true,
                   },
                 },
+              },
+            },
+          })
+        end,
+        ["emmet_ls"] = function()
+          local lspconfig = require("lspconfig")
+          local cmp_nvim_lsp = require("cmp_nvim_lsp")
+          
+          lspconfig.emmet_ls.setup({
+            capabilities = cmp_nvim_lsp.default_capabilities(),
+            on_attach = get_common_on_attach(),
+            filetypes = {
+              "html",
+              "typescriptreact",
+              "javascriptreact",
+              "css",
+              "sass",
+              "scss",
+              "less",
+              "svelte",
+            },
+          })
+        end,
+        ["ts_ls"] = function()
+          local lspconfig = require("lspconfig")
+          local cmp_nvim_lsp = require("cmp_nvim_lsp")
+          
+          lspconfig.ts_ls.setup({
+            capabilities = cmp_nvim_lsp.default_capabilities(),
+            on_attach = get_common_on_attach(),
+            init_options = {
+              preferences = {
+                disableSuggestions = true,
               },
             },
           })
