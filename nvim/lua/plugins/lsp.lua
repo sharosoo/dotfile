@@ -184,6 +184,36 @@ return {
         automatic_installation = true,
       })
 
+      mason_lspconfig.setup_handlers({
+        -- Default handler for all servers
+        function(server_name)
+          lspconfig[server_name].setup({
+            capabilities = capabilities,
+            on_attach = on_attach,
+          })
+        end,
+        -- Custom handlers for specific servers
+        ["lua_ls"] = function()
+          lspconfig.lua_ls.setup({
+            capabilities = capabilities,
+            on_attach = on_attach,
+            settings = {
+              Lua = {
+                diagnostics = {
+                  globals = { "vim" },
+                },
+                workspace = {
+                  library = {
+                    [vim.fn.expand("$VIMRUNTIME/lua")] = true,
+                    [vim.fn.stdpath("config") .. "/lua"] = true,
+                  },
+                },
+              },
+            },
+          })
+        end,
+      })
+
       mason_tool_installer.setup({
         ensure_installed = {
           "prettier",
