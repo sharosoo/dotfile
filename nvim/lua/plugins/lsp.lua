@@ -122,7 +122,7 @@ return {
           "terraformls",
           "tflint",
         },
-        automatic_installation = true,
+        automatic_installation = false,
       })
 
       mason_lspconfig.setup_handlers({
