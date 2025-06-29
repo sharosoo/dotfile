@@ -182,6 +182,11 @@ return {
           "tflint",
         },
         automatic_installation = true,
+        handlers = {
+          function(server_name)
+            require("lspconfig")[server_name].setup({})
+          end,
+        },
       })
 
       mason_tool_installer.setup({
