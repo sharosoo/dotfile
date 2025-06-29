@@ -92,6 +92,8 @@ return {
       local mason = require("mason")
       local mason_lspconfig = require("mason-lspconfig")
       local mason_tool_installer = require("mason-tool-installer")
+      local lspconfig = require("lspconfig")
+      local cmp_nvim_lsp = require("cmp_nvim_lsp")
 
       mason.setup({
         ui = {
@@ -123,54 +125,66 @@ return {
           "terraformls",
           "tflint",
         },
-        automatic_installation = false,
+        automatic_installation = true,
       })
       
-      -- Get all installed servers and set them up
-      local servers = mason_lspconfig.get_installed_servers()
-      
-      for _, server_name in ipairs(servers) do
-        local server_config = {
-          capabilities = capabilities,
-          on_attach = on_attach,
-        }
-        
-        -- Server-specific configurations
-        if server_name == "lua_ls" then
-          server_config.settings = {
-            Lua = {
-              diagnostics = {
-                globals = { "vim" },
-              },
-              workspace = {
-                library = {
-                  [vim.fn.expand("$VIMRUNTIME/lua")] = true,
-                  [vim.fn.stdpath("config") .. "/lua"] = true,
+      -- Setup handlers
+      mason_lspconfig.setup_handlers({
+        -- Default handler
+        function(server_name)
+          lspconfig[server_name].setup({
+            capabilities = cmp_nvim_lsp.default_capabilities(),
+            on_attach = get_common_on_attach(),
+          })
+        end,
+        -- Server-specific handlers
+        ["lua_ls"] = function()
+          lspconfig.lua_ls.setup({
+            capabilities = cmp_nvim_lsp.default_capabilities(),
+            on_attach = get_common_on_attach(),
+            settings = {
+              Lua = {
+                diagnostics = {
+                  globals = { "vim" },
+                },
+                workspace = {
+                  library = {
+                    [vim.fn.expand("$VIMRUNTIME/lua")] = true,
+                    [vim.fn.stdpath("config") .. "/lua"] = true,
+                  },
                 },
               },
             },
-          }
-        elseif server_name == "emmet_ls" then
-          server_config.filetypes = {
-            "html",
-            "typescriptreact",
-            "javascriptreact",
-            "css",
-            "sass",
-            "scss",
-            "less",
-            "svelte",
-          }
-        elseif server_name == "ts_ls" then
-          server_config.init_options = {
-            preferences = {
-              disableSuggestions = true,
+          })
+        end,
+        ["emmet_ls"] = function()
+          lspconfig.emmet_ls.setup({
+            capabilities = cmp_nvim_lsp.default_capabilities(),
+            on_attach = get_common_on_attach(),
+            filetypes = {
+              "html",
+              "typescriptreact",
+              "javascriptreact",
+              "css",
+              "sass",
+              "scss",
+              "less",
+              "svelte",
             },
-          }
-        end
-        
-        lspconfig[server_name].setup(server_config)
-      end
+          })
+        end,
+        ["ts_ls"] = function()
+          lspconfig.ts_ls.setup({
+            capabilities = cmp_nvim_lsp.default_capabilities(),
+            on_attach = get_common_on_attach(),
+            init_options = {
+              preferences = {
+                disableSuggestions = true,
+              },
+            },
+          })
+        end,
+      })
 
       mason_tool_installer.setup({
         ensure_installed = {
