@@ -100,7 +100,7 @@ autocmd("FileType", {
 
 -- Terraform file settings
 augroup("TerraformSettings", { clear = true })
-autocmd("BufRead,BufNewFile", {
+autocmd({"BufRead", "BufNewFile"}, {
   group = "TerraformSettings",
   pattern = { "*.tf", "*.tfvars", "*.hcl" },
   callback = function()
