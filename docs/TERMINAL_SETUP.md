@@ -6,11 +6,11 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Ghostty Terminal                         │
 │                    ~/.config/ghostty/config                      │
-│         (Catppuccin Mocha theme, transparency, D2Coding)         │
+│         (GitHub Dark theme, transparency, D2Coding)              │
 ├─────────────────────────────────────────────────────────────────┤
 │                             tmux                                 │
 │                         ~/.tmux.conf                             │
-│              (Catppuccin theme, TPM plugins)                     │
+│              (Catppuccin Latte, TPM plugins)                     │
 ├─────────────────────────────────────────────────────────────────┤
 │                          Fish Shell                              │
 │                    ~/.config/fish/config.fish                    │
@@ -310,10 +310,10 @@ Default prefix: `Ctrl+b`
 
 ### Theme
 
-Catppuccin Mocha (matching Ghostty):
-- Status bar: bottom, dark background
-- Active window: mauve highlight
-- Pane borders: surface0/mauve
+Catppuccin Latte:
+- Status bar: bottom, light background
+- Active window: blue highlight
+- Pane borders: surface0/blue
 
 ### Session Workflow
 
@@ -552,12 +552,4 @@ fisher list
 
 ---
 
-## Ported From
-
-This configuration was ported from zsh with the following source files:
-
-- `~/.zshrc` - Main config
-- `~/.config/zsh/aliases.zsh` - Aliases
-- `~/.config/zsh/completions.zsh` - Completions
-- `~/.config/zsh/environment.zsh` - Environment variables
 - `~/.zprofile` - Custom functions (ghc, ghcd)

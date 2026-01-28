@@ -12,7 +12,6 @@ dotfile/
 ├── ghostty/                # Ghostty 터미널
 ├── starship/               # Starship 프롬프트
 ├── opencode/               # OpenCode 설정
-├── zsh/                    # Zsh 설정
 ├── nvim/                   # Neovim 설정
 ├── tmux/                   # Tmux 설정
 └── docs/                   # 문서
