@@ -51,6 +51,13 @@ command = /usr/bin/fish
 keybind = ctrl+g=unbind
 keybind = ctrl+y=unbind
 
+keybind = ctrl+shift+m=toggle_maximize
+keybind = ctrl+shift+f=toggle_fullscreen
+keybind = ctrl+alt+up=resize_split:up,10
+keybind = ctrl+alt+down=resize_split:down,10
+keybind = ctrl+alt+left=resize_split:left,10
+keybind = ctrl+alt+right=resize_split:right,10
+
 # Systemd integration - keep running for fast window creation
 quit-after-last-window-closed = true
 quit-after-last-window-closed-delay = 5m

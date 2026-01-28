@@ -10,6 +10,7 @@ dotfile/
 ├── .env.example            # 환경변수 템플릿
 ├── fish/                   # Fish shell
 ├── ghostty/                # Ghostty 터미널
+├── hypr/                   # Hyprland 설정
 ├── starship/               # Starship 프롬프트
 ├── opencode/               # OpenCode 설정
 ├── zsh/                    # Zsh 설정
@@ -73,6 +74,60 @@ journalctl -a -f --user -u app-com.mitchellh.ghostty.service
 
 # 설정 리로드
 systemctl reload --user app-com.mitchellh.ghostty.service
+```
+
+## Hyprland
+
+`~/.config/hypr/hyprland.conf` 사용.
+
+```bash
+sudo add-apt-repository universe
+sudo apt-get update
+sudo apt-get install -y hyprland
+```
+
+install.sh로 설치:
+
+```bash
+INSTALL_HYPRLAND=1 ./install.sh
+```
+
+실행:
+
+```bash
+# 로그인 화면에서 Hyprland 세션 선택
+
+# TTY에서 직접 실행
+start-hyprland
+```
+
+기본 단축키 (dotfile 기준):
+
+| 키 | 동작 |
+|----|------|
+| `Super+Enter` | Ghostty 새 창 |
+| `Super+Q` | 창 닫기 |
+| `Super+V` | 플로팅 토글 |
+| `Super+S` | 스플릿 토글 |
+| `Super+H/J/K/L` | 포커스 이동 |
+| `Super+Shift+H/J/K/L` | 창 이동 |
+| `Super+1..5` | 워크스페이스 이동 |
+| `Super+Shift+1..5` | 창을 워크스페이스로 이동 |
+
+상세 설정: `docs/DESKTOP_SETUP.md`
+
+NVIDIA 요구사항:
+- xorg-xwayland >= 24.1
+- wayland-protocols >= 1.34
+- NVIDIA driver >= 555
+
+```
+# /etc/modprobe.d/nvidia.conf
+options nvidia_drm modeset=1
+```
+
+```bash
+ln -sf ~/dotfiles/hypr/hyprland.conf ~/.config/hypr/hyprland.conf
 ```
 
 ## 환경변수
@@ -190,7 +245,15 @@ Ghostty에서 Ctrl+G, Ctrl+Y가 작동하려면:
 # ~/.config/ghostty/config
 keybind = ctrl+g=unbind
 keybind = ctrl+y=unbind
+keybind = ctrl+shift+m=toggle_maximize
+keybind = ctrl+shift+f=toggle_fullscreen
+keybind = ctrl+alt+up=resize_split:up,10
+keybind = ctrl+alt+down=resize_split:down,10
+keybind = ctrl+alt+left=resize_split:left,10
+keybind = ctrl+alt+right=resize_split:right,10
 ```
+
+창 최소화는 Ghostty 액션이 없음. WM/DE 단축키 사용.
 
 ---
 

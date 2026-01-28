@@ -56,22 +56,19 @@
 **Config**: `~/.config/ghostty/config`
 
 ```ini
-# Theme & Appearance
-theme = Catppuccin Mocha
 background-opacity = 0.7
+background = 0d1117
+foreground = c9d1d9
+cursor-color = 58a6ff
+selection-background = 264f78
+selection-foreground = ffffff
 font-family = D2Coding Nerd Font
 font-size = 12
 window-padding-x = 8
 window-padding-y = 8
-
-# KDE Plasma Integration
-window-decoration = server
-gtk-titlebar = true
-
-# Shell
+window-decoration = none
+gtk-titlebar = false
 command = /usr/bin/fish
-
-# Keybind passthrough for fish-ai
 keybind = ctrl+g=unbind
 keybind = ctrl+y=unbind
 ```
@@ -94,15 +91,27 @@ keybind = ctrl+y=unbind   # Pass Ctrl+Y to fish (fish-ai: autocomplete/fix)
 
 **Verify keybindings**: `ghostty +list-keybinds | grep ctrl`
 
+### Window Actions
+
+Ghostty 자체에는 "minimize" 액션이 없음. 창 최소화는 WM/DE 단축키 사용.
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+Shift+M` | Toggle maximize |
+| `Ctrl+Shift+F` | Toggle fullscreen |
+| `Ctrl+Alt+Arrow` | Resize split (10px) |
+
 ### Key Settings
 
 | Setting | Value | Description |
 |---------|-------|-------------|
-| `theme` | Catppuccin Mocha | Dark theme with pastel colors |
-| `background-opacity` | 0.7 | 70% opacity for blur effect |
+| `background` | `#0d1117` | Dark background |
+| `foreground` | `#c9d1d9` | Text color |
+| `cursor-color` | `#58a6ff` | Blue cursor |
+| `background-opacity` | 0.7 | 70% opacity |
 | `font-family` | D2Coding Nerd Font | Monospace font with Korean support + icons |
 | `command` | `/usr/bin/fish` | Launch fish shell by default |
-| `window-decoration` | `none` | No title bar - fully transparent window |
+| `window-decoration` | `none` | No title bar |
 | `gtk-titlebar` | `false` | Disable GTK title bar |
 
 ### Title Bar Configuration
@@ -117,6 +126,63 @@ If you need the title bar for window management:
 ```ini
 window-decoration = none
 gtk-titlebar = false
+```
+
+---
+
+## Hyprland
+
+**Config**: `~/.config/hypr/hyprland.conf`
+
+### Install (Ubuntu)
+
+```bash
+sudo add-apt-repository universe
+sudo apt-get update
+sudo apt-get install -y hyprland
+```
+
+install.sh로 설치:
+
+```bash
+INSTALL_HYPRLAND=1 ./install.sh
+```
+
+### More
+
+Full desktop setup guide: `docs/DESKTOP_SETUP.md`
+
+### NVIDIA Requirements
+
+- xorg-xwayland >= 24.1
+- wayland-protocols >= 1.34
+- NVIDIA driver >= 555
+
+```
+# /etc/modprobe.d/nvidia.conf
+options nvidia_drm modeset=1
+```
+
+### Keybinds (defaults in this dotfile)
+
+| Key | Action |
+|-----|--------|
+| `Super+Enter` | Ghostty new window |
+| `Super+Q` | Close window |
+| `Super+V` | Toggle floating |
+| `Super+S` | Toggle split |
+| `Super+H/J/K/L` | Focus move |
+| `Super+Shift+H/J/K/L` | Move window |
+| `Super+1..5` | Switch workspace |
+| `Super+Shift+1..5` | Move window to workspace |
+
+### Run
+
+```bash
+# Display manager에서 Hyprland 세션 선택
+
+# TTY에서 직접 실행
+start-hyprland
 ```
 
 ---
