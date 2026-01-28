@@ -195,17 +195,17 @@ SELECT * FROM pg_indexes WHERE tablename = 'my_table';
 
 ## 🔧 환경 변수 활용
 
-`.zshrc` 또는 `.bashrc`에 데이터베이스 연결 정보 설정:
+Fish에서 데이터베이스 연결 정보 설정:
 
-```bash
+```fish
 # 개발 환경
-export DEV_DB_URL="postgresql://dev:dev123@localhost:5432/dev_db"
+set -gx DEV_DB_URL "postgresql://dev:dev123@localhost:5432/dev_db"
 
-# 테스트 환경  
-export TEST_DB_URL="sqlite:///tmp/test.db"
+# 테스트 환경
+set -gx TEST_DB_URL "sqlite:///tmp/test.db"
 
 # 프로덕션 (주의!)
-export PROD_DB_URL="postgresql://prod_user:$PROD_PASSWORD@prod-server:5432/prod_db"
+set -gx PROD_DB_URL "postgresql://prod_user:$PROD_PASSWORD@prod-server:5432/prod_db"
 ```
 
 Neovim에서 사용:

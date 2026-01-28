@@ -17,7 +17,6 @@ fzf
 httpie
 
 # Development Tools
-neovim
 tmux
 tig
 hub
