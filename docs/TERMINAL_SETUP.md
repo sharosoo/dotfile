@@ -102,6 +102,22 @@ keybind = ctrl+y=unbind   # Pass Ctrl+Y to fish (fish-ai: autocomplete/fix)
 | `background-opacity` | 0.7 | 70% opacity for blur effect |
 | `font-family` | D2Coding Nerd Font | Monospace font with Korean support + icons |
 | `command` | `/usr/bin/fish` | Launch fish shell by default |
+| `window-decoration` | `none` | No title bar - fully transparent window |
+| `gtk-titlebar` | `false` | Disable GTK title bar |
+
+### Title Bar Configuration
+
+**Note**: The title bar is hidden (`window-decoration = none`, `gtk-titlebar = false`) for a clean, fully transparent look on KDE Plasma Wayland. This provides a seamless integration with the desktop environment.
+
+If you need the title bar for window management:
+- Set `window-decoration = server` (KDE title bar, not transparent)
+- Set `gtk-titlebar = true` (GTK title bar)
+
+**Current configuration** (no title bar):
+```ini
+window-decoration = none
+gtk-titlebar = false
+```
 
 ---
 
