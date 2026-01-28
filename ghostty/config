@@ -4,12 +4,11 @@
 background-opacity = 0.7
 
 
-# No decorations - clean transparent look
-# server = KDE title bar (not transparent)
+# Window decorations (title bar with close/minimize/maximize)
+# server = KDE title bar
 # client = GTK title bar
-# none = no title bar (fully transparent)
-window-decoration = none
-gtk-titlebar = false
+window-decoration = server
+gtk-titlebar = true
 
 # Theme - GitHub Dark style (black/gray with blue tint)
 background = 0d1117

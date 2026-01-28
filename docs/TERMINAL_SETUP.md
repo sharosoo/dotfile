@@ -66,8 +66,8 @@ font-family = D2Coding Nerd Font
 font-size = 12
 window-padding-x = 8
 window-padding-y = 8
-window-decoration = none
-gtk-titlebar = false
+window-decoration = server
+gtk-titlebar = true
 command = /usr/bin/fish
 keybind = ctrl+g=unbind
 keybind = ctrl+y=unbind
@@ -111,78 +111,15 @@ Ghostty 자체에는 "minimize" 액션이 없음. 창 최소화는 WM/DE 단축�
 | `background-opacity` | 0.7 | 70% opacity |
 | `font-family` | D2Coding Nerd Font | Monospace font with Korean support + icons |
 | `command` | `/usr/bin/fish` | Launch fish shell by default |
-| `window-decoration` | `none` | No title bar |
-| `gtk-titlebar` | `false` | Disable GTK title bar |
+| `window-decoration` | `server` | KDE title bar |
+| `gtk-titlebar` | `true` | Enable GTK title bar |
 
 ### Title Bar Configuration
 
-**Note**: The title bar is hidden (`window-decoration = none`, `gtk-titlebar = false`) for a clean, fully transparent look on KDE Plasma Wayland. This provides a seamless integration with the desktop environment.
-
-If you need the title bar for window management:
-- Set `window-decoration = server` (KDE title bar, not transparent)
-- Set `gtk-titlebar = true` (GTK title bar)
-
-**Current configuration** (no title bar):
+**Current configuration** (title bar enabled):
 ```ini
-window-decoration = none
-gtk-titlebar = false
-```
-
----
-
-## Hyprland
-
-**Config**: `~/.config/hypr/hyprland.conf`
-
-### Install (Ubuntu)
-
-```bash
-sudo add-apt-repository universe
-sudo apt-get update
-sudo apt-get install -y hyprland
-```
-
-install.sh로 설치:
-
-```bash
-INSTALL_HYPRLAND=1 ./install.sh
-```
-
-### More
-
-Full desktop setup guide: `docs/DESKTOP_SETUP.md`
-
-### NVIDIA Requirements
-
-- xorg-xwayland >= 24.1
-- wayland-protocols >= 1.34
-- NVIDIA driver >= 555
-
-```
-# /etc/modprobe.d/nvidia.conf
-options nvidia_drm modeset=1
-```
-
-### Keybinds (defaults in this dotfile)
-
-| Key | Action |
-|-----|--------|
-| `Super+Enter` | Ghostty new window |
-| `Super+Q` | Close window |
-| `Super+V` | Toggle floating |
-| `Super+S` | Toggle split |
-| `Super+H/J/K/L` | Focus move |
-| `Super+Shift+H/J/K/L` | Move window |
-| `Super+1..5` | Switch workspace |
-| `Super+Shift+1..5` | Move window to workspace |
-
-### Run
-
-```bash
-# Display manager에서 Hyprland 세션 선택
-
-# TTY에서 직접 실행
-start-hyprland
+window-decoration = server
+gtk-titlebar = true
 ```
 
 ---

@@ -661,29 +661,6 @@ install_oh_my_opencode() {
     log_success "Oh-My-OpenCode installed. Run 'opencode auth login' to authenticate."
 }
 
-install_hyprland() {
-    if [[ "${INSTALL_HYPRLAND:-}" != "1" ]]; then
-        log_info "Skipping Hyprland (set INSTALL_HYPRLAND=1 to install)."
-        return
-    fi
-    
-    if [[ "$PACKAGE_MANAGER" != "apt" ]]; then
-        log_warning "Hyprland install is only scripted for apt. Install manually."
-        return
-    fi
-    
-    log_info "Installing Hyprland..."
-    if command -v add-apt-repository &> /dev/null; then
-        sudo add-apt-repository universe
-    else
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common
-        sudo add-apt-repository universe
-    fi
-    sudo apt-get update
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y hyprland
-    log_success "Hyprland installed."
-}
-
 # Install Neovim 0.10+
 install_neovim() {
     if command -v nvim &> /dev/null; then
@@ -741,7 +718,6 @@ install_linux_specific_tools() {
         install_pnpm || failed_tools+=("pnpm")
         install_opencode || failed_tools+=("opencode")
         install_oh_my_opencode || failed_tools+=("oh-my-opencode")
-        install_hyprland || failed_tools+=("hyprland")
         
         # Report results
         if [[ ${#failed_tools[@]} -eq 0 ]]; then
@@ -762,7 +738,6 @@ create_directories() {
     mkdir -p ~/.config/zsh
     mkdir -p ~/.config/fish
     mkdir -p ~/.config/ghostty
-    mkdir -p ~/.config/hypr
     mkdir -p ~/.config/opencode
     mkdir -p ~/.config/nvim
     mkdir -p ~/.local/bin
@@ -825,10 +800,6 @@ link_configs() {
         ln -sf "$dotfiles_dir/ghostty/config" ~/.config/ghostty/config
     fi
 
-    # Hyprland configuration
-    if [[ -f "$dotfiles_dir/hypr/hyprland.conf" ]]; then
-        ln -sf "$dotfiles_dir/hypr/hyprland.conf" ~/.config/hypr/hyprland.conf
-    fi
     
     # Starship configuration
     if [[ -f "$dotfiles_dir/starship/starship.toml" ]]; then
