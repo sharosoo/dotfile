@@ -1,0 +1,11 @@
+[fish-ai]
+configuration = azure
+keymap_1 = ctrl-g
+keymap_2 = ctrl-y
+language = Korean
+
+[azure]
+provider = azure
+server = https://YOUR_AZURE_ENDPOINT.openai.azure.com
+model = gpt-4
+api_key = YOUR_API_KEY_HERE

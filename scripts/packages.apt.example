@@ -1,0 +1,53 @@
+# Example package list for Debian/Ubuntu-based systems (using apt)
+# Add or remove packages as needed for your setup.
+
+# Core Tools
+git
+curl
+wget
+jq
+htop
+tree
+
+# Modern CLI Tools
+ripgrep
+fd-find
+fzf
+zoxide
+tldr
+exa
+bat
+
+# Development Tools
+neovim
+tmux
+gh
+
+# Language Support
+python3
+nodejs
+golang
+rustc
+
+# Security Tools
+gnupg
+pass
+openssh-client
+openssl
+
+# System Tools
+coreutils
+findutils
+gawk
+watch
+
+# Network Tools
+nmap
+telnet
+mtr
+iperf3
+
+# Archive Tools
+p7zip-full
+unrar
+unzip
