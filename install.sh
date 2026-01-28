@@ -94,7 +94,7 @@ backup_config() {
     mkdir -p "$backup_dir"
     
     # Backup existing files
-    for file in ~/.zshrc ~/.zprofile ~/.config/zsh ~/.config/nvim; do
+    for file in ~/.config/nvim; do
         if [[ -e "$file" ]]; then
             log_info "Backing up $file"
             cp -r "$file" "$backup_dir/"
@@ -118,36 +118,6 @@ install_homebrew_macos() {
     else
         log_info "Homebrew already installed"
     fi
-}
-
-# Install ZSH via system package manager if needed
-install_zsh() {
-    if command -v zsh &> /dev/null; then
-        log_info "ZSH already available on system"
-        return
-    fi
-    
-    log_info "Installing ZSH via system package manager..."
-    
-    if [[ "$OS" == "linux" ]]; then
-        if [[ "$PACKAGE_MANAGER" == "unknown" ]]; then
-            log_error "Cannot install ZSH. Unknown package manager."
-            exit 1
-        fi
-        log_info "Using '$PACKAGE_MANAGER' to install zsh."
-        case "$PACKAGE_MANAGER" in
-            "apt")    sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y zsh ;;
-            "yum")    sudo yum install -y zsh ;;
-            "dnf")    sudo dnf install -y zsh ;;
-            "pacman") sudo pacman -S --noconfirm zsh ;;
-            "zypper") sudo zypper install -y zsh ;;
-        esac
-    elif [[ "$OS" == "macos" ]]; then
-         log_error "ZSH not found on macOS. Please install it via Homebrew or manually."
-         exit 1
-    fi
-    
-    log_success "ZSH installed via system package manager"
 }
 
 # Install Fish shell via system package manager if needed
@@ -735,7 +705,6 @@ install_linux_specific_tools() {
 create_directories() {
     log_info "Creating directories..."
     
-    mkdir -p ~/.config/zsh
     mkdir -p ~/.config/fish
     mkdir -p ~/.config/ghostty
     mkdir -p ~/.config/opencode
@@ -752,32 +721,6 @@ link_configs() {
     local dotfiles_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     
     log_info "Linking configuration files from $dotfiles_dir..."
-    
-    # ZSH configurations
-    # Remove existing .zshrc if it's not a symlink or points to wrong location
-    if [[ -e ~/.zshrc ]] && [[ ! -L ~/.zshrc || "$(readlink ~/.zshrc)" != "$dotfiles_dir/zsh/.zshrc" ]]; then
-        log_warning "Existing ~/.zshrc found (not a proper symlink). Backing up..."
-        mv ~/.zshrc ~/.zshrc.bak
-    fi
-    ln -sf "$dotfiles_dir/zsh/.zshrc" ~/.zshrc
-    
-    # Same for .zprofile
-    if [[ -e ~/.zprofile ]] && [[ ! -L ~/.zprofile || "$(readlink ~/.zprofile)" != "$dotfiles_dir/zsh/.zprofile" ]]; then
-        log_warning "Existing ~/.zprofile found (not a proper symlink). Backing up..."
-        mv ~/.zprofile ~/.zprofile.bak
-    fi
-    ln -sf "$dotfiles_dir/zsh/.zprofile" ~/.zprofile
-    
-    # Same for .zshenv (important for Warp SSH compatibility)
-    if [[ -e ~/.zshenv ]] && [[ ! -L ~/.zshenv || "$(readlink ~/.zshenv)" != "$dotfiles_dir/zsh/.zshenv" ]]; then
-        log_warning "Existing ~/.zshenv found (not a proper symlink). Backing up..."
-        mv ~/.zshenv ~/.zshenv.bak
-    fi
-    ln -sf "$dotfiles_dir/zsh/.zshenv" ~/.zshenv
-    
-    ln -sf "$dotfiles_dir/zsh/aliases.zsh" ~/.config/zsh/aliases.zsh
-    ln -sf "$dotfiles_dir/zsh/completions.zsh" ~/.config/zsh/completions.zsh
-    ln -sf "$dotfiles_dir/zsh/environment.zsh" ~/.config/zsh/environment.zsh
     
     # Fish shell configurations
     if [[ -d "$dotfiles_dir/fish" ]]; then
@@ -841,12 +784,6 @@ link_configs() {
     log_success "Configuration files linked"
 }
 
-# Remove Amazon Q related content from .zshrc
-# NOTE: This function is deprecated as .zshrc is now managed by dotfiles
-remove_amazon_q_from_zshrc() {
-    log_info "Skipping Amazon Q removal - .zshrc is managed by dotfiles"
-}
-
 # Install Neovim plugins
 install_nvim_plugins() {
     log_info "Installing Neovim plugins... (Requires nvim to be in PATH)"
@@ -858,30 +795,27 @@ install_nvim_plugins() {
     fi
 }
 
-# Set ZSH as default shell
 set_default_shell() {
-    local zsh_path=$(which zsh)
+    local fish_path=$(which fish)
 
-    if [[ -z "$zsh_path" ]]; then
-        log_error "zsh not found in PATH. Cannot set as default shell."
+    if [[ -z "$fish_path" ]]; then
+        log_error "fish not found in PATH. Cannot set as default shell."
         return 1
     fi
     
-    log_info "Found zsh at: $zsh_path"
+    log_info "Found fish at: $fish_path"
 
-    # Add zsh to /etc/shells if not already present
-    if ! grep -q "^$zsh_path$" /etc/shells 2>/dev/null; then
-        log_info "Adding $zsh_path to /etc/shells..."
-        echo "$zsh_path" | sudo tee -a /etc/shells > /dev/null
+    if ! grep -q "^$fish_path$" /etc/shells 2>/dev/null; then
+        log_info "Adding $fish_path to /etc/shells..."
+        echo "$fish_path" | sudo tee -a /etc/shells > /dev/null
     fi
     
-    # Change default shell if not already set
-    if [[ "$SHELL" != "$zsh_path" ]]; then
-        log_info "Setting ZSH as default shell..."
-        chsh -s "$zsh_path"
-        log_success "Default shell set to ZSH: $zsh_path"
+    if [[ "$SHELL" != "$fish_path" ]]; then
+        log_info "Setting Fish as default shell..."
+        chsh -s "$fish_path"
+        log_success "Default shell set to Fish: $fish_path"
     else
-        log_info "ZSH is already the default shell"
+        log_info "Fish is already the default shell"
     fi
 }
 
@@ -906,12 +840,6 @@ EOF
     fi
 }
 
-# Warp terminal setup
-setup_warp() {
-    log_info "Setting up Warp terminal compatibility..."
-    mkdir -p ~/.warp
-    log_success "Warp terminal setup complete"
-}
 
 # Main installation
 main() {
@@ -939,7 +867,6 @@ main() {
         install_homebrew_macos
     fi
     
-    install_zsh
     install_packages
     
     # Install Linux-specific tools if on Linux
@@ -947,11 +874,9 @@ main() {
     
     create_directories
     link_configs
-    remove_amazon_q_from_zshrc # Call the new function here
     install_nvim_plugins
     set_default_shell
     create_env_template
-    setup_warp
     
     echo
     log_success "Installation completed!"
