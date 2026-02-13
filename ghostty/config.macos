@@ -1,0 +1,56 @@
+# macOS-only Ghostty overrides
+# Loaded after ~/.config/ghostty/config, but keep everything explicit here to avoid
+# platform override issues when this file is the primary loaded config.
+
+background-opacity = 0.7
+
+# Theme - GitHub Dark style (black/gray with blue tint)
+background = 0d1117
+foreground = c9d1d9
+cursor-color = 58a6ff
+selection-background = 264f78
+selection-foreground = ffffff
+
+# ANSI colors
+palette = 0=#484f58
+palette = 1=#ff7b72
+palette = 2=#3fb950
+palette = 3=#d29922
+palette = 4=#58a6ff
+palette = 5=#bc8cff
+palette = 6=#39c5cf
+palette = 7=#b1bac4
+palette = 8=#6e7681
+palette = 9=#ffa198
+palette = 10=#56d364
+palette = 11=#e3b341
+palette = 12=#79c0ff
+palette = 13=#d2a8ff
+palette = 14=#56d4dd
+palette = 15=#f0f6fc
+
+# Font settings
+font-family = D2Coding Nerd Font
+font-size = 12
+
+# Additional recommended settings for smooth experience
+window-padding-x = 8
+window-padding-y = 8
+
+# Shell configuration
+command = fish
+
+# Pass ctrl keys to shell (for fish-ai)
+keybind = ctrl+g=unbind
+keybind = ctrl+y=unbind
+
+keybind = ctrl+shift+m=toggle_maximize
+keybind = ctrl+shift+f=toggle_fullscreen
+keybind = ctrl+alt+up=resize_split:up,10
+keybind = ctrl+alt+down=resize_split:down,10
+keybind = ctrl+alt+left=resize_split:left,10
+keybind = ctrl+alt+right=resize_split:right,10
+
+# Systemd integration - keep running for fast window creation
+quit-after-last-window-closed = true
+quit-after-last-window-closed-delay = 5m
