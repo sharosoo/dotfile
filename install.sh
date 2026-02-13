@@ -127,7 +127,7 @@ install_fish() {
         return
     fi
     
-    log_info "Installing Fish shell via system package manager..."
+    log_info "Installing Fish shell..."
     
     if [[ "$OS" == "linux" ]]; then
         if [[ "$PACKAGE_MANAGER" == "unknown" ]]; then
@@ -143,11 +143,15 @@ install_fish() {
             "zypper") sudo zypper install -y fish ;;
         esac
     elif [[ "$OS" == "macos" ]]; then
-         log_error "Fish not found on macOS. Please install it via Homebrew or manually."
-         exit 1
+        if ! command -v brew &> /dev/null; then
+            log_error "Homebrew is not installed. Cannot install fish."
+            exit 1
+        fi
+        log_info "Installing fish via Homebrew..."
+        brew install fish
     fi
     
-    log_success "Fish shell installed via system package manager"
+    log_success "Fish shell installed"
 }
 
 # Install packages based on OS
@@ -239,20 +243,64 @@ install_eza() {
 
 # Install bat (cat replacement)
 install_bat() {
-    if command -v bat &> /dev/null; then
-        log_info "bat already installed."
+    local bat_path=""
+    local batcat_path=""
+    bat_path="$(command -v bat || true)"
+    batcat_path="$(command -v batcat || true)"
+
+    if [[ -n "$bat_path" && -n "$batcat_path" ]]; then
+        log_info "bat and batcat are already installed."
         return
     fi
-    log_info "Installing bat..."
-    # Using official recommended installation for Debian/Ubuntu
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y bat
-    # Create symlink for 'batcat' to 'bat' if needed
-    if ! command -v bat &> /dev/null && command -v batcat &> /dev/null; then
-        log_info "Creating symlink for batcat to bat."
+
+    # If one of them exists, just create the missing shim.
+    if [[ -n "$bat_path" && -z "$batcat_path" ]]; then
         mkdir -p ~/.local/bin
-        ln -s "$(which batcat)" ~/.local/bin/bat
+        ln -sf "$bat_path" "$HOME/.local/bin/batcat"
+        log_success "batcat shim created from bat."
+        return
+    elif [[ -z "$bat_path" && -n "$batcat_path" ]]; then
+        mkdir -p ~/.local/bin
+        ln -sf "$batcat_path" "$HOME/.local/bin/bat"
+        log_success "bat shim created from batcat."
+        return
     fi
-    log_success "bat installed."
+
+    # Install package when neither command exists.
+    log_info "Installing bat..."
+    if [[ "$OS" == "linux" ]]; then
+        # Debian/Ubuntu compatibility
+        if command -v apt-get >/dev/null 2>&1; then
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y bat
+        else
+            log_error "No supported package manager found for bat installation."
+            return 1
+        fi
+    elif [[ "$OS" == "macos" ]]; then
+        brew install bat
+    fi
+
+    # If installation succeeded, ensure both names are available.
+    bat_path="$(command -v bat || true)"
+    batcat_path="$(command -v batcat || true)"
+    if [[ -n "$bat_path" && -z "$batcat_path" ]]; then
+        mkdir -p ~/.local/bin
+        ln -sf "$bat_path" "$HOME/.local/bin/batcat"
+    fi
+    if [[ -z "$bat_path" && -n "$batcat_path" ]]; then
+        mkdir -p ~/.local/bin
+        ln -sf "$batcat_path" "$HOME/.local/bin/bat"
+    fi
+
+    # Refresh command lookup after shims are created
+    hash -r
+
+    if command -v bat &> /dev/null && command -v batcat &> /dev/null; then
+        log_success "bat and batcat are ready."
+    else
+        log_error "Failed to provision bat/batcat."
+        return 1
+    fi
 }
 
 # Install zoxide (cd replacement)
@@ -680,7 +728,6 @@ install_linux_specific_tools() {
         install_yq || failed_tools+=("yq")
         install_prettyping || failed_tools+=("prettyping")
         install_antidote || failed_tools+=("antidote")
-        install_fish || failed_tools+=("fish")
         install_starship || failed_tools+=("starship")
         install_fisher || failed_tools+=("fisher")
         install_tpm || failed_tools+=("tpm")
@@ -712,6 +759,10 @@ create_directories() {
     mkdir -p ~/.local/bin
     mkdir -p ~/.cache
     mkdir -p ~/workspaces
+
+    if [[ "$OS" == "macos" ]]; then
+        mkdir -p "$HOME/Library/Application Support/com.mitchellh.ghostty"
+    fi
     
     log_success "Directories created"
 }
@@ -741,6 +792,16 @@ link_configs() {
     # Ghostty configuration
     if [[ -f "$dotfiles_dir/ghostty/config" ]]; then
         ln -sf "$dotfiles_dir/ghostty/config" ~/.config/ghostty/config
+
+        if [[ "$OS" == "macos" ]]; then
+            mkdir -p "$HOME/Library/Application Support/com.mitchellh.ghostty"
+            if [[ -f "$dotfiles_dir/ghostty/config.macos" ]]; then
+                ln -sf "$dotfiles_dir/ghostty/config.macos" "$HOME/Library/Application Support/com.mitchellh.ghostty/config"
+            else
+                log_warning "Ghostty macOS override config not found: $dotfiles_dir/ghostty/config.macos"
+                ln -sf "$dotfiles_dir/ghostty/config" "$HOME/Library/Application Support/com.mitchellh.ghostty/config"
+            fi
+        fi
     fi
 
     
@@ -869,6 +930,9 @@ main() {
     
     install_packages
     
+    # Install Fish shell (required for Fisher and shell defaults)
+    install_fish
+
     # Install Linux-specific tools if on Linux
     install_linux_specific_tools
     
@@ -882,7 +946,7 @@ main() {
     log_success "Installation completed!"
     echo
     echo "Next steps:"
-    echo "1. Restart your terminal or run: source ~/.zshrc"
+    echo "1. Restart your terminal or run: source ~/.config/fish/config.fish"
     echo "2. To use Fish shell, run: chsh -s $(which fish)"
     echo "3. For Linux, ensure your package list at 'scripts/packages.<distro>' is up-to-date."
     echo "4. Configure your API keys in ~/.env.local"

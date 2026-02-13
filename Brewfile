@@ -3,13 +3,6 @@
 #
 # Install with: brew bundle
 
-# Taps
-tap "homebrew/bundle"
-tap "homebrew/core"
-tap "homebrew/cask"
-tap "homebrew/cask-fonts"
-tap "homebrew/services"
-
 # Core Tools
 brew "git"
 brew "curl"
@@ -21,6 +14,7 @@ brew "tree"
 # Modern CLI Tools
 brew "eza"          # Modern replacement for ls
 brew "bat"          # Cat with syntax highlighting
+brew "fish"         # Fish shell
 brew "ripgrep"      # Fast grep alternative
 brew "fd"           # Fast find alternative
 brew "fzf"          # Fuzzy finder
@@ -94,7 +88,7 @@ brew "iperf3"
 
 # Archive Tools
 brew "p7zip"
-brew "unrar"
+brew "unar"
 brew "unzip"
 
 # Media Tools

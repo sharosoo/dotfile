@@ -53,10 +53,10 @@
 
 ## Ghostty Terminal
 
-**Config**: `~/.config/ghostty/config`
+**Config**: `~/.config/ghostty/config` (+ `~/.config/ghostty/config.macos` on macOS override)
 
 ```ini
-background-opacity = 0.7
+background-opacity = 1.0
 background = 0d1117
 foreground = c9d1d9
 cursor-color = 58a6ff
@@ -68,7 +68,7 @@ window-padding-x = 8
 window-padding-y = 8
 window-decoration = server
 gtk-titlebar = true
-command = /usr/bin/fish
+command = fish
 keybind = ctrl+g=unbind
 keybind = ctrl+y=unbind
 ```
@@ -108,9 +108,9 @@ Ghostty 자체에는 "minimize" 액션이 없음. 창 최소화는 WM/DE 단축�
 | `background` | `#0d1117` | Dark background |
 | `foreground` | `#c9d1d9` | Text color |
 | `cursor-color` | `#58a6ff` | Blue cursor |
-| `background-opacity` | 0.7 | 70% opacity |
+| `background-opacity` | 1.0 | 100% opacity (Linux/공통) <br>macOS는 `ghostty/config.macos`에서 0.7로 오버라이드 |
 | `font-family` | D2Coding Nerd Font | Monospace font with Korean support + icons |
-| `command` | `/usr/bin/fish` | Launch fish shell by default |
+| `command` | `fish` | Launch fish shell by default |
 | `window-decoration` | `server` | KDE title bar |
 | `gtk-titlebar` | `true` | Enable GTK title bar |
 
