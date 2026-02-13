@@ -158,8 +158,6 @@ detect_extensions = []
 
 [python]
 python_binary = [
-    ["/usr/bin/python3"],
-    ["/opt/homebrew/bin/python3"],
     ["python3"],
     ["python"],
 ]
