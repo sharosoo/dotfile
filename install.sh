@@ -767,10 +767,34 @@ create_directories() {
     log_success "Directories created"
 }
 
+# Resolve fish executable path for Ghostty
+resolve_fish_command() {
+    if [[ -x /opt/homebrew/bin/fish ]]; then
+        echo /opt/homebrew/bin/fish
+        return 0
+    fi
+
+    if [[ -x /usr/local/bin/fish ]]; then
+        echo /usr/local/bin/fish
+        return 0
+    fi
+
+    if [[ -x "$HOME/.local/bin/fish" ]]; then
+        echo "$HOME/.local/bin/fish"
+        return 0
+    fi
+
+    if command -v fish >/dev/null 2>&1; then
+        command -v fish
+        return 0
+    fi
+
+    echo fish
+}
+
 # Link configuration files
 link_configs() {
     local dotfiles_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local ghostty_command=""
     local ghostty_macos_config="$HOME/Library/Application Support/com.mitchellh.ghostty/config"
     
     log_info "Linking configuration files from $dotfiles_dir..."
@@ -798,22 +822,19 @@ link_configs() {
         if [[ "$OS" == "macos" ]]; then
             mkdir -p "$HOME/Library/Application Support/com.mitchellh.ghostty"
             if [[ -f "$dotfiles_dir/ghostty/config.macos" ]]; then
-                if [[ -x /opt/homebrew/bin/fish ]]; then
-                    ghostty_command="/opt/homebrew/bin/fish"
-                elif [[ -x /usr/local/bin/fish ]]; then
-                    ghostty_command="/usr/local/bin/fish"
-                elif command -v fish >/dev/null 2>&1; then
-                    ghostty_command="$(command -v fish)"
-                else
-                    ghostty_command="fish"
-                fi
+                local ghostty_command
+                local ghostty_tmp_config
+                ghostty_command="$(resolve_fish_command)"
+                ghostty_tmp_config="$(mktemp)"
 
-                rm -f "$ghostty_macos_config"
                 awk -v cmd="$ghostty_command" '
                     /^command[[:space:]]*=/{ print "command = " cmd; found=1; next }
                     { print }
                     END { if (!found) print "command = " cmd }
-                ' "$dotfiles_dir/ghostty/config.macos" > "$ghostty_macos_config"
+                ' "$dotfiles_dir/ghostty/config.macos" > "$ghostty_tmp_config"
+
+                chmod 600 "$ghostty_tmp_config"
+                mv -f "$ghostty_tmp_config" "$ghostty_macos_config"
             else
                 log_warning "Ghostty macOS override config not found: $dotfiles_dir/ghostty/config.macos"
                 ln -sf "$dotfiles_dir/ghostty/config" "$HOME/Library/Application Support/com.mitchellh.ghostty/config"
