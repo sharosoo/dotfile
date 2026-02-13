@@ -2,7 +2,7 @@
 # Loaded after ~/.config/ghostty/config, but keep everything explicit here to avoid
 # platform override issues when this file is the primary loaded config.
 
-background-opacity = 0.4
+background-opacity = 0.7
 
 # Theme - GitHub Dark style (black/gray with blue tint)
 background = 0d1117
