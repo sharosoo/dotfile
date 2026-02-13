@@ -808,6 +808,7 @@ link_configs() {
                     ghostty_command="fish"
                 fi
 
+                rm -f "$ghostty_macos_config"
                 awk -v cmd="$ghostty_command" '
                     /^command[[:space:]]*=/{ print "command = " cmd; found=1; next }
                     { print }
