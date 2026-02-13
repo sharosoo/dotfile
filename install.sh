@@ -770,6 +770,8 @@ create_directories() {
 # Link configuration files
 link_configs() {
     local dotfiles_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local ghostty_command=""
+    local ghostty_macos_config="$HOME/Library/Application Support/com.mitchellh.ghostty/config"
     
     log_info "Linking configuration files from $dotfiles_dir..."
     
@@ -796,7 +798,21 @@ link_configs() {
         if [[ "$OS" == "macos" ]]; then
             mkdir -p "$HOME/Library/Application Support/com.mitchellh.ghostty"
             if [[ -f "$dotfiles_dir/ghostty/config.macos" ]]; then
-                ln -sf "$dotfiles_dir/ghostty/config.macos" "$HOME/Library/Application Support/com.mitchellh.ghostty/config"
+                if [[ -x /opt/homebrew/bin/fish ]]; then
+                    ghostty_command="/opt/homebrew/bin/fish"
+                elif [[ -x /usr/local/bin/fish ]]; then
+                    ghostty_command="/usr/local/bin/fish"
+                elif command -v fish >/dev/null 2>&1; then
+                    ghostty_command="$(command -v fish)"
+                else
+                    ghostty_command="fish"
+                fi
+
+                awk -v cmd="$ghostty_command" '
+                    /^command[[:space:]]*=/{ print "command = " cmd; found=1; next }
+                    { print }
+                    END { if (!found) print "command = " cmd }
+                ' "$dotfiles_dir/ghostty/config.macos" > "$ghostty_macos_config"
             else
                 log_warning "Ghostty macOS override config not found: $dotfiles_dir/ghostty/config.macos"
                 ln -sf "$dotfiles_dir/ghostty/config" "$HOME/Library/Application Support/com.mitchellh.ghostty/config"
