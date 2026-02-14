@@ -6,7 +6,7 @@
     "opencode-openai-codex-auth"
   ],
   "model": "openai/gpt-5.3-codex",
-  "small_model": "openai/gpt-5.3-codex",
+  "small_model": "openai/gpt-5.3-codex-spark",
   "enabled_providers": [
     "azure",
     "anthropic",
