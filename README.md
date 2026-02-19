@@ -82,11 +82,11 @@ systemctl reload --user app-com.mitchellh.ghostty.service
 # AI
 export OPENROUTER_API_KEY="sk-or-v1-..."
 export ANTHROPIC_API_KEY="sk-ant-..."
-export OPENAI_API_KEY="sk-..."
 
 # Azure OpenAI (fish-ai)
 export AZURE_OPENAI_API_KEY="..."
 export AZURE_OPENAI_ENDPOINT="https://..."
+export AZURE_RESOURCE_NAME="mathkingllmbatch2"
 
 # Cloud
 export AWS_ACCESS_KEY_ID="..."
@@ -149,7 +149,7 @@ language = Korean
 [azure]
 provider = azure
 server = https://YOUR_ENDPOINT.openai.azure.com
-model = gpt-4
+model = gpt-5.2
 api_key = YOUR_API_KEY
 ```
 
