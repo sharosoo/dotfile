@@ -16,6 +16,13 @@ if test -f ~/.env.local
     source ~/.env.local
 end
 
+# Azure OpenAI (OpenCode)
+# NOTE: OpenCode's Azure provider requires AZURE_RESOURCE_NAME.
+# Keep it overridable via ~/.env.local if needed.
+if not set -q AZURE_RESOURCE_NAME
+    set -gx AZURE_RESOURCE_NAME mathkingllmbatch2
+end
+
 # Editor
 set -gx EDITOR nvim
 set -gx VISUAL nvim
