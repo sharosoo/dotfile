@@ -154,6 +154,25 @@ install_fish() {
     log_success "Fish shell installed"
 }
 
+# Check if a package is installed
+is_package_installed() {
+    local package="$1"
+    case "$PACKAGE_MANAGER" in
+        "apt")
+            dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed"
+            ;;
+        "yum"|"dnf"|"zypper")
+            rpm -q "$package" &>/dev/null
+            ;;
+        "pacman")
+            pacman -Q "$package" &>/dev/null
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 # Install packages based on OS
 install_packages() {
     log_info "Installing packages for $OS..."
@@ -188,12 +207,35 @@ install_packages() {
         log_info "Installing packages from '$package_file' using '$PACKAGE_MANAGER'..."
         
         # Read packages, ignoring comments and empty lines
-        local packages_to_install=$(grep -vE '^\s*#|^\s*$' "$package_file")
+        local all_packages=$(grep -vE '^\s*#|^\s*$' "$package_file")
 
-        if [[ -z "$packages_to_install" ]]; then
+        if [[ -z "$all_packages" ]]; then
             log_info "No packages to install in '$package_file'."
             return
         fi
+
+        # Filter out already installed packages
+        local packages_to_install=""
+        local skipped_count=0
+        
+        while IFS= read -r package; do
+            [[ -z "$package" ]] && continue
+            if is_package_installed "$package"; then
+                log_info "Package '$package' already installed, skipping."
+                ((skipped_count++))
+            else
+                packages_to_install="$packages_to_install $package"
+            fi
+        done <<< "$all_packages"
+        
+        packages_to_install="${packages_to_install# }"
+        
+        if [[ -z "$packages_to_install" ]]; then
+            log_info "All packages already installed. Skipped $skipped_count package(s)."
+            return
+        fi
+        
+        log_info "Installing $(echo $packages_to_install | wc -w) package(s), skipped $skipped_count already installed."
 
         case "$PACKAGE_MANAGER" in
             "apt")
@@ -211,8 +253,7 @@ install_packages() {
                 echo "$packages_to_install" | xargs sudo dnf install -y
                 ;;
             "pacman")
-                local packages=$(echo "$packages_to_install")
-                sudo pacman -S --noconfirm $packages
+                sudo pacman -S --noconfirm $packages_to_install
                 ;;
             "zypper")
                 echo "$packages_to_install" | xargs sudo zypper install -y
@@ -853,8 +894,12 @@ link_configs() {
         if [[ -f "$dotfiles_dir/opencode/opencode.json" ]]; then
             ln -sf "$dotfiles_dir/opencode/opencode.json" ~/.config/opencode/opencode.json
         fi
-        if [[ -f "$dotfiles_dir/opencode/oh-my-opencode.json" ]]; then
+        if [[ -f "$dotfiles_dir/opencode/oh-my-opencode.jsonc" ]]; then
+            ln -sf "$dotfiles_dir/opencode/oh-my-opencode.jsonc" ~/.config/opencode/oh-my-opencode.jsonc
+            rm -f ~/.config/opencode/oh-my-opencode.json
+        elif [[ -f "$dotfiles_dir/opencode/oh-my-opencode.json" ]]; then
             ln -sf "$dotfiles_dir/opencode/oh-my-opencode.json" ~/.config/opencode/oh-my-opencode.json
+            rm -f ~/.config/opencode/oh-my-opencode.jsonc
         fi
     fi
     
@@ -928,7 +973,8 @@ create_env_template() {
 # Add your API keys and secrets here
 
 # Example:
-# export OPENAI_API_KEY="your-key-here"
+# export OPENAI_API_KEY="your-key-here"  # Optional (only if you use OpenAI provider)
+# export AZURE_RESOURCE_NAME="mathkingllmbatch2"  # OpenCode Azure provider
 # export AWS_ACCESS_KEY_ID="your-key-here"
 # export AWS_SECRET_ACCESS_KEY="your-key-here"
 EOF
