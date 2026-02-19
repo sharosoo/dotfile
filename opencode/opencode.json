@@ -1,7 +1,7 @@
 {
   "plugin": [
     "oh-my-opencode@latest",
-    "opencode-antigravity-auth@1.5.1",
+    "opencode-antigravity-auth@1.5.2",
     "opencode-anthropic-auth@latest",
     "opencode-openai-codex-auth"
   ],
@@ -10,69 +10,9 @@
   "enabled_providers": [
     "azure",
     "anthropic",
-    "google",
     "openai"
   ],
   "provider": {
-    "google": {
-      "name": "Google",
-      "models": {
-        "gemini-3-pro-high": {
-          "name": "Gemini 3 Pro High (Antigravity)",
-          "attachment": true,
-          "limit": {
-            "context": 1048576,
-            "output": 65535
-          },
-          "modalities": {
-            "input": [
-              "text",
-              "image",
-              "pdf"
-            ],
-            "output": [
-              "text"
-            ]
-          }
-        },
-        "gemini-3-pro-medium": {
-          "name": "Gemini 3 Pro Medium (Antigravity)",
-          "attachment": true,
-          "limit": {
-            "context": 1048576,
-            "output": 65535
-          },
-          "modalities": {
-            "input": [
-              "text",
-              "image",
-              "pdf"
-            ],
-            "output": [
-              "text"
-            ]
-          }
-        },
-        "gemini-3-flash": {
-          "name": "Gemini 3 Flash (Antigravity)",
-          "attachment": true,
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "modalities": {
-            "input": [
-              "text",
-              "image",
-              "pdf"
-            ],
-            "output": [
-              "text"
-            ]
-          }
-        }
-      }
-    },
     "azure": {
       "name": "Azure OpenAI",
       "models": {
