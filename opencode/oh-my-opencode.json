@@ -47,6 +47,10 @@
       "model": "openai/gpt-5.4",
       "reasoningEffort": "high"
     },
+    "hephaestus": {
+      "model": "openai/gpt-5.4",
+      "reasoningEffort": "high"
+    },
     "oracle": {
       "model": "openai/gpt-5.4",
       "reasoningEffort": "high"
@@ -56,7 +60,7 @@
       "reasoningEffort": "low"
     },
     "explore": {
-      "model": "openai/gpt-5.3-codex-spark",
+      "model": "anthropic/claude-opus-4-6",
       "reasoningEffort": "low"
     },
     "frontend-ui-ux-engineer": {
@@ -64,7 +68,7 @@
       "reasoningEffort": "high"
     },
     "document-writer": {
-      "model": "openai/gpt-5.3-codex-spark",
+      "model": "anthropic/claude-opus-4-6",
       "reasoningEffort": "low"
     },
     "multimodal-looker": {
@@ -102,7 +106,7 @@
       "reasoningEffort": "medium"
     },
     "quick": {
-      "model": "openai/gpt-5.3-codex-spark",
+      "model": "anthropic/claude-opus-4-6",
       "reasoningEffort": "low"
     },
     "unspecified-low": {
@@ -114,7 +118,7 @@
       "reasoningEffort": "high"
     },
     "writing": {
-      "model": "openai/gpt-5.3-codex-spark",
+      "model": "anthropic/claude-opus-4-6",
       "reasoningEffort": "medium"
     }
   }
