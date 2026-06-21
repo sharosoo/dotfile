@@ -2212,12 +2212,24 @@ require("lazy").setup({
     },
     dependencies = { "nvim-lua/plenary.nvim", "nvim-tree/nvim-web-devicons" },
     keys = {
-      { "<leader>gv", "<cmd>DiffviewOpen<cr>", desc = "Diffview working tree" },
+      { "<leader>gd", "<cmd>DiffviewOpen<cr>", desc = "Diffview working tree" },
+      { "<leader>gD", "<cmd>DiffviewOpen origin/main...HEAD<cr>", desc = "Diffview branch diff" },
       { "<leader>gh", "<cmd>DiffviewFileHistory %<cr>", desc = "Git file history" },
     },
     opts = {
+      enhanced_diff_hl = true,
       default_args = {
-        DiffviewOpen = { "--imply-local" },
+        DiffviewOpen = { "--imply-local", "--unified=999999" },
+      },
+      view = {
+        default = {
+          layout = "diff2_horizontal",
+          disable_diagnostics = false,
+        },
+        file_history = {
+          layout = "diff2_horizontal",
+          disable_diagnostics = false,
+        },
       },
       file_panel = {
         listing_style = "tree",
@@ -2851,105 +2863,16 @@ keymap.set("n", "<leader>fg", require("telescope.builtin").live_grep, { desc = "
 keymap.set("n", "<leader>fb", require("telescope.builtin").buffers, { desc = "Find buffers" })
 keymap.set("n", "<leader>fh", require("telescope.builtin").help_tags, { desc = "Help tags" })
 
--- Git unified diff
-local function open_git_unified_diff(args)
-  local cmd = { "git", "--no-pager", "diff", "--no-ext-diff", "--unified=999999" }
-  if args and args ~= "" then
-    vim.list_extend(cmd, vim.split(args, " ", { trimempty = true }))
-  end
+-- Diff navigation
+keymap.set("n", "<leader>g]", function()
+  vim.cmd("normal! ]c")
+  vim.cmd("normal! zz")
+end, { desc = "Next diff change" })
+keymap.set("n", "<leader>g[", function()
+  vim.cmd("normal! [c")
+  vim.cmd("normal! zz")
+end, { desc = "Previous diff change" })
 
-  local result = vim.system(cmd, { text = true }):wait()
-  if result.code ~= 0 then
-    vim.notify(result.stderr ~= "" and result.stderr or "git diff failed", vim.log.levels.ERROR)
-    return
-  end
-
-  local lines = vim.split(result.stdout or "", "\n", { plain = true })
-  if #lines == 1 and lines[1] == "" then
-    lines = { "No diff." }
-  end
-
-  vim.cmd("tabnew")
-  local buf = vim.api.nvim_get_current_buf()
-  vim.api.nvim_buf_set_name(buf, "Git unified diff")
-  vim.bo[buf].buftype = "nofile"
-  vim.bo[buf].bufhidden = "wipe"
-  vim.bo[buf].swapfile = false
-  vim.bo[buf].filetype = "diff"
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].modifiable = false
-  vim.api.nvim_buf_call(buf, function()
-    vim.cmd("setlocal syntax=diff")
-  end)
-
-  local file_items = {}
-  for lnum, line in ipairs(lines) do
-    local path = line:match("^diff %-%-git a/.- b/(.+)$")
-    if path and path ~= "/dev/null" then
-      table.insert(file_items, {
-        bufnr = buf,
-        lnum = lnum,
-        col = 1,
-        text = path,
-      })
-    end
-  end
-
-  if #file_items > 0 then
-    vim.fn.setqflist({}, " ", {
-      title = "Git unified diff files",
-      items = file_items,
-    })
-    vim.cmd("botright copen 10")
-    vim.cmd("wincmd p")
-  end
-
-  local function toggle_file_index()
-    for _, win in ipairs(vim.fn.getwininfo()) do
-      if win.quickfix == 1 then
-        vim.cmd("cclose")
-        return
-      end
-    end
-    vim.cmd("botright copen 10")
-    vim.cmd("wincmd p")
-  end
-
-  local function jump_pattern(pattern, direction, label)
-    local flags = direction > 0 and "W" or "bW"
-    local found = vim.fn.search(pattern, flags)
-    if found == 0 then
-      vim.notify((direction > 0 and "No next " or "No previous ") .. label, vim.log.levels.INFO)
-      return
-    end
-    vim.cmd("normal! zz")
-  end
-
-  vim.keymap.set("n", "<leader>g]", function()
-    jump_pattern("^@@ ", 1, "diff hunk")
-  end, { buffer = buf, desc = "Next unified diff hunk" })
-  vim.keymap.set("n", "<leader>g[", function()
-    jump_pattern("^@@ ", -1, "diff hunk")
-  end, { buffer = buf, desc = "Previous unified diff hunk" })
-  vim.keymap.set("n", "]f", function()
-    jump_pattern("^diff %-%-git ", 1, "diff file")
-  end, { buffer = buf, desc = "Next unified diff file" })
-  vim.keymap.set("n", "[f", function()
-    jump_pattern("^diff %-%-git ", -1, "diff file")
-  end, { buffer = buf, desc = "Previous unified diff file" })
-  vim.keymap.set("n", "<leader>go", toggle_file_index, { buffer = buf, desc = "Toggle unified diff file index" })
-end
-
-vim.api.nvim_create_user_command("GitUnifiedDiff", function(opts)
-  open_git_unified_diff(opts.args)
-end, { nargs = "*", force = true, desc = "Open full unified git diff in a scratch tab" })
-
-keymap.set("n", "<leader>gd", function()
-  open_git_unified_diff("")
-end, { desc = "Git unified diff" })
-keymap.set("n", "<leader>gD", function()
-  open_git_unified_diff("origin/main...HEAD")
-end, { desc = "Git unified branch diff" })
 
 
 -- Diagnostics
