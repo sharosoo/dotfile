@@ -2213,7 +2213,6 @@ require("lazy").setup({
     dependencies = { "nvim-lua/plenary.nvim", "nvim-tree/nvim-web-devicons" },
     keys = {
       { "<leader>gd", "<cmd>DiffviewOpen<cr>", desc = "Diffview working tree" },
-      { "<leader>gD", "<cmd>DiffviewOpen origin/main...HEAD<cr>", desc = "Diffview branch diff" },
       { "<leader>gh", "<cmd>DiffviewFileHistory %<cr>", desc = "Git file history" },
     },
     opts = {
@@ -2863,6 +2862,70 @@ keymap.set("n", "<leader>fg", require("telescope.builtin").live_grep, { desc = "
 keymap.set("n", "<leader>fb", require("telescope.builtin").buffers, { desc = "Find buffers" })
 keymap.set("n", "<leader>fh", require("telescope.builtin").help_tags, { desc = "Help tags" })
 
+
+local function git_output(args)
+  local result = vim.system(vim.list_extend({ "git" }, args), { text = true }):wait()
+  if result.code ~= 0 then
+    return nil
+  end
+  return vim.trim(result.stdout or "")
+end
+
+local function git_rev_exists(rev)
+  return git_output({ "rev-parse", "--verify", rev .. "^{commit}" }) ~= nil
+end
+
+local function add_git_base_candidate(candidates, seen, rev)
+  if rev and rev ~= "" and not seen[rev] and git_rev_exists(rev) then
+    seen[rev] = true
+    table.insert(candidates, rev)
+  end
+end
+
+local function resolve_git_base_ref()
+  local candidates = {}
+  local seen = {}
+  local branch = git_output({ "branch", "--show-current" }) or ""
+
+  if vim.fn.executable("gh") == 1 then
+    local pr_base = vim.system({ "gh", "pr", "view", "--json", "baseRefName", "--jq", ".baseRefName" }, { text = true }):wait()
+    if pr_base.code == 0 then
+      local base = vim.trim(pr_base.stdout or "")
+      add_git_base_candidate(candidates, seen, "origin/" .. base)
+      add_git_base_candidate(candidates, seen, base)
+    end
+  end
+
+  add_git_base_candidate(candidates, seen, git_output({ "config", "branch." .. branch .. ".mergeBase" }))
+  add_git_base_candidate(candidates, seen, git_output({ "config", "branch." .. branch .. ".gh-merge-base" }))
+
+  local upstream = git_output({ "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}" })
+  local upstream_branch = upstream and upstream:match("([^/]+)$") or nil
+  if upstream and upstream ~= "" and upstream_branch ~= branch then
+    add_git_base_candidate(candidates, seen, upstream)
+  end
+
+  local origin_head = git_output({ "symbolic-ref", "--short", "refs/remotes/origin/HEAD" })
+  add_git_base_candidate(candidates, seen, origin_head)
+  add_git_base_candidate(candidates, seen, "origin/main")
+  add_git_base_candidate(candidates, seen, "origin/master")
+  add_git_base_candidate(candidates, seen, "main")
+  add_git_base_candidate(candidates, seen, "master")
+
+  return candidates[1]
+end
+
+local function open_diffview_branch()
+  local base = resolve_git_base_ref()
+  if not base then
+    vim.notify("No git base branch found for Diffview", vim.log.levels.ERROR)
+    return
+  end
+  vim.cmd("DiffviewOpen " .. base .. "...HEAD")
+  vim.notify("Diffview base: " .. base .. "...HEAD", vim.log.levels.INFO)
+end
+
+keymap.set("n", "<leader>gD", open_diffview_branch, { desc = "Diffview smart branch diff" })
 -- Diff navigation
 keymap.set("n", "<leader>g]", function()
   vim.cmd("normal! ]c")
