@@ -2149,6 +2149,51 @@ require("lazy").setup({
     },
   },
 
+  {
+    "kdheepak/lazygit.nvim",
+    cmd = {
+      "LazyGit",
+      "LazyGitConfig",
+      "LazyGitCurrentFile",
+      "LazyGitFilter",
+      "LazyGitFilterCurrentFile",
+    },
+    dependencies = { "nvim-lua/plenary.nvim" },
+    keys = {
+      { "<leader>gg", "<cmd>LazyGit<cr>", desc = "LazyGit" },
+      { "<leader>gf", "<cmd>LazyGitCurrentFile<cr>", desc = "LazyGit current file" },
+    },
+  },
+
+  {
+    "sindrets/diffview.nvim",
+    cmd = {
+      "DiffviewOpen",
+      "DiffviewClose",
+      "DiffviewToggleFiles",
+      "DiffviewFocusFiles",
+      "DiffviewFileHistory",
+      "DiffviewRefresh",
+    },
+    dependencies = { "nvim-lua/plenary.nvim", "nvim-tree/nvim-web-devicons" },
+    keys = {
+      { "<leader>gd", "<cmd>DiffviewOpen<cr>", desc = "Diffview working tree" },
+      { "<leader>gh", "<cmd>DiffviewFileHistory %<cr>", desc = "Git file history" },
+    },
+    opts = {
+      default_args = {
+        DiffviewOpen = { "--imply-local" },
+      },
+      file_panel = {
+        listing_style = "tree",
+        win_config = {
+          position = "left",
+          width = 35,
+        },
+      },
+    },
+  },
+
   -- Terminal
   {
     "akinsho/toggleterm.nvim",
