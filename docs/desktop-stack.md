@@ -1,5 +1,8 @@
 # Desktop stack (source of truth)
 
+**설치:** 자동 `install.sh` 없음 → [README.md](../README.md) 문서 표 · [linking.md](linking.md)
+
+
 **Repo:** `~/workspaces/sharosoo/dotfile`
 
 | Component | Live path | Dotfile |

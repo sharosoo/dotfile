@@ -239,8 +239,7 @@ vim ~/.config/starship.toml
 # Install TPM (Tmux Plugin Manager)
 git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
 
-# Link config
-ln -sf ~/dotfiles/tmux/.tmux.conf ~/.tmux.conf
+ln -sfn ~/workspaces/sharosoo/dotfile/tmux/.tmux.conf ~/.tmux.conf
 
 # Start tmux and install plugins
 tmux
