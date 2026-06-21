@@ -1573,10 +1573,6 @@ require("lazy").setup({
             watcher = false,
           },
         },
-        system_open = {
-          cmd = "",
-          args = {},
-        },
       })
       
       -- Custom highlights for better visibility on transparent background
@@ -1710,6 +1706,7 @@ require("lazy").setup({
         "pyright",
         "ruff",
         "debugpy", -- Python DAP
+        "mypy", -- Python static type checker (nvim-lint)
         
         -- Web Development (HTML/CSS/JS/TS)
         "typescript-language-server",
@@ -1778,262 +1775,202 @@ require("lazy").setup({
       { "j-hui/fidget.nvim", opts = {} },
     },
     config = function()
-      -- Wait a bit for mason to be ready
-      vim.defer_fn(function()
-        local lspconfig = require("lspconfig")
-        local capabilities = vim.lsp.protocol.make_client_capabilities()
-        capabilities = vim.tbl_deep_extend("force", capabilities, require("cmp_nvim_lsp").default_capabilities())
+      -- Neovim 0.11+ native LSP configuration.
+      -- Older nvim-lspconfig per-server setup APIs are deprecated and can
+      -- print stacktraces on startup with current nvim-lspconfig.
+      local mason_bin = vim.fn.stdpath("data") .. "/mason/bin"
+      if vim.fn.isdirectory(mason_bin) == 1 and not string.find(vim.env.PATH or "", mason_bin, 1, true) then
+        vim.env.PATH = mason_bin .. ":" .. (vim.env.PATH or "")
+      end
 
-        -- Python
-        if vim.fn.executable("pyright") == 1 or vim.fn.executable("pyright-langserver") == 1 then
-          lspconfig.pyright.setup({
-            capabilities = capabilities,
-            settings = {
-              python = {
-                analysis = {
-                  autoSearchPaths = true,
-                  useLibraryCodeForTypes = true,
-                  diagnosticMode = "workspace",
-                },
-              },
-            },
-          })
-        end
-        
-        if vim.fn.executable("ruff") == 1 then
-          lspconfig.ruff.setup({
-            capabilities = capabilities,
-            init_options = {
-              settings = {
-                lint = { enable = true },
-                format = { enable = true },
-                args = {}
-              }
-            }
-          })
-        end
+      local capabilities = vim.lsp.protocol.make_client_capabilities()
+      capabilities = vim.tbl_deep_extend("force", capabilities, require("cmp_nvim_lsp").default_capabilities())
 
-        -- HTML
-        if vim.fn.executable("vscode-html-language-server") == 1 then
-          lspconfig.html.setup({
-            capabilities = capabilities,
-          })
-        end
+      local function has(cmd)
+        return vim.fn.executable(cmd) == 1
+      end
 
-        -- CSS
-        if vim.fn.executable("vscode-css-language-server") == 1 then
-          lspconfig.cssls.setup({
-            capabilities = capabilities,
-          })
-        end
-
-        -- TypeScript/JavaScript
-        if vim.fn.executable("typescript-language-server") == 1 then
-          lspconfig.ts_ls.setup({
-            capabilities = capabilities,
-            settings = {
-              typescript = {
-                inlayHints = {
-                  includeInlayParameterNameHints = "all",
-                  includeInlayParameterNameHintsWhenArgumentMatchesName = false,
-                  includeInlayFunctionParameterTypeHints = true,
-                  includeInlayVariableTypeHints = true,
-                  includeInlayPropertyDeclarationTypeHints = true,
-                  includeInlayFunctionLikeReturnTypeHints = true,
-                  includeInlayEnumMemberValueHints = true,
-                },
-              },
-              javascript = {
-                inlayHints = {
-                  includeInlayParameterNameHints = "all",
-                  includeInlayParameterNameHintsWhenArgumentMatchesName = false,
-                  includeInlayFunctionParameterTypeHints = true,
-                  includeInlayVariableTypeHints = true,
-                  includeInlayPropertyDeclarationTypeHints = true,
-                  includeInlayFunctionLikeReturnTypeHints = true,
-                  includeInlayEnumMemberValueHints = true,
-                },
-              },
-            },
-          })
-        end
-
-        -- ESLint
-        if vim.fn.executable("vscode-eslint-language-server") == 1 then
-          lspconfig.eslint.setup({
-            capabilities = capabilities,
-            on_attach = function(client, bufnr)
-              vim.api.nvim_create_autocmd("BufWritePre", {
-                buffer = bufnr,
-                command = "EslintFixAll",
-              })
-            end,
-          })
-        end
-
-        -- Emmet
-        if vim.fn.executable("emmet-ls") == 1 then
-          lspconfig.emmet_ls.setup({
-            capabilities = capabilities,
-            filetypes = { "html", "css", "scss", "javascript", "javascriptreact", "typescript", "typescriptreact" },
-          })
-        end
-
-        -- TailwindCSS
-        if vim.fn.executable("tailwindcss-language-server") == 1 then
-          lspconfig.tailwindcss.setup({
-            capabilities = capabilities,
-          })
-        end
-
-        -- Docker
-        if vim.fn.executable("docker-langserver") == 1 then
-          lspconfig.dockerls.setup({
-            capabilities = capabilities,
-          })
-        end
-
-        -- Docker Compose (commented out - not available)
-        -- if vim.fn.executable("docker-compose-langserver") == 1 then
-        --   lspconfig.docker_compose_language_service.setup({
-        --     capabilities = capabilities,
-        --   })
-        -- end
-
-        -- YAML
-        if vim.fn.executable("yaml-language-server") == 1 then
-          lspconfig.yamlls.setup({
-            capabilities = capabilities,
-            settings = {
-              yaml = {
-                schemas = {
-                  ["https://json.schemastore.org/github-workflow.json"] = "/.github/workflows/*",
-                  ["https://json.schemastore.org/github-action.json"] = "/.github/actions/*/action.yml",
-                  ["https://json.schemastore.org/docker-compose.json"] = "/docker-compose.yml",
-                },
-              },
-            },
-          })
-        end
-
-        -- JSON
-        if vim.fn.executable("vscode-json-language-server") == 1 then
-          lspconfig.jsonls.setup({
-            capabilities = capabilities,
-            settings = {
-              json = {
-                schemas = require("schemastore").json.schemas(),
-                validate = { enable = true },
-              },
-            },
-          })
-        end
-
-        -- Bash
-        if vim.fn.executable("bash-language-server") == 1 then
-          lspconfig.bashls.setup({
-            capabilities = capabilities,
-          })
-        end
-
-        -- Markdown
-        if vim.fn.executable("marksman") == 1 then
-          lspconfig.marksman.setup({
-            capabilities = capabilities,
-          })
-        end
-
-        -- SQL
-        if vim.fn.executable("sql-language-server") == 1 then
-          lspconfig.sqlls.setup({
-            capabilities = capabilities,
-          })
-        end
-
-        -- TOML
-        if vim.fn.executable("taplo") == 1 then
-          lspconfig.taplo.setup({
-            capabilities = capabilities,
-          })
-        end
-
-        -- Go (conditional setup)
-        if vim.fn.executable("go") == 1 then
-          -- Add Go bin to PATH if not already there
-          local go_bin = vim.fn.expand("$HOME/go/bin")
-          local current_path = vim.env.PATH or ""
-          if not string.find(current_path, go_bin, 1, true) then
-            vim.env.PATH = go_bin .. ":" .. current_path
+      local function enable(name, config, executables)
+        if executables then
+          local ok = false
+          for _, exe in ipairs(executables) do
+            if has(exe) then
+              ok = true
+              break
+            end
           end
-          
-          -- Setup gopls if available
-          if vim.fn.executable("gopls") == 1 then
-            lspconfig.gopls.setup({
-              capabilities = capabilities,
-              settings = {
-                gopls = {
-                  analyses = {
-                    unusedparams = true,
-                  },
-                  staticcheck = true,
-                  gofumpt = true,
-                },
-              },
-            })
+          if not ok then
+            return
           end
         end
+        config = vim.tbl_deep_extend("force", { capabilities = capabilities }, config or {})
+        vim.lsp.config(name, config)
+        vim.lsp.enable(name)
+      end
 
-        -- Rust
-        if vim.fn.executable("rust-analyzer") == 1 then
-          lspconfig.rust_analyzer.setup({
-            capabilities = capabilities,
-            settings = {
-              ["rust-analyzer"] = {
-                cargo = {
-                  allFeatures = true,
-                  loadOutDirsFromCheck = true,
-                  runBuildScripts = true,
-                },
-                checkOnSave = {
-                  allFeatures = true,
-                  command = "clippy",
-                  extraArgs = { "--no-deps" },
-                },
-                procMacro = {
-                  enable = true,
-                  ignored = {
-                    ["async-trait"] = { "async_trait" },
-                    ["napi-derive"] = { "napi" },
-                    ["async-recursion"] = { "async_recursion" },
-                  },
-                },
-              },
+      enable("pyright", {
+        settings = {
+          python = {
+            analysis = {
+              autoSearchPaths = true,
+              diagnosticMode = "workspace",
+              typeCheckingMode = "basic",
+              useLibraryCodeForTypes = true,
             },
-          })
-        end
+          },
+        },
+      }, { "pyright-langserver", "pyright" })
 
-        -- Lua
-        if vim.fn.executable("lua-language-server") == 1 then
-          lspconfig.lua_ls.setup({
-            capabilities = capabilities,
-            settings = {
-              Lua = {
-                completion = {
-                  callSnippet = "Replace",
-                },
-                diagnostics = { 
-                  disable = { "missing-fields" },
-                  globals = { "vim" },
-                },
-                workspace = {
-                  library = vim.api.nvim_get_runtime_file("", true),
-                  checkThirdParty = false,
-                },
-              },
+      enable("ruff", {
+        init_options = {
+          settings = {
+            lint = { enable = true },
+            format = { enable = true },
+          },
+        },
+      }, { "ruff" })
+
+      enable("html", {}, { "vscode-html-language-server" })
+      enable("cssls", {}, { "vscode-css-language-server" })
+
+      enable("ts_ls", {
+        init_options = {
+          hostInfo = "neovim",
+        },
+        settings = {
+          typescript = {
+            inlayHints = {
+              includeInlayParameterNameHints = "all",
+              includeInlayParameterNameHintsWhenArgumentMatchesName = false,
+              includeInlayFunctionParameterTypeHints = true,
+              includeInlayVariableTypeHints = true,
+              includeInlayPropertyDeclarationTypeHints = true,
+              includeInlayFunctionLikeReturnTypeHints = true,
+              includeInlayEnumMemberValueHints = true,
             },
+          },
+          javascript = {
+            inlayHints = {
+              includeInlayParameterNameHints = "all",
+              includeInlayParameterNameHintsWhenArgumentMatchesName = false,
+              includeInlayFunctionParameterTypeHints = true,
+              includeInlayVariableTypeHints = true,
+              includeInlayPropertyDeclarationTypeHints = true,
+              includeInlayFunctionLikeReturnTypeHints = true,
+              includeInlayEnumMemberValueHints = true,
+            },
+          },
+        },
+      }, { "typescript-language-server" })
+
+      enable("eslint", {
+        on_attach = function(_, bufnr)
+          vim.api.nvim_create_autocmd("BufWritePre", {
+            buffer = bufnr,
+            command = "EslintFixAll",
           })
+        end,
+      }, { "vscode-eslint-language-server" })
+
+      enable("emmet_ls", {
+        filetypes = {
+          "html",
+          "css",
+          "scss",
+          "javascript",
+          "javascriptreact",
+          "typescript",
+          "typescriptreact",
+        },
+      }, { "emmet-ls" })
+
+      enable("tailwindcss", {}, { "tailwindcss-language-server" })
+      enable("dockerls", {}, { "docker-langserver" })
+
+      enable("yamlls", {
+        settings = {
+          yaml = {
+            schemas = {
+              ["https://json.schemastore.org/github-workflow.json"] = "/.github/workflows/*",
+              ["https://json.schemastore.org/github-action.json"] = "/.github/actions/*/action.yml",
+              ["https://json.schemastore.org/docker-compose.json"] = "/docker-compose.yml",
+            },
+          },
+        },
+      }, { "yaml-language-server" })
+
+      local json_schemas = {}
+      local ok_schemastore, schemastore = pcall(require, "schemastore")
+      if ok_schemastore then
+        json_schemas = schemastore.json.schemas()
+      end
+      enable("jsonls", {
+        settings = {
+          json = {
+            schemas = json_schemas,
+            validate = { enable = true },
+          },
+        },
+      }, { "vscode-json-language-server" })
+
+      enable("bashls", {}, { "bash-language-server" })
+      enable("marksman", {}, { "marksman" })
+      enable("sqlls", {}, { "sql-language-server" })
+      enable("taplo", {}, { "taplo" })
+
+      if has("go") then
+        local go_bin = vim.fn.expand("$HOME/go/bin")
+        if vim.fn.isdirectory(go_bin) == 1 and not string.find(vim.env.PATH or "", go_bin, 1, true) then
+          vim.env.PATH = go_bin .. ":" .. (vim.env.PATH or "")
         end
-      end, 100) -- 100ms delay
+        enable("gopls", {
+          settings = {
+            gopls = {
+              analyses = {
+                unusedparams = true,
+                unreachable = true,
+                unusedwrite = true,
+              },
+              staticcheck = true,
+              gofumpt = true,
+            },
+          },
+        }, { "gopls" })
+      end
+
+      enable("rust_analyzer", {
+        settings = {
+          ["rust-analyzer"] = {
+            cargo = {
+              allFeatures = true,
+              loadOutDirsFromCheck = true,
+              runBuildScripts = true,
+            },
+            checkOnSave = {
+              allFeatures = true,
+              command = "clippy",
+              extraArgs = { "--no-deps" },
+            },
+            procMacro = { enable = true },
+          },
+        },
+      }, { "rust-analyzer" })
+
+      enable("lua_ls", {
+        settings = {
+          Lua = {
+            completion = { callSnippet = "Replace" },
+            diagnostics = {
+              disable = { "missing-fields" },
+              globals = { "vim" },
+            },
+            workspace = {
+              library = vim.api.nvim_get_runtime_file("", true),
+              checkThirdParty = false,
+            },
+          },
+        },
+      }, { "lua-language-server" })
     end,
   },
 
@@ -2132,6 +2069,29 @@ require("lazy").setup({
         },
       },
     },
+  },
+
+  -- Linting (mypy for Python; ESLint via LSP for JS/TS)
+  {
+    "mfussenegger/nvim-lint",
+    event = { "BufReadPost", "BufWritePost", "InsertLeave" },
+    config = function()
+      local lint = require("lint")
+      lint.linters_by_ft = {
+        python = { "mypy" },
+      }
+
+      local group = vim.api.nvim_create_augroup("nvim_lint", { clear = true })
+      vim.api.nvim_create_autocmd({ "BufReadPost", "BufWritePost", "InsertLeave" }, {
+        group = group,
+        callback = function()
+          local linters = lint.linters_by_ft[vim.bo.filetype]
+          if linters and #linters > 0 then
+            lint.try_lint()
+          end
+        end,
+      })
+    end,
   },
 
   -- Syntax highlighting
