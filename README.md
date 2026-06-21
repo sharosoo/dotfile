@@ -6,15 +6,20 @@
 
 ```
 dotfile/
-├── install.sh              # 설치 스크립트
-├── .env.example            # 환경변수 템플릿
-├── fish/                   # Fish shell
-├── ghostty/                # Ghostty 터미널
-├── starship/               # Starship 프롬프트
-├── opencode/               # OpenCode 설정
-├── nvim/                   # Neovim 설정
-├── tmux/                   # Tmux 설정
-└── docs/                   # 문서
+├── install.sh
+├── scripts/link-desktop-config.sh   # niri / noctalia / fcitx5 / systemd / opencode
+├── niri/                            # Wayland compositor (niri + Noctalia session)
+├── noctalia/                        # settings.json (shell: quickshell/noctalia-shell)
+├── fcitx5/                          # Korean IME
+├── systemd/user/                    # niri, noctalia-qs, kwalletd6, portal-gtk
+├── opencode/                        # OpenCode + oh-my-openagent
+├── omp/README.md                    # ~/.omp runtime (not in git)
+├── fish/
+├── ghostty/
+├── starship/
+├── nvim/
+├── tmux/
+└── docs/                            # NIRI-NOCTALIA.md, niri-noctalia-단축키.md, desktop-stack.md
 ```
 
 ## 설치

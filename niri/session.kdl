@@ -1,0 +1,62 @@
+// Niri session: Noctalia (Quickshell) + fcitx5 + desktop services
+// After first login run: niri msg outputs
+// Then fix output names / position x below if needed.
+
+environment {
+    QT_QPA_PLATFORM "wayland"
+    GDK_BACKEND "wayland"
+    ELECTRON_OZONE_PLATFORM_HINT "auto"
+    GTK_IM_MODULE "fcitx"
+    QT_IM_MODULE "fcitx"
+    XMODIFIERS "@im=fcitx"
+    SDL_IM_MODULE "fcitx"
+    GLFW_IM_MODULE "fcitx"
+    NOCTALIA_SETTINGS_FILE "/home/global/.config/noctalia/settings.json"
+}
+
+spawn-at-startup "dbus-update-activation-environment" "--systemd" "--all"
+spawn-at-startup "systemctl" "--user" "import-environment" "WAYLAND_DISPLAY" "DISPLAY" "XDG_CURRENT_DESKTOP" "XDG_SESSION_TYPE" "GTK_IM_MODULE" "QT_IM_MODULE" "XMODIFIERS" "SDL_IM_MODULE" "GLFW_IM_MODULE"
+spawn-at-startup "wireplumber"
+spawn-at-startup "fcitx5" "-r" "-d"
+spawn-at-startup "/usr/libexec/xdg-desktop-portal-gtk"
+spawn-at-startup "/usr/libexec/xdg-desktop-portal-gnome"
+spawn-at-startup "polkit-kde-agent-1"
+spawn-at-startup "kwalletd6"
+
+spawn-at-startup "systemctl" "--user" "start" "noctalia-qs.service"
+
+// --- Dual monitor (edit output names if niri msg outputs differs) ---
+// Sub: 15" portrait, scale 2.25, LEFT of Dell
+// Dell: U2720Q main (DP-1)
+
+output "HDMI-A-1" {
+    transform "90"
+    scale 2.25
+    position x=0 y=0
+}
+
+output "DP-1" {
+    scale 1.0
+    position x=960 y=0
+}
+
+binds {
+    Mod+T hotkey-overlay-title="Terminal: ghostty" { spawn "ghostty"; }
+    Mod+D allow-inhibiting=false hotkey-overlay-title="앱 런처 (Noctalia)" { spawn-sh "/home/global/.local/bin/qs -c noctalia-shell ipc call launcher toggle"; }
+    Mod+Alt+F hotkey-overlay-title="Firefox" { spawn "firefox"; }
+    Mod+Alt+G hotkey-overlay-title="Google Chrome" { spawn "google-chrome"; }
+
+    Ctrl+Space allow-when-locked=true hotkey-overlay-title="한영/입력기 전환 (fcitx5)" { spawn-sh "fcitx5-remote -t"; }
+    Hangul allow-when-locked=true hotkey-overlay-title="한영 전환" { spawn-sh "fcitx5-remote -t"; }
+    Hangul_Romaja allow-when-locked=true { spawn-sh "fcitx5-remote -o"; }
+
+    Mod+Shift+Slash hotkey-overlay-title="niri: 중요 단축키 목록" { show-hotkey-overlay; }
+    Mod+Space allow-inhibiting=false hotkey-overlay-title="Noctalia: 앱 런처" { spawn-sh "/home/global/.local/bin/qs -c noctalia-shell ipc call launcher toggle"; }
+    Mod+Shift+Space hotkey-overlay-title="Noctalia: 세션 메뉴" {
+        spawn-sh "/home/global/.local/bin/qs -c noctalia-shell ipc call sessionMenu toggle"
+    }
+    Mod+Shift+L hotkey-overlay-title="Noctalia: 잠금" {
+        spawn-sh "/home/global/.local/bin/qs -c noctalia-shell ipc call lockScreen lock"
+    }
+    Mod+Shift+E hotkey-overlay-title="Quit niri session" { quit; }
+}

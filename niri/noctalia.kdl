@@ -1,0 +1,25 @@
+// Noctalia + niri integration (v4 docs)
+debug {
+    honor-xdg-activation-with-invalid-serial
+}
+
+window-rule {
+    geometry-corner-radius 20
+    clip-to-geometry true
+}
+
+// Stationary wallpaper on backdrop (Noctalia wallpaper tab: overview wallpaper OFF)
+layer-rule {
+    match namespace="^noctalia-wallpaper"
+    place-within-backdrop true
+}
+
+layout {
+    background-color "transparent"
+}
+
+overview {
+    workspace-shadow {
+        off
+    }
+}

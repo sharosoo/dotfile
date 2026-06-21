@@ -1,0 +1,126 @@
+{
+  "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-opencode/master/assets/oh-my-opencode.schema.json",
+  "google_auth": false,
+  "disabled_mcps": [
+    "websearch_exa",
+    "pencil"
+  ],
+  "claude_code": {
+    "mcp": true,
+    "commands": true,
+    "skills": true,
+    "agents": true,
+    "hooks": true
+  },
+  "lsp": {
+    "typescript-language-server": {
+      "command": [
+        "typescript-language-server",
+        "--stdio"
+      ],
+      "extensions": [
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx"
+      ]
+    },
+    "pyright": {
+      "command": [
+        "pyright-langserver",
+        "--stdio"
+      ],
+      "extensions": [
+        ".py"
+      ]
+    },
+    "gopls": {
+      "command": [
+        "gopls"
+      ],
+      "extensions": [
+        ".go"
+      ]
+    }
+  },
+  "agents": {
+    "sisyphus": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "high"
+    },
+    "hephaestus": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "high"
+    },
+    "oracle": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "high"
+    },
+    "librarian": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "low"
+    },
+    "explore": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "low"
+    },
+    "frontend-ui-ux-engineer": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "high"
+    },
+    "document-writer": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "low"
+    },
+    "multimodal-looker": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "low"
+    },
+    "prometheus": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "high"
+    },
+    "metis": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "high"
+    },
+    "momus": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "high"
+    },
+    "atlas": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "high"
+    }
+  },
+  "categories": {
+    "visual-engineering": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "high"
+    },
+    "ultrabrain": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "high"
+    },
+    "artistry": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "medium"
+    },
+    "quick": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "low"
+    },
+    "unspecified-low": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "medium"
+    },
+    "unspecified-high": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "high"
+    },
+    "writing": {
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "medium"
+    }
+  }
+}

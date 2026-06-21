@@ -901,6 +901,9 @@ link_configs() {
             ln -sf "$dotfiles_dir/opencode/oh-my-opencode.json" ~/.config/opencode/oh-my-opencode.json
             rm -f ~/.config/opencode/oh-my-opencode.jsonc
         fi
+        if [[ -f "$dotfiles_dir/opencode/oh-my-openagent.jsonc" ]]; then
+            ln -sf "$dotfiles_dir/opencode/oh-my-openagent.jsonc" ~/.config/opencode/oh-my-openagent.jsonc
+        fi
     fi
     
     # Neovim configuration
@@ -1019,6 +1022,9 @@ main() {
 
     # Install Linux-specific tools if on Linux
     install_linux_specific_tools
+    if [[ -x "$dotfiles_dir/scripts/link-desktop-config.sh" ]]; then
+        "$dotfiles_dir/scripts/link-desktop-config.sh" || log_warning "link-desktop-config.sh had skips (existing files)"
+    fi
     
     create_directories
     link_configs

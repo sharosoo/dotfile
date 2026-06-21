@@ -217,3 +217,7 @@ end
 
 # Load conf.d files (for nvm, venv hooks, etc.)
 # Fish automatically sources files in conf.d/
+
+# >>> grok installer >>>
+fish_add_path $HOME/.grok/bin
+# <<< grok installer <<<

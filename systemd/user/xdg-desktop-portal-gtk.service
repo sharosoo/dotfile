@@ -1,0 +1,14 @@
+[Unit]
+Description=Portal service (GTK/GNOME implementation)
+After=graphical-session.target dbus.service
+PartOf=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.impl.portal.desktop.gtk
+ExecStart=/usr/libexec/xdg-desktop-portal-gtk
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

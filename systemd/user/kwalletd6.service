@@ -1,0 +1,12 @@
+[Unit]
+Description=KDE Wallet daemon (niri / non-Plasma sessions)
+After=dbus.service graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/kwalletd6
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target default.target
