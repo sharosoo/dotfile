@@ -2146,6 +2146,41 @@ require("lazy").setup({
         topdelete = { text = "‾" },
         changedelete = { text = "~" },
       },
+      on_attach = function(bufnr)
+        local gs = package.loaded.gitsigns
+        local function map(mode, lhs, rhs, desc)
+          vim.keymap.set(mode, lhs, rhs, { buffer = bufnr, desc = desc })
+        end
+
+        map("n", "]g", function()
+          if vim.wo.diff then
+            vim.cmd.normal({ "]c", bang = true })
+          else
+            gs.nav_hunk("next")
+          end
+        end, "Next Git hunk")
+
+        map("n", "[g", function()
+          if vim.wo.diff then
+            vim.cmd.normal({ "[c", bang = true })
+          else
+            gs.nav_hunk("prev")
+          end
+        end, "Previous Git hunk")
+
+        map("n", "<leader>gp", gs.preview_hunk, "Preview Git hunk")
+        map("n", "<leader>gb", function()
+          gs.blame_line({ full = true })
+        end, "Git blame line")
+        map("n", "<leader>gs", gs.stage_hunk, "Stage Git hunk")
+        map("n", "<leader>gr", gs.reset_hunk, "Reset Git hunk")
+        map("v", "<leader>gs", function()
+          gs.stage_hunk({ vim.fn.line("."), vim.fn.line("v") })
+        end, "Stage selected Git hunk")
+        map("v", "<leader>gr", function()
+          gs.reset_hunk({ vim.fn.line("."), vim.fn.line("v") })
+        end, "Reset selected Git hunk")
+      end,
     },
   },
 
@@ -2778,6 +2813,7 @@ require("lazy").setup({
           -- 현재 줄 실행
           vim.keymap.set("n", "<leader>De", "<Plug>(DBUI_ExecuteQuery)", { buffer = true, desc = "Execute query under cursor" })
           -- 선택된 쿼리 실행
+
           vim.keymap.set("v", "<leader>De", "<Plug>(DBUI_ExecuteQuery)", { buffer = true, desc = "Execute selected query" })
           -- 전체 파일 실행
           vim.keymap.set("n", "<leader>DE", ":%DB<CR>", { buffer = true, desc = "Execute entire file" })
@@ -2814,6 +2850,18 @@ keymap.set("n", "<leader>fg", require("telescope.builtin").live_grep, { desc = "
 keymap.set("n", "<leader>fb", require("telescope.builtin").buffers, { desc = "Find buffers" })
 keymap.set("n", "<leader>fh", require("telescope.builtin").help_tags, { desc = "Help tags" })
 
+
+-- Diagnostics
+keymap.set("n", "<leader>dd", function()
+  vim.diagnostic.open_float({ scope = "line", border = "rounded" })
+end, { desc = "Show line diagnostics" })
+keymap.set("n", "[d", function()
+  vim.diagnostic.jump({ count = -1, float = true })
+end, { desc = "Previous diagnostic" })
+keymap.set("n", "]d", function()
+  vim.diagnostic.jump({ count = 1, float = true })
+end, { desc = "Next diagnostic" })
+keymap.set("n", "<leader>dq", vim.diagnostic.setqflist, { desc = "Diagnostics to quickfix" })
 -- LSP
 vim.api.nvim_create_autocmd("LspAttach", {
   group = vim.api.nvim_create_augroup("lsp-attach", { clear = true }),
