@@ -25,9 +25,15 @@ done
 [[ -f "$ROOT/fcitx5/config" ]] && link "$ROOT/fcitx5/config" "$HOME/.config/fcitx5/config"
 [[ -f "$ROOT/fcitx5/conf/hangul.conf" ]] && link "$ROOT/fcitx5/conf/hangul.conf" "$HOME/.config/fcitx5/conf/hangul.conf"
 
-for u in niri.service noctalia-qs.service kwalletd6.service xdg-desktop-portal-gtk.service; do
+for u in niri.service noctalia-qs.service kwalletd6.service xdg-desktop-portal-gtk.service niri-shutdown.target; do
   [[ -f "$ROOT/systemd/user/$u" ]] && link "$ROOT/systemd/user/$u" "$HOME/.config/systemd/user/$u"
 done
+if [[ -d "$ROOT/systemd/user/niri.service.wants" ]]; then
+  mkdir -p "$HOME/.config/systemd/user/niri.service.wants"
+  for w in "$ROOT/systemd/user/niri.service.wants/"*; do
+    [[ -f "$w" ]] && link "$w" "$HOME/.config/systemd/user/niri.service.wants/$(basename "$w")"
+  done
+fi
 
 for f in opencode.json oh-my-openagent.jsonc .gitignore; do
   [[ -f "$ROOT/opencode/$f" ]] && link "$ROOT/opencode/$f" "$HOME/.config/opencode/$f"
