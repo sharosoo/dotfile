@@ -2834,15 +2834,6 @@ require("lazy").setup({
       })
     end,
   },
-
-  -- SQL formatting and enhanced features
-  {
-    "nanotee/sqls.nvim",
-    ft = "sql",
-    config = function()
-      require("sqls").setup({})
-    end,
-  },
 })
 
 -- Key mappings
