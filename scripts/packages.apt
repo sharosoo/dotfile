@@ -9,6 +9,8 @@ wget
 jq
 htop
 tree
+# AppImage (Obsidian): optional faster mount — wrapper uses APPIMAGE_EXTRACT_AND_RUN without it
+libfuse2
 
 # Modern CLI Tools
 ripgrep

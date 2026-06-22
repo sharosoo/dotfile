@@ -2,13 +2,20 @@
 # Symlink dotfile desktop configs into ~/.config (and optional home doc).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FORCE="${1:-}"
+
 
 link() {
   local src="$1" dest="$2"
   mkdir -p "$(dirname "$dest")"
   if [[ -e "$dest" && ! -L "$dest" ]]; then
-    echo "skip (not symlink): $dest"
-    return 0
+    if [[ "$FORCE" == "--adopt" ]]; then
+      mv "$dest" "${dest}.bak.$(date +%Y%m%d%H%M%S)"
+      echo "backup $dest -> ${dest}.bak.*"
+    else
+      echo "skip (not symlink): $dest  (use: $0 --adopt to backup+link)"
+      return 0
+    fi
   fi
   ln -sfn "$src" "$dest"
   echo "link $dest -> $src"

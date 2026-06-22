@@ -1,0 +1,358 @@
+-- Neovim <-> Obsidian: <leader>mp registers the note's directory in obsidian.json then opens via obsidian://
+local function vault(p)
+  return vim.fn.fnamemodify(vim.fn.expand(p), ":p")
+end
+
+local VAULT_MAIN = vault("~/Documents/Obsidian/default")
+local VAULT_INFRA = vault("~/workspaces/sharosoo/infra-journey")
+local VAULT_DOTFILE = vault("~/workspaces/sharosoo/dotfile")
+
+local OBSIDIAN_JSON = vim.fs.normalize(vim.fn.expand("~/.config/obsidian/obsidian.json"))
+
+local function read_obsidian_json()
+  if vim.fn.filereadable(OBSIDIAN_JSON) ~= 1 then
+    return { vaults = {} }
+  end
+  local raw = table.concat(vim.fn.readfile(OBSIDIAN_JSON), "\n")
+  local ok, data = pcall(vim.json.decode, raw)
+  if not ok or type(data) ~= "table" then
+    return { vaults = {} }
+  end
+  data.vaults = data.vaults or {}
+  return data
+end
+
+local function write_obsidian_json(data)
+  vim.fn.mkdir(vim.fs.dirname(OBSIDIAN_JSON), "p")
+  vim.fn.writefile({ vim.json.encode(data) }, OBSIDIAN_JSON)
+end
+
+local function obsidian_now_ms()
+  if vim.uv and vim.uv.now then
+    return math.floor(vim.uv.now())
+  end
+  return math.floor(os.time() * 1000)
+end
+
+local function all_vault_paths(data)
+  local paths = {}
+  for _, entry in pairs(data.vaults or {}) do
+    if type(entry) == "table" and entry.path then
+      table.insert(paths, vim.fs.normalize(entry.path))
+    end
+  end
+  return paths
+end
+
+local function vault_id_new(abs_path)
+  local ok, digest = pcall(vim.fn.sha256, abs_path)
+  if ok and type(digest) == "string" and #digest >= 16 then
+    return digest:sub(1, 16)
+  end
+  return string.format("%016x", math.random(0, 2 ^ 64 - 1))
+end
+
+--- obsidian://advanced-uri 의 vault= = vault **폴더 basename** (obsidian.nvim open.lua 와 동일)
+local function vault_uri_name(vault_dir, other_paths)
+  vault_dir = vim.fs.normalize(vault_dir)
+  local base = vim.fn.fnamemodify(vault_dir, ":t")
+  local names = {}
+  for _, p in ipairs(other_paths) do
+    if vim.fs.normalize(p) ~= vault_dir then
+      names[vim.fn.fnamemodify(p, ":t")] = true
+    end
+  end
+  if not names[base] then
+    return base
+  end
+  local parent = vim.fn.fnamemodify(vim.fn.fnamemodify(vault_dir, ":h"), ":t")
+  if parent ~= "" and parent ~= "/" and parent ~= "." then
+    local combo = parent .. "-" .. base
+    if not names[combo] then
+      return combo
+    end
+  end
+  return base .. "-" .. vault_id_new(vault_dir):sub(1, 6)
+end
+
+---@return string? vault_id
+---@return string? uri_name
+local function find_registered_vault(vault_dir)
+  vault_dir = vim.fs.normalize(vault_dir)
+  local data = read_obsidian_json()
+  local paths = all_vault_paths(data)
+  for id, entry in pairs(data.vaults) do
+    if type(entry) == "table" and entry.path and vim.fs.normalize(entry.path) == vault_dir then
+      return id, vault_uri_name(vault_dir, paths)
+    end
+  end
+  return nil
+end
+
+---@return string? vault_id
+---@return string? uri_name
+---@return string? err
+local function ensure_vault_registered(vault_dir)
+  vault_dir = vim.fs.normalize(vim.fn.fnamemodify(vault_dir, ":p"))
+  if vim.fn.isdirectory(vault_dir) ~= 1 then
+    return nil, nil, "vault 폴더가 아님: " .. vault_dir
+  end
+  vim.fn.mkdir(vault_dir .. "/.obsidian", "p")
+  local data = read_obsidian_json()
+  local paths = all_vault_paths(data)
+  local existing_id, uri_name = find_registered_vault(vault_dir)
+  if existing_id then
+    return existing_id, uri_name
+  end
+  uri_name = vault_uri_name(vault_dir, paths)
+  local id = vault_id_new(vault_dir)
+  while data.vaults[id] do
+    id = vault_id_new(vault_dir .. id)
+  end
+  local now = obsidian_now_ms()
+  for _, entry in pairs(data.vaults) do
+    if type(entry) == "table" and entry.ts and entry.ts < 1e12 then
+      entry.ts = now
+    end
+  end
+  data.vaults[id] = { path = vault_dir, ts = now }
+  write_obsidian_json(data)
+  vim.notify(("Obsidian vault 등록 (obsidian.json): vault=%s → %s"):format(uri_name, vault_dir), vim.log.levels.INFO)
+  return id, uri_name
+end
+
+local function vault_root_for_note(abs_path)
+  abs_path = vim.fs.normalize(vim.fn.fnamemodify(abs_path, ":p"))
+  return vim.fs.normalize(vim.fn.fnamemodify(abs_path, ":h"))
+end
+
+local function note_relpath_in_vault(abs_path, vault_dir)
+  abs_path = vim.fs.normalize(abs_path)
+  vault_dir = vim.fs.normalize(vault_dir)
+  if abs_path:sub(1, #vault_dir + 1) == vault_dir .. "/" then
+    return abs_path:sub(#vault_dir + 2)
+  end
+  return vim.fn.fnamemodify(abs_path, ":t")
+end
+
+local function launch_obsidian(uri)
+  local bin = vim.fn.expand("~/.local/bin/obsidian")
+  if vim.fn.executable(bin) == 1 then
+    vim.fn.jobstart({ bin, uri }, { detach = true })
+    return
+  end
+  vim.ui.open(uri)
+end
+
+local function obsidian_open_uri(vault_uri_name, rel_path, line)
+  line = line or vim.api.nvim_win_get_cursor(0)[1] or 1
+  local uri = ("obsidian://advanced-uri?vault=%s&filepath=%s&line=%i"):format(
+    vim.uri_encode(vault_uri_name),
+    vim.uri_encode(rel_path),
+    line
+  )
+  launch_obsidian(uri)
+end
+
+local function obsidian_ensure_loaded()
+  pcall(function()
+    require("lazy").load({ plugins = { "obsidian.nvim" } })
+  end)
+  local Obsidian = rawget(_G, "Obsidian")
+  if not Obsidian or not Obsidian.workspaces or #Obsidian.workspaces == 0 then
+    return false
+  end
+  return true
+end
+
+---@return string? uri_vault_name
+---@return string? rel_path
+---@return string? err
+local function prepare_vault_and_note(abs_path)
+  if vim.fn.filereadable(abs_path) ~= 1 then
+    return nil, nil, "파일이 없음 — 먼저 저장하세요"
+  end
+  local root = vault_root_for_note(abs_path)
+  local _, uri_name, err = ensure_vault_registered(root)
+  if not uri_name then
+    return nil, nil, err
+  end
+  return uri_name, note_relpath_in_vault(abs_path, root)
+end
+
+local function obsidian_open_app()
+  if vim.bo.filetype ~= "markdown" then
+    vim.notify("Not a markdown buffer", vim.log.levels.WARN)
+    return
+  end
+  local bufname = vim.api.nvim_buf_get_name(0)
+  if bufname == "" then
+    vim.notify("저장된 .md 파일에서만 Obsidian 앱으로 열 수 있음", vim.log.levels.WARN)
+    return
+  end
+  bufname = vim.fs.normalize(vim.fn.fnamemodify(bufname, ":p"))
+  local uri_vault, rel, err = prepare_vault_and_note(bufname)
+  if not uri_vault then
+    vim.notify(err or "vault 등록 실패", vim.log.levels.ERROR)
+    return
+  end
+  obsidian_open_uri(uri_vault, rel)
+  vim.notify(("Obsidian URI: vault=%s filepath=%s"):format(uri_vault, rel), vim.log.levels.INFO)
+end
+
+return {
+  "obsidian-nvim/obsidian.nvim",
+  version = "*",
+  lazy = false,
+  ft = { "markdown", "rmd", "quarto" },
+  dependencies = {
+    "nvim-lua/plenary.nvim",
+    "nvim-telescope/telescope.nvim",
+  },
+  opts = {
+    legacy_commands = false,
+    workspaces = {
+      {
+        name = "default",
+        path = VAULT_MAIN,
+        overrides = {
+          daily_notes = { folder = "daily" },
+          templates = { folder = "templates", enabled = true },
+        },
+      },
+      {
+        name = "infra-journey",
+        path = VAULT_INFRA,
+        strict = true,
+        overrides = {
+          notes_subdir = vim.NIL,
+          new_notes_location = "current_dir",
+          templates = { folder = vim.NIL },
+        },
+      },
+      {
+        name = "dotfile",
+        path = VAULT_DOTFILE,
+        strict = true,
+        overrides = {
+          notes_subdir = vim.NIL,
+          new_notes_location = "current_dir",
+          templates = { folder = vim.NIL },
+          disable_frontmatter = true,
+        },
+      },
+    },
+    daily_notes = {
+      enabled = true,
+      folder = "daily",
+      date_format = "%Y-%m-%d",
+      default_tags = { "daily" },
+    },
+    templates = {
+      enabled = true,
+      folder = "templates",
+    },
+    note_id_func = function(title)
+      if title == nil or title == "" then
+        return tostring(os.time())
+      end
+      local suffix = ""
+      if title:sub(-1) == " " then
+        title = title:sub(1, -2)
+        suffix = " "
+      end
+      return title:gsub(" ", "-"):gsub("[^%w%-]", ""):lower() .. suffix
+    end,
+    open = {
+      use_advanced_uri = true,
+      func = function(uri)
+        if not uri:find("^obsidian://", 1, true) then
+          return vim.ui.open(uri)
+        end
+        local bufname = vim.api.nvim_buf_get_name(0)
+        if bufname ~= "" then
+          local uri_vault, rel, err = prepare_vault_and_note(vim.fs.normalize(vim.fn.fnamemodify(bufname, ":p")))
+          if uri_vault and rel then
+            obsidian_open_uri(uri_vault, rel)
+            return
+          end
+          if err then
+            vim.notify(err, vim.log.levels.ERROR)
+            return
+          end
+        end
+        launch_obsidian(uri)
+      end,
+    },
+    completion = {
+      min_chars = 2,
+      match_case = true,
+      create_new = true,
+    },
+    picker = {
+      name = "telescope",
+      tag_style = "conceal",
+      note_mappings = {
+        new = "<C-x>",
+        insert_link = "<C-l>",
+      },
+    },
+    callbacks = {
+      enter_note = function()
+        vim.wo.conceallevel = 2
+        local actions = require("obsidian.actions")
+        local opts = { buffer = true }
+        vim.keymap.set("n", "gf", "<cmd>Obsidian follow_link<cr>", vim.tbl_extend("force", opts, { desc = "Follow wiki/md link" }))
+        vim.keymap.set("n", "]o", function()
+          actions.nav_link("next")
+        end, vim.tbl_extend("force", opts, { desc = "Next link" }))
+        vim.keymap.set("n", "[o", function()
+          actions.nav_link("prev")
+        end, vim.tbl_extend("force", opts, { desc = "Prev link" }))
+        vim.keymap.set("n", "<CR>", function()
+          return require("obsidian.api").smart_action()
+        end, vim.tbl_extend("force", opts, { expr = true, desc = "Smart action (link/tag/checkbox)" }))
+        vim.keymap.set("n", "<leader>ch", function()
+          actions.toggle_checkbox()
+        end, vim.tbl_extend("force", opts, { desc = "Toggle checkbox" }))
+      end,
+    },
+  },
+  config = function(_, opts)
+    vim.api.nvim_create_augroup("SharosooObsidianConceal", { clear = true })
+    vim.api.nvim_create_autocmd("FileType", {
+      group = "SharosooObsidianConceal",
+      pattern = { "markdown", "rmd", "quarto" },
+      callback = function()
+        vim.wo.conceallevel = 2
+      end,
+    })
+    require("obsidian").setup(opts)
+    if pcall(require, "cmp") and pcall(require, "cmp_nvim_lsp") then
+      local cmp = require("cmp")
+      cmp.setup.filetype("markdown", {
+        sources = {
+          { name = "nvim_lsp", priority = 1000 },
+          { name = "luasnip", priority = 750 },
+          { name = "path", priority = 500 },
+          { name = "buffer", priority = 250 },
+        },
+      })
+    end
+  end,
+  keys = {
+    { "<leader>mp", obsidian_open_app, desc = "Register dir as vault & open in Obsidian" },
+    { "<leader>mo", obsidian_open_app, desc = "Open in Obsidian" },
+    { "<leader>ms", "<cmd>Obsidian quick_switch<cr>", desc = "Obsidian: quick switch" },
+    { "<leader>mn", "<cmd>Obsidian new<cr>", desc = "Obsidian: new note" },
+    { "<leader>mt", "<cmd>Obsidian today<cr>", desc = "Obsidian: daily note" },
+    { "<leader>mb", "<cmd>Obsidian backlinks<cr>", desc = "Obsidian: backlinks", ft = "markdown" },
+    { "<leader>ml", "<cmd>Obsidian links<cr>", desc = "Obsidian: outlinks", ft = "markdown" },
+    { "<leader>mS", "<cmd>Obsidian search<cr>", desc = "Obsidian: search vault" },
+    { "<leader>mf", "<cmd>Obsidian follow_link<cr>", desc = "Obsidian: follow link", ft = "markdown" },
+    { "<leader>mw", "<cmd>Obsidian workspace default<cr>", desc = "Obsidian: workspace default" },
+    { "<leader>mW", "<cmd>Obsidian workspace infra-journey<cr>", desc = "Obsidian: workspace infra-journey" },
+    { "<leader>md", "<cmd>Obsidian workspace dotfile<cr>", desc = "Obsidian: workspace dotfile" },
+    { "<leader>mc", "<cmd>Obsidian check<cr>", desc = "Obsidian: health check" },
+  },
+}

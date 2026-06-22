@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Obsidian
+GenericName=Markdown Notes
+Comment=Private notes for your life and work
+Exec=OBSIDIAN_EXEC_PLACEHOLDER %U
+TryExec=OBSIDIAN_EXEC_PLACEHOLDER
+Icon=obsidian
+Type=Application
+StartupNotify=true
+StartupWMClass=obsidian
+Categories=Office;TextEditor;Utility;
+MimeType=text/markdown;x-scheme-handler/obsidian;
+Keywords=notes;markdown;wiki;pkms;

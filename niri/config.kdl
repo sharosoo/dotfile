@@ -297,6 +297,13 @@ window-rule {
     match app-id=r#"firefox$"# title="^Picture-in-Picture$"
     open-floating true
 }
+// Obsidian (Electron): default is floating — tile like other apps + noctalia corner radius
+window-rule {
+    match app-id=r#"^obsidian$"#
+    open-floating false
+    default-column-width { proportion 0.5; }
+}
+
 
 // Example: block out two password managers from screen capture.
 // (This example rule is commented out with a "/-" in front.)

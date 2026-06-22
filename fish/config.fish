@@ -59,6 +59,7 @@ set -gx XDG_STATE_HOME $HOME/.local/state
 # Paths
 set -gx PATH $HOME/.cargo/bin $PATH
 set -gx PATH $HOME/.local/bin $PATH
+set -gx PATH $HOME/.deno/bin $PATH
 set -gx PATH $HOME/.local/share/pnpm $PATH
 set -gx PATH $HOME/.bun/bin $PATH
 set -gx PATH $HOME/go/bin $PATH

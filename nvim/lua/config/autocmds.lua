@@ -136,12 +136,3 @@ autocmd("ColorScheme", {
     ]])
   end,
 })
-
--- Warp Terminal Fix
-if vim.env.TERM_PROGRAM == "WarpTerminal" then
-  autocmd({ "BufEnter", "BufWinEnter" }, {
-    callback = function()
-      require("config.warp-fix")
-    end,
-  })
-end

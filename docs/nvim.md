@@ -24,6 +24,33 @@ nvim +Lazy sync
 nvim +checkhealth
 ```
 
+### Markdown / Ferrite GUI 연동
+
+플러그인: `lua/plugins/ferrite.lua` ([`ferrite.nvim`](https://github.com/sharosoo/ferrite.nvim), 로컬 `~/workspaces/sharosoo/ferrite.nvim`). 현재 파일을 [Ferrite](https://github.com/OlaProeis/Ferrite) GUI 에디터(Rust+egui, md/json/yaml/toml)로 띄우는 얇은 런처.
+
+| 키 / 명령 | 동작 |
+|----|------|
+| `<leader>mp` | 현재 파일을 Ferrite GUI로 열기 (normal·visual) |
+| `<leader>mP` | cwd를 Ferrite 워크스페이스로 열기 |
+| `:Ferrite [path]` | 파일/경로 열기 |
+| `:FerriteDir [dir]` | 디렉터리를 워크스페이스로 열기 |
+| `:checkhealth ferrite` | 바이너리 설치 점검 |
+
+- Ferrite는 단일 인스턴스 — 반복 호출 시 기존 창에 **탭으로 누적**.
+- 제약: CLI에 `--line` 없음 → 커서 라인 점프 불가, 저장된 파일만 반영.
+- frontmatter는 본문 인라인 렌더 대신 우측 **FM 패널**(`Ctrl+Shift+M`)에서 폼으로 편집.
+- 바이너리 설치: `ferrite.nvim/scripts/install-ferrite.sh` (`.deb` → apt).
+
+Obsidian **앱** 자체는 계속 사용 (→ `docs/obsidian.md`); 다만 `obsidian.nvim` 플러그인 연동은 제거됨.
+
+### 정리 (2026-06)
+
+- `init.lua` **약 3000 → 1570줄**: 거대 devicons / nvim-tree 블록 제거
+- 제거 플러그인: `indent-blankline`, `schemastore.nvim`, `typescript-tools.nvim`, `vim-table-mode`, `markdown-preview.nvim`, `peek.nvim`, `FixCursorHold`, **`obsidian.nvim`**
+- Mason 자동 설치에서 `marksman`, `markdownlint` 제거
+- `lua/plugins/ui.lua`는 **which-key만** (`{ import = "plugins.ui" }`)
+- `lua/plugins/ferrite.lua` — **ferrite.nvim** (구 `obsidian.lua`는 `docs/archive/obsidian.lua.removed`로 보존)
+
 ## 언어별
 
 ### Python / FastAPI
