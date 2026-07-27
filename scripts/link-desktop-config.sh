@@ -21,7 +21,7 @@ link() {
   echo "link $dest -> $src"
 }
 
-mkdir -p "$HOME/.config/niri" "$HOME/.config/noctalia" "$HOME/.config/fcitx5/conf" "$HOME/.config/systemd/user" "$HOME/.config/opencode"
+mkdir -p "$HOME/.config/niri" "$HOME/.config/noctalia" "$HOME/.config/fcitx5/conf" "$HOME/.config/systemd/user"
 
 for f in config.kdl session.kdl noctalia.kdl logout-to-sddm.sh; do
   [[ -f "$ROOT/niri/$f" ]] && link "$ROOT/niri/$f" "$HOME/.config/niri/$f"
@@ -41,10 +41,6 @@ if [[ -d "$ROOT/systemd/user/niri.service.wants" ]]; then
     [[ -f "$w" ]] && link "$w" "$HOME/.config/systemd/user/niri.service.wants/$(basename "$w")"
   done
 fi
-
-for f in opencode.json oh-my-openagent.jsonc .gitignore; do
-  [[ -f "$ROOT/opencode/$f" ]] && link "$ROOT/opencode/$f" "$HOME/.config/opencode/$f"
-done
 
 [[ -f "$ROOT/docs/niri-noctalia-단축키.md" ]] && link "$ROOT/docs/niri-noctalia-단축키.md" "$HOME/niri-noctalia-단축키.md"
 

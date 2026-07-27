@@ -12,8 +12,7 @@
 | Noctalia shell | `~/.config/quickshell/noctalia-shell/` | clone separately |
 | fcitx5 | `~/.config/fcitx5/` | `fcitx5/` |
 | systemd user | `~/.config/systemd/user/` | `systemd/user/` |
-| OpenCode / OMP plugins | `~/.config/opencode/` | `opencode/` |
-| OMP runtime | `~/.omp/` | not in git — `omp/README.md` |
+| OMP (oh-my-pi) 설정 | `~/.omp/` | `omp/` (런타임 DB·로그·캐시는 제외) |
 
 **Apply:** `./scripts/link-desktop-config.sh`  
 **Detail:** `docs/NIRI-NOCTALIA.md`

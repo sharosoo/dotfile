@@ -20,7 +20,7 @@ cp .env.example ~/.env.local   # 비밀키는 직접 편집
 | **Niri + Noctalia** | [NIRI-NOCTALIA.md](docs/NIRI-NOCTALIA.md) · [단축키](docs/niri-noctalia-단축키.md) | `niri/`, `noctalia/`, `systemd/user/` |
 | **Fish 셸** | [fish.md](docs/fish.md) | `fish/` |
 | **터미널 (Ghostty, Starship)** | [TERMINAL_SETUP.md](docs/TERMINAL_SETUP.md) | `ghostty/`, `starship/` |
-| **OpenCode / OMP** | [opencode.md](docs/opencode.md) | `opencode/`, `omp/README.md` |
+| **OMP (oh-my-pi)** | [omp/README.md](omp/README.md) | `omp/` |
 | **Neovim** | [nvim.md](docs/nvim.md) | `nvim/` |
 | **Tmux** | [tmux.md](docs/tmux.md) | `tmux/` |
 | **설정 링크 방법** | [linking.md](docs/linking.md) | `scripts/link-desktop-config.sh` |
@@ -31,8 +31,8 @@ cp .env.example ~/.env.local   # 비밀키는 직접 편집
 dotfile/
 ├── scripts/link-desktop-config.sh
 ├── niri/ noctalia/ fcitx5/ systemd/user/
-├── fish/ ghostty/ starship/ nvim/ tmux/ opencode/
-├── omp/README.md
+├── fish/ ghostty/ starship/ nvim/ tmux/
+├── omp/
 └── docs/
 ```
 

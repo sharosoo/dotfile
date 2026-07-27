@@ -2,7 +2,7 @@
 
 일괄 설치 스크립트 대신 **영역별 심링크** 또는 아래 스크립트 사용.
 
-## 데스크톱 (niri / Noctalia / fcitx / systemd / opencode)
+## 데스크톱 (niri / Noctalia / fcitx / systemd)
 
 ```bash
 cd ~/workspaces/sharosoo/dotfile
@@ -40,8 +40,7 @@ ln -sfn ~/workspaces/sharosoo/dotfile/tmux/.tmux.conf ~/.tmux.conf
 # TPM: prefix + I (플러그인 매니저는 별도 설치)
 ```
 
-## OpenCode
+## OMP (oh-my-pi)
 
-`link-desktop-config.sh`가 `~/.config/opencode/`의 `opencode.json`, `oh-my-openagent.jsonc` 링크.
-
-설치: [opencode.md](opencode.md)
+설정 스냅샷은 `omp/`에 파일로만 보관. 링크하지 않고 필요한 것만 `~/.omp/`로 복사.
+자세한 내용은 [omp/README.md](../omp/README.md).

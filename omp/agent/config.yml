@@ -1,0 +1,60 @@
+symbolPreset: nerd
+theme: 
+  dark: titanium
+setupVersion: 1
+modelRoles: 
+  slow: openai-codex/gpt-5.6-sol:high
+  vision: openai-codex/gpt-5.6-luna
+  smol: openai-codex/gpt-5.6-terra
+  designer: zai/glm-5.2:high
+  plan: openai-codex/gpt-5.6-sol:xhigh
+  advisor: openai-codex/gpt-5.6-sol:xhigh
+  task: openai-codex/gpt-5.6-sol:medium
+  tiny: openai-codex/gpt-5.6-luna
+  commit: openai-codex/gpt-5.6-terra
+  default: openai-codex/gpt-5.6-sol
+defaultThinkingLevel: auto
+memory: 
+  backend: mnemopi
+readLineNumbers: false
+providers: 
+  webSearchOrder: 
+    - codex
+    - perplexity
+    - gemini
+    - anthropic
+    - xai
+    - zai
+    - exa
+    - tinyfish
+    - jina
+    - kagi
+    - tavily
+    - firecrawl
+    - brave
+    - kimi
+    - parallel
+    - synthetic
+    - searxng
+    - startpage
+    - duckduckgo
+    - ecosia
+    - google
+    - mojeek
+    - public
+  imageOrder: 
+    - openai
+    - openai-codex
+    - antigravity
+    - xai
+    - openrouter
+    - gemini
+inspect_image: 
+  enabled: true
+github: 
+  enabled: true
+collab: 
+  webUrl: ""
+hideThinkingBlock: false
+dev: 
+  autoqaConsent: granted
