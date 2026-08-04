@@ -1,0 +1,13 @@
+{
+  "_readme": "Copy to ~/.omp/agent/omo-personas.json. By default each agent binds to an OMP model role (sisyphus=default, prometheus=plan, atlas=task, momus/oracle=advisor, librarian/explore=smol, multimodal-looker=vision, hephaestus/metis/sisyphus-junior=default) and tracks whatever you set in /model. Pins below OVERRIDE the role for that agent. Format: 'provider/model' or 'provider/model:thinking'. Remove keys you don't use.",
+
+  "pins": {
+    "prometheus": "zai/glm-5.2:high",
+    "hephaestus": "openai-codex/gpt-5.5:high",
+    "librarian": "opencode-go/minimax-m3",
+    "explore": "openai-codex/gpt-5.5:low",
+    "sisyphus-junior": "openai-codex/gpt-5.5:high"
+  },
+
+  "disable": []
+}
