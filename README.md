@@ -21,6 +21,7 @@ cp .env.example ~/.env.local   # 비밀키는 직접 편집
 | **Fish 셸** | [fish.md](docs/fish.md) | `fish/` |
 | **터미널 (Ghostty, Starship)** | [TERMINAL_SETUP.md](docs/TERMINAL_SETUP.md) | `ghostty/`, `starship/` |
 | **OMP (oh-my-pi)** | [omp/README.md](omp/README.md) | `omp/` |
+| **Claude Code** | [.claude/README.md](.claude/README.md) | `.claude/` |
 | **Neovim** | [nvim.md](docs/nvim.md) | `nvim/` |
 | **Tmux** | [tmux.md](docs/tmux.md) | `tmux/` |
 | **설정 링크 방법** | [linking.md](docs/linking.md) | `scripts/link-desktop-config.sh` |
@@ -32,7 +33,7 @@ dotfile/
 ├── scripts/link-desktop-config.sh
 ├── niri/ noctalia/ fcitx5/ systemd/user/
 ├── fish/ ghostty/ starship/ nvim/ tmux/
-├── omp/
+├── omp/ .claude/
 └── docs/
 ```
 

@@ -12,7 +12,7 @@ modelRoles:
   task: openai-codex/gpt-5.6-sol:medium
   tiny: openai-codex/gpt-5.6-luna
   commit: openai-codex/gpt-5.6-terra
-  default: openai-codex/gpt-5.6-sol
+  default: openai-codex/gpt-5.6-sol:high
 defaultThinkingLevel: auto
 memory: 
   backend: mnemopi
@@ -50,11 +50,11 @@ providers:
     - openrouter
     - gemini
 inspect_image: 
-  enabled: true
+  mode: "on"
 github: 
   enabled: true
 collab: 
   webUrl: ""
-hideThinkingBlock: false
+hideThinkingBlock: true
 dev: 
   autoqaConsent: granted
