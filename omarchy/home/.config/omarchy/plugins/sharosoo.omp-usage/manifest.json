@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "id": "sharosoo.omp-usage",
+  "name": "omp usage",
+  "version": "1.0.0",
+  "author": "sharosoo",
+  "description": "AI usage limits for every provider and account that oh-my-pi (omp) knows about",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "omp usage",
+    "description": "Per-provider, per-account AI usage limits from `omp usage`",
+    "category": "AI",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 300,
+      "redact": false,
+      "showPercent": true
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 60,
+        "max": 3600,
+        "step": 60,
+        "defaultValue": 300
+      },
+      {
+        "key": "redact",
+        "type": "boolean",
+        "label": "Redact account emails",
+        "defaultValue": false
+      },
+      {
+        "key": "showPercent",
+        "type": "boolean",
+        "label": "Show highest usage next to the icon",
+        "defaultValue": true
+      }
+    ]
+  }
+}

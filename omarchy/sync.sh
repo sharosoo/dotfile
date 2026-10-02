@@ -4,12 +4,20 @@
 #   ./sync.sh          link: symlink every file into $HOME (differing live files are backed up)
 #   ./sync.sh capture  copy the copy-managed files from $HOME back into the repo
 #
-# shell.json is copied, not linked: the Omarchy shell rewrites it atomically (temp file +
-# rename), which would replace a symlink with a plain file and silently detach it.
+# Some files are copied, not linked, because their owner rewrites them in a way that can
+# replace a symlink with a plain file and silently detach it: the Omarchy shell saves
+# shell.json atomically (temp file + rename), fcitx5 does the same for profile, fisher
+# deletes and recreates fish_plugins, and herdr's config.toml is treated the same way to be
+# safe. Run `./sync.sh capture` after changing any of them.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/home"
-COPIED=(.config/omarchy/shell.json)
+COPIED=(
+  .config/omarchy/shell.json
+  .config/fcitx5/profile
+  .config/herdr/config.toml
+  .config/fish/fish_plugins
+)
 
 is_copied() {
   local rel=$1 c
@@ -25,6 +33,9 @@ backup() {
 
 install_file() {
   local rel=$1 src="$ROOT/$1" dest="$HOME/$1"
+  # A directory that is itself a symlink (e.g. a plugin linked from another checkout)
+  # would make us write into that other tree; replace it with a real directory.
+  if [[ -L $(dirname "$dest") ]]; then rm "$(dirname "$dest")"; fi
   mkdir -p "$(dirname "$dest")"
 
   if is_copied "$rel"; then

@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+# 페어링 모드인 블루투스 키보드를 찾아 페어링·trust·연결까지 자동으로 처리한다.
+# passkey는 데스크톱 알림으로 띄우므로 키보드로 숫자만 치고 Enter를 누르면 된다.
+# 사용법: bt-keyboard-pair [MAC]   (MAC을 생략하면 주변의 미페어링 키보드를 찾는다)
+import random
+import subprocess
+import sys
+
+import dbus
+import dbus.mainloop.glib
+import dbus.service
+from gi.repository import GLib
+
+BUS_NAME = "org.bluez"
+AGENT_PATH = "/bt_keyboard_pair/agent"
+SCAN_TIMEOUT = 120
+
+notify_id = None
+
+
+def notify(summary, body="", urgency="critical", timeout=0):
+    global notify_id
+    cmd = ["notify-send", "-p", "-a", "Bluetooth", "-u", urgency, "-t", str(timeout)]
+    if notify_id:
+        cmd += ["-r", notify_id]
+    out = subprocess.run(cmd + [summary, body], capture_output=True, text=True).stdout.strip()
+    notify_id = out or notify_id
+    print(summary, body, flush=True)
+
+
+class Agent(dbus.service.Object):
+    @dbus.service.method("org.bluez.Agent1", in_signature="ouq", out_signature="")
+    def DisplayPasskey(self, device, passkey, entered):
+        code = f"{passkey:06d}"
+        typed = "•" * entered
+        notify(f"키보드로 입력: {code}", f"숫자를 치고 Enter  {typed}")
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="s")
+    def RequestPinCode(self, device):
+        pin = f"{random.randint(0, 999999):06d}"
+        notify(f"키보드로 입력: {pin}", "숫자를 치고 Enter")
+        return pin
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="os", out_signature="")
+    def DisplayPinCode(self, device, pincode):
+        notify(f"키보드로 입력: {pincode}", "숫자를 치고 Enter")
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="ou", out_signature="")
+    def RequestConfirmation(self, device, passkey):
+        return
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="")
+    def RequestAuthorization(self, device):
+        return
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="os", out_signature="")
+    def AuthorizeService(self, device, uuid):
+        return
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="")
+    def Cancel(self):
+        notify("페어링 취소됨", urgency="normal", timeout=5000)
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="")
+    def Release(self):
+        pass
+
+
+def main():
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SystemBus()
+    loop = GLib.MainLoop()
+    target = sys.argv[1].upper() if len(sys.argv) > 1 else None
+
+    Agent(bus, AGENT_PATH)
+    manager = dbus.Interface(bus.get_object(BUS_NAME, "/org/bluez"), "org.bluez.AgentManager1")
+    manager.RegisterAgent(AGENT_PATH, "KeyboardDisplay")
+    manager.RequestDefaultAgent(AGENT_PATH)
+
+    om = dbus.Interface(bus.get_object(BUS_NAME, "/"), "org.freedesktop.DBus.ObjectManager")
+    adapter_path = next(p for p, ifs in om.GetManagedObjects().items() if "org.bluez.Adapter1" in ifs)
+    adapter = dbus.Interface(bus.get_object(BUS_NAME, adapter_path), "org.bluez.Adapter1")
+    for path, ifs in om.GetManagedObjects().items():
+        d = ifs.get("org.bluez.Device1")
+        if d and path.startswith(adapter_path) and not d.get("Paired"):
+            if (target and str(d["Address"]).upper() == target) or d.get("Icon") == "input-keyboard":
+                adapter.RemoveDevice(path)
+    adapter.StartDiscovery()
+    notify("키보드 찾는 중…", "키보드를 블루투스 페어링 모드로 켜세요", urgency="normal")
+
+    state = {"elapsed": 0, "pairing": False}
+
+    def finish(summary, body="", urgency="normal"):
+        notify(summary, body, urgency=urgency, timeout=5000)
+        loop.quit()
+
+    def on_paired(path, name):
+        props = dbus.Interface(bus.get_object(BUS_NAME, path), "org.freedesktop.DBus.Properties")
+        props.Set("org.bluez.Device1", "Trusted", True)
+        dev = dbus.Interface(bus.get_object(BUS_NAME, path), "org.bluez.Device1")
+        try:
+            dev.Connect()
+        except dbus.DBusException:
+            pass  # HID 키보드는 페어링 직후 스스로 붙는 경우가 많다
+        finish(f"{name} 연결 완료", "다음부터는 켜기만 하면 자동 연결됩니다")
+
+    def find_keyboard():
+        for path, ifs in om.GetManagedObjects().items():
+            d = ifs.get("org.bluez.Device1")
+            if not d or not path.startswith(adapter_path):
+                continue
+            if "RSSI" not in d and not d.get("Paired"):
+                continue  # 지금 광고 중인 기기만
+            if target:
+                if str(d["Address"]).upper() == target:
+                    return path, d
+            elif d.get("Icon") == "input-keyboard" and not d.get("Paired") and "RSSI" in d:
+                return path, d
+        return None
+
+    def retry(path, e):
+        # 키보드가 아직 준비 안 됐으면 거절하므로, 제한 시간 안에서는 다시 찾는다
+        print("pair error:", e.get_dbus_message(), flush=True)
+        if state["elapsed"] >= SCAN_TIMEOUT:
+            finish("페어링 실패", e.get_dbus_message() or str(e), "critical")
+            return
+        try:
+            adapter.RemoveDevice(path)
+        except dbus.DBusException:
+            pass
+        state["pairing"] = False
+        adapter.StartDiscovery()
+        notify("다시 찾는 중…", "키보드가 페어링 모드인지 확인하세요", urgency="normal")
+        GLib.timeout_add_seconds(1, tick)
+
+    def tick():
+        state["elapsed"] += 1
+        if state["pairing"]:
+            return False
+        found = find_keyboard()
+        if found:
+            path, d = found
+            name = str(d.get("Alias", d["Address"]))
+            state["pairing"] = True
+            try:
+                adapter.StopDiscovery()
+            except dbus.DBusException:
+                pass
+            if d.get("Paired"):
+                on_paired(path, name)
+                return False
+            notify(f"{name} 페어링 중…", urgency="normal")
+            dev = dbus.Interface(bus.get_object(BUS_NAME, path), "org.bluez.Device1")
+            dev.Pair(
+                reply_handler=lambda: on_paired(path, name),
+                error_handler=lambda e: retry(path, e),
+                timeout=120,
+            )
+            return False
+        if state["elapsed"] >= SCAN_TIMEOUT:
+            adapter.StopDiscovery()
+            finish("키보드를 찾지 못했어요", "페어링 모드인지 확인하고 다시 실행하세요", "critical")
+            return False
+        return True
+
+    GLib.timeout_add_seconds(1, tick)
+    loop.run()
+    manager.UnregisterAgent(AGENT_PATH)
+
+
+if __name__ == "__main__":
+    main()

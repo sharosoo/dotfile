@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# herdr 에이전트 피커 — fzf로 골라서 해당 패인으로 포커스 이동
+set -euo pipefail
+
+rows=$(herdr agent list | jq -r '
+  .result.agents[]
+  | (if   .agent_status == "waiting" then "?"
+     elif .agent_status == "working" then "*"
+     elif .agent_status == "idle"    then "."
+     else "-" end) as $icon
+  | [ .pane_id,
+      $icon,
+      (.agent_status // "unknown"),
+      (.name // .agent // "shell"),
+      (.workspace_id),
+      ((.terminal_title_stripped // "") | .[0:50])
+    ] | @tsv')
+
+[ -z "$rows" ] && { echo "실행 중인 에이전트가 없습니다."; sleep 1.5; exit 0; }
+
+pick=$(printf '%s\n' "$rows" \
+  | column -t -s $'\t' \
+  | fzf --prompt='agent> ' --height=100% --reverse \
+        --header='Enter=이동  Esc=취소' ) || exit 0
+
+pane=$(awk '{print $1}' <<<"$pick")
+herdr agent focus "$pane" >/dev/null

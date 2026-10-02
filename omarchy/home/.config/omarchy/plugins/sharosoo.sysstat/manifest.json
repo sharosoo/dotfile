@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "sharosoo.sysstat",
+  "name": "System stats",
+  "version": "1.0.0",
+  "author": "sharosoo",
+  "description": "CPU and memory usage in the bar",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "System stats",
+    "description": "CPU and memory usage; click opens btop",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "intervalMs": 2000
+    }
+  }
+}
