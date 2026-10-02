@@ -12,6 +12,16 @@ cd ~/workspaces/sharosoo/dotfile
 cp .env.example ~/.env.local   # 비밀키는 직접 편집
 ```
 
+## 패키지 설치 (Omarchy / Arch)
+
+```bash
+omarchy pkg add $(sed 's/#.*//' scripts/packages.arch)   # 공식 저장소
+omarchy pkg aur add $(sed 's/#.*//' scripts/packages.aur) # AUR
+mise use -g $(sed 's/#.*//' scripts/packages.mise)       # 사용자 도구 (sudo 불필요)
+```
+
+Omarchy 기본 제공 패키지와 제외한 항목은 각 파일 주석에 적어 두었습니다. `packages.apt`·`Brewfile`은 Ubuntu·macOS용입니다.
+
 ## 문서 (영역별)
 
 | 영역 | 문서 | dotfile 경로 |

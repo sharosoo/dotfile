@@ -1,0 +1,105 @@
+# Omarchy / Arch official repo packages (core/extra/omarchy).
+# Install: omarchy pkg add $(sed 's/#.*//' scripts/packages.arch)
+# Sources: packages.apt, Brewfile, old Ubuntu host (fish aliases, apt-mark showmanual).
+# Omarchy already ships: git curl jq eza bat fd ripgrep fzf zoxide tldr neovim tmux lazygit
+#   btop starship docker mise ruby luajit clang gcc imagemagick sqlite psql kubectl terraform
+#   aws gcloud tailscale cloudflared deno tsc pyright socat telnet watch unzip gnupg
+
+# Core / modern CLI
+wget
+htop
+tree
+dust              # modern du
+duf               # modern df
+procs             # modern ps
+sd                # modern sed
+httpie
+go-yq             # yq (jq for YAML)
+diff-so-fancy
+gitui             # fish alias gu
+github-cli        # gh system-wide (currently only via mise)
+glab
+tig
+prettyping        # fish alias ping
+direnv
+entr
+7zip              # p7zip-full
+unrar
+pandoc-cli
+pass
+python-pipx
+
+# Network
+nmap
+mtr
+iperf3
+mosh
+sshpass
+traceroute
+ttyd
+
+# Containers / k8s / infra
+helm
+kind
+act               # run GitHub Actions locally
+# caddy           # declined on this PC (server)
+
+# DB / backend dev
+mariadb-clients   # mysql-client
+# valkey          # redis-server replacement; declined on this PC (server)
+dbmate
+sqlc
+
+# Build toolchain
+cmake
+ninja
+lld
+pypy3
+gopls
+wasm-bindgen
+
+# Docs / typesetting
+typst
+tectonic
+
+# JS runtimes / package managers
+bun-bin           # omarchy repo
+pnpm
+yarn
+
+# Python
+ruff
+
+# System
+stress-ng
+ipmitool
+
+# Containers / media / emulation (chosen during Omarchy migration)
+podman
+podman-compose    # old docker-compose alias target
+ffmpeg
+qemu-desktop
+wine
+
+# GUI apps (chosen during Omarchy migration)
+zed               # zeditor
+blender
+godot
+darktable         # CPU only on AMD iGPU (OpenCL disabled)
+typora           # omarchy repo
+claude-desktop    # omarchy repo
+
+# ---- Skipped (reason) ----
+# autojump            superseded by zoxide (Omarchy)
+# fd-find batcat      Ubuntu names; Omarchy ships fd/bat
+# volta rustup(pkg)   node/rust managed by mise
+# docker-ce buildx compose-plugin containerd  Omarchy ships docker
+# snapd flatpak firefox spotify telegram thunderbird  desktop apps, not CLI
+# fcitx5* fuzzel cliphist brightnessctl wl-clipboard xdotool wmctrl xclip  desktop/niri/Noctalia-specific
+# niri noctalia quickshell  old desktop stack, replaced by Hyprland/Omarchy
+# cuda-toolkit nvidia-* va-driver i965  GPU/driver, handle separately
+# kubuntu-* baloo calamares dracut shim grub mokutil  Ubuntu/KDE base
+# anysign4pc nprotect hoffice-hwp dodo-payments  Korean-banking/vendor Ubuntu debs
+# sunshine steam discord devin-desktop code  GUI apps not reinstalled
+# azure-cli doctl minikube youtube-dl  Brewfile-only, not on old host (add if needed)
+# fonts (nerd fonts)  Omarchy ships its own

@@ -1,0 +1,7 @@
+# AUR packages (Omarchy).
+# Install: omarchy pkg aur add $(sed 's/#.*//' scripts/packages.aur)
+
+tabularis-bin     # DB GUI (connections in ~/.config/tabularis)
+ferrite-bin       # Markdown editor
+chatgpt-desktop   # ChatGPT/Codex desktop (/usr/bin/chatgpt)
+tokscale          # token usage CLI (~/.config/tokscale)

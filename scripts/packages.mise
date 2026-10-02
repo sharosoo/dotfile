@@ -1,0 +1,14 @@
+# User-level tools via mise (no sudo). npm:/cargo:/pipx: backends (pipx uses uv when present).
+# Install: mise use -g $(sed 's/#.*//' scripts/packages.mise)
+# Runtimes node/go/rust/uv/gh are assumed already managed by mise.
+
+npm:@biomejs/biome           # biome
+npm:@mermaid-js/mermaid-cli  # mmdc
+npm:@ast-grep/cli            # sg / ast-grep
+npm:@e2b/cli                 # e2b sandbox CLI (auth in ~/.e2b/config.json)
+cargo:tauri-cli              # cargo tauri
+pipx:harlequin               # SQL TUI
+pipx:trafilatura             # web text extraction
+pipx:nano-pdf
+pipx:gdown                   # Google Drive downloader
+pipx:weasyprint              # HTML -> PDF
