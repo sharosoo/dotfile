@@ -14,7 +14,7 @@ hyprctl reload
 
 `./sync.sh`는 `home/` 안의 각 파일을 `$HOME`의 동일한 경로로 심볼릭 링크합니다. 대상 경로에 이미 다른 내용의 파일이 있다면 `*.bak.<timestamp>`로 이름을 바꿔 백업한 뒤 링크하고, 내용이 같다면 링크로 바로 교체합니다. 언제든 다시 실행해도 안전합니다.
 
-**`shell.json` 예외**: `.config/omarchy/shell.json`은 심볼릭 링크 대신 복사 방식으로 다룹니다. Omarchy 셸이 임시 파일을 작성한 뒤 이름을 바꾸는 방식(원자적 쓰기)으로 저장하므로, 심볼릭 링크를 걸어 두면 링크가 풀리고 일반 파일로 대체되기 때문입니다. 시스템에서 `shell.json`을 직접 수정했거나 바의 시계 형식 변경 등으로 파일이 갱신되었다면, `./sync.sh capture`를 실행해 저장소로 가져옵니다.
+**복사 방식 파일**: `.config/omarchy/shell.json`, `.config/fcitx5/profile`, `.config/herdr/config.toml`, `.config/fish/fish_plugins`는 심볼릭 링크 대신 복사해서 관리합니다. 해당 프로그램들이 설정을 덮어쓸 때 심볼릭 링크가 일반 파일로 풀려버리기 때문입니다. Omarchy shell은 `shell.json`을 임시 파일 생성 후 이름 변경(rename) 방식으로 원자적으로 저장하고, fcitx5의 `profile`도 같은 방식으로 동작합니다. fisher는 `fish_plugins`를 삭제한 뒤 새로 만들며, herdr 설정 역시 안전을 위해 복사 방식을 적용했습니다. 상단 바의 시계 형식 순환 등으로 `shell.json`이 갱신되는 경우를 포함해 로컬에서 설정을 바꾼 뒤에는 `./sync.sh capture`를 실행해 저장소로 가져와야 합니다.
 
 ## 변경 내역
 
@@ -31,6 +31,13 @@ hyprctl reload
 | 알림 창 반투명화 | `.config/omarchy/shell.toml` | `[notifications] background-alpha = 0.55`를 적용합니다. |
 | 알림 에이전트 아이콘 | `.local/bin/notify-send`<br>`.local/share/notification-icons/agents/*.png` | herdr 및 에이전트들이 인자 없이 호출하는 `notify-send`를 감싸는 래퍼입니다. 제목 첫 단어(`omp`, `claude`, `codex`)를 파싱해 알맞은 아이콘을 고르며, 그 외 herdr가 보낸 알림에는 herdr 아이콘을 띄웁니다. `--app-icon`을 사용해 알림 센터 기록에도 아이콘이 남습니다. 에이전트를 추가하려면 해당 디렉터리에 소문자로 `<name>.png`를 넣으면 됩니다. |
 | Chromium 알림 사이트 아이콘 | `.local/bin/notification-icons-sync`<br>`.local/bin/notification-icons-patch`<br>`.local/share/omarchy-overrides/notification-card-site-icons.patch`<br>`.config/omarchy/hooks/post-update.d/notification-site-icons.hook` | 리눅스 환경의 Chromium은 모든 알림에 브라우저 자체 로고만 보냅니다. `notification-icons-sync`가 Chromium에 저장된 파비콘을 `~/.local/share/notification-icons/<host>.png`로 추출하고, 패치를 통해 Omarchy의 `NotificationCard.qml`이 본문 시작 부분에 해당 사이트 호스트 아이콘을 표시하도록 수정합니다 (없으면 Chromium 로고 표시). |
+| Ghostty 설정 | `.config/ghostty/config` | Omarchy 환경에 맞춘 터미널 설정입니다. Omarchy 테마 색상을 따르며 `D2Coding Nerd Font` 9pt, 배경 불투명도 0.6을 적용했습니다. 로그인 셸은 bash로 유지하되 터미널 창은 fish(`command = /usr/bin/fish`)로 열리며, TUI 환경을 위해 Shift+Enter를 CSI-u로 전송합니다. |
+| D2Coding Nerd Font | `.local/share/fonts/D2CodingNerd/D2CodingNerdFont.ttf` | Ghostty에서 쓰는 폰트입니다. Omarchy 기본 설치에는 포함되어 있지 않습니다. |
+| Fish | `.config/fish/config.fish`<br>`.config/fish/fish_plugins` | 기존 개인 fish 설정을 Omarchy에 맞게 다듬었습니다. Omarchy의 PATH(mise shims, `~/.local/bin`)와 일치시키고 mise·zoxide·fzf·starship 초기화, Omarchy 스타일의 eza 별칭과 개인 git/에이전트 별칭(`h`=herdr, `cx`=claude, `cy`=codex)을 등록했습니다. fisher를 통해 `fish-ai` 플러그인을 설치해 사용합니다. |
+| 한글 입력 | `.config/fcitx5/profile` | fcitx5 입력기 설정입니다. 입력기로 `keyboard-us`와 `hangul`을 등록해 두었습니다(`fcitx5-hangul` 패키지 필요). |
+| herdr | `.config/herdr/config.toml`<br>`.local/bin/herdr-agent-picker` | Omarchy의 tmux 키바인딩(접두사 `ctrl+b`)을 그대로 따르며, 새 창은 fish로 열립니다. Hyprland 그룹 바에 맞춘 창 제목 형식을 지원하고 시스템 알림 연동(`[ui.toast] delivery = "system"`, 에이전트 아이콘 표시용)을 사용합니다. `prefix+f`를 누르면 fzf 기반 에이전트 선택기가 열려 원하는 창으로 바로 전환할 수 있습니다. |
+| 바 위젯: 시스템 통계 및 OMP 사용량 | `.config/omarchy/plugins/sharosoo.sysstat/`<br>`.config/omarchy/plugins/sharosoo.omp-usage/` | 상단 바에 CPU·메모리 사용량을 표시(클릭 시 btop 실행)하고 OMP 사용량 패널을 제공합니다. 기존 `~/workspaces/sharosoo/omarchy-plugins`에서 이곳으로 옮겨왔습니다. |
+| 블루투스 키보드 페어링 | `.local/bin/bt-keyboard-pair` | 페어링 모드 상태인 키보드를 찾아 페어링·신뢰·연결까지 진행하며, 화면 알림으로 패스키를 보여줍니다. |
 
 ## Omarchy 업데이트 후
 
@@ -41,4 +48,4 @@ hyprctl reload
 
 ## 새 PC
 
-`./sync.sh` 실행 후 `notification-icons-patch`를 한 번 실행하고(sudo 필요), `omarchy-restart-shell`을 실행합니다. 사이트 파비콘은 저장소에 커밋하지 않으며, 로컬 Chromium 프로필에서 `notification-icons-sync`가 직접 추출해 생성합니다(`notification-icons-patch` 스크립트 내부에서도 함께 실행됩니다).
+새 PC에 필요한 패키지 설치부터 서드파티 플러그인, 동기화, 테마, fish, 한글 입력, 알림 패치, 서비스 설정, 검증 체크리스트까지의 전체 재현 절차는 [NEW-PC.md](NEW-PC.md)에 정리해 두었습니다.
