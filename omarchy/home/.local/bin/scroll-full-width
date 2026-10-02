@@ -1,0 +1,40 @@
+#!/bin/bash
+# Toggle the focused window's scrolling-layout column between full width and its previous width.
+# Unlike Omarchy's maximize (Super+Alt+F default), the window stays a column, so Super+arrows keep sliding.
+# On non-scrolling workspaces it falls back to Omarchy's maximize toggle.
+
+set -euo pipefail
+
+STATE_DIR="$HOME/.local/state/scroll-full-width"
+FULL_SLACK=4 # px tolerance when deciding "already full width"
+
+dispatch() { hyprctl eval "return hl.dispatch($1)" >/dev/null; }
+
+active=$(hyprctl activewindow -j)
+address=$(jq -r '.address // empty' <<<"$active")
+[[ -n $address ]] || exit 0
+
+layout=$(hyprctl activeworkspace -j | jq -r '.tiledLayout // empty')
+if [[ $layout != scrolling ]] || [[ $(jq -r '.floating' <<<"$active") == true ]]; then
+  dispatch 'hl.dsp.window.fullscreen({ mode = "maximized" })'
+  exit 0
+fi
+
+width() { hyprctl clients -j | jq -r --arg a "$address" '.[] | select(.address == $a) | .size[0]'; }
+
+mkdir -p "$STATE_DIR"
+state="$STATE_DIR/${address}"
+current=$(width)
+
+if [[ -f $state ]]; then
+  read -r saved full <"$state"
+  if ((current >= full - FULL_SLACK)); then
+    frac=$(awk -v s="$saved" -v f="$full" 'BEGIN { printf "%.4f", s / f }')
+    dispatch "hl.dsp.layout(\"colresize $frac\")"
+    rm -f "$state"
+    exit 0
+  fi
+fi
+
+dispatch 'hl.dsp.layout("colresize 1.0")'
+printf '%s %s\n' "$current" "$(width)" >"$state"

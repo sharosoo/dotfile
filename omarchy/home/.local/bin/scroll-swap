@@ -1,0 +1,18 @@
+#!/bin/bash
+# Move the focused window left/right/up/down.
+# On scrolling workspaces, left/right swap whole columns (swapcol), so each window keeps
+# its own width. Plain window swap leaves widths with the slot: moving next to a
+# full-width column made the moved window full width.
+
+set -euo pipefail
+
+dir=${1:?usage: scroll-swap l|r|u|d}
+
+layout=$(hyprctl activeworkspace -j | jq -r '.tiledLayout // empty')
+floating=$(hyprctl activewindow -j | jq -r '.floating // false')
+
+if [[ $layout == scrolling && $floating != true && ($dir == l || $dir == r) ]]; then
+  hyprctl dispatch "hl.dsp.layout(\"swapcol $dir\")" >/dev/null
+else
+  hyprctl dispatch "hl.dsp.window.swap({ direction = \"$dir\" })" >/dev/null
+fi

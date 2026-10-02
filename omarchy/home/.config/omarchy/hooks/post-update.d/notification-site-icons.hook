@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# Omarchy updates replace NotificationCard.qml and drop the local site-icon patch.
+# Re-applying needs sudo, so offer it as a click instead of running it here.
+patch_file="$HOME/.local/share/omarchy-overrides/notification-card-site-icons.patch"
+target=/usr/share/omarchy/shell/plugins/notifications/components/NotificationCard.qml
+
+if ! patch --dry-run -R -s -f "$target" <"$patch_file" >/dev/null 2>&1; then
+  omarchy-notification-send -u critical "Reapply notification site icons" \
+    "Omarchy update removed the patch. Click to reapply (sudo)." \
+    --exec "omarchy-launch-floating-terminal-with-presentation $HOME/.local/bin/notification-icons-patch"
+fi

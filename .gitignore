@@ -73,6 +73,8 @@ Icon?
 private/
 local/
 *.local
+# omarchy/home mirrors $HOME, so its .local/ is tracked config, not machine-local state.
+!omarchy/home/.local
 
 # Claude Code
 .claude/*

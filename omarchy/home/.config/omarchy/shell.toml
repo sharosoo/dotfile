@@ -1,0 +1,3 @@
+# Machine-level overrides layered on top of the active theme's shell.toml.
+[notifications]
+background-alpha = 0.55

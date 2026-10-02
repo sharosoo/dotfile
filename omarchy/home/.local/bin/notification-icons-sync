@@ -1,0 +1,42 @@
+#!/bin/bash
+# Export Chromium's stored favicons as ~/.local/share/notification-icons/<host>.png.
+# Chromium's Linux notifications always carry the browser logo as app_icon; the
+# patched Omarchy NotificationCard looks the site icon up here by the origin host
+# Chromium puts at the start of the body (see notification-icons-patch).
+
+set -euo pipefail
+
+out="$HOME/.local/share/notification-icons"
+mkdir -p "$out"
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+shopt -s nullglob
+for db in "$HOME"/.config/chromium/{Default,Profile\ *}/Favicons; do
+  # The live DB is locked while Chromium runs; read a copy.
+  cp "$db" "$tmp/fav.db"
+  # Per host, the widest stored bitmap. data: URLs are skipped: sites like Slack
+  # set those for unread-count badges, not the logo.
+  sqlite3 "$tmp/fav.db" "
+    WITH ranked AS (
+      SELECT substr(m.page_url, instr(m.page_url, '://') + 3) AS rest, b.image_data AS img, b.width AS w
+      FROM icon_mapping m
+      JOIN favicons f ON f.id = m.icon_id
+      JOIN favicon_bitmaps b ON b.icon_id = f.id
+      WHERE m.page_url LIKE 'http%' AND f.url NOT LIKE 'data:%' AND length(b.image_data) > 0
+    ), hosts AS (
+      SELECT CASE WHEN instr(rest, '/') > 0 THEN substr(rest, 1, instr(rest, '/') - 1) ELSE rest END AS host, img, w
+      FROM ranked
+    ), best AS (
+      SELECT host, img, row_number() OVER (PARTITION BY host ORDER BY w DESC) AS rn FROM hosts
+    )
+    SELECT writefile('$tmp/' || host || '.png', img) FROM best WHERE rn = 1 AND host NOT LIKE '%:%';
+  " >/dev/null
+  rm -f "$tmp/fav.db"
+done
+
+# Chromium stores some favicons as ICO; the card needs a format Qt reads, so normalise to PNG.
+for f in "$tmp"/*.png; do
+  magick "$f[0]" "$out/$(basename "$f")" 2>/dev/null || true
+done

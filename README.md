@@ -18,6 +18,7 @@ cp .env.example ~/.env.local   # 비밀키는 직접 편집
 |------|------|----------------|
 | **인덱스 / 데스크톱** | [desktop-stack.md](docs/desktop-stack.md) | niri, noctalia, fcitx5, systemd |
 | **Niri + Noctalia** | [NIRI-NOCTALIA.md](docs/NIRI-NOCTALIA.md) · [단축키](docs/niri-noctalia-단축키.md) | `niri/`, `noctalia/`, `systemd/user/` |
+| **Omarchy (Hyprland·셸)** | [omarchy/README.md](omarchy/README.md) | `omarchy/` |
 | **Fish 셸** | [fish.md](docs/fish.md) | `fish/` |
 | **터미널 (Ghostty, Starship)** | [TERMINAL_SETUP.md](docs/TERMINAL_SETUP.md) | `ghostty/`, `starship/` |
 | **OMP (oh-my-pi)** | [omp/README.md](omp/README.md) | `omp/` |

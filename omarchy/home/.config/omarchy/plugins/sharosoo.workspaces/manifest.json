@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "sharosoo.workspaces",
+  "name": "Workspaces",
+  "version": "1.0.0",
+  "author": "sharosoo",
+  "description": "Workspace indicators with a configurable number of always-shown workspaces",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "Workspaces",
+    "description": "Workspace number indicators; shows 1..persistent plus any other occupied workspace",
+    "category": "Compositor",
+    "allowMultiple": false,
+    "defaultSection": "left",
+    "defaults": {
+      "persistent": 2
+    }
+  }
+}

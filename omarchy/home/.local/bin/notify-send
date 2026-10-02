@@ -1,0 +1,36 @@
+#!/bin/bash
+# herdr and the coding agents it hosts call bare `notify-send title body`, so their toasts
+# arrive as app "notify-send" with no icon. When the caller set no app name or icon, pick
+# one by who the notification is about: the title's first word (omp, claude, codex, ...)
+# if ~/.local/share/notification-icons/agents/<word>.png exists, else herdr's own icon
+# for anything herdr sends. Every other call passes through untouched.
+# The icon goes in as --app-icon, not --icon: --icon becomes an image hint that the Omarchy
+# shell drops when it saves history, so the notification center would show no icon.
+
+real=/usr/bin/notify-send
+icons="$HOME/.local/share/notification-icons/agents"
+
+title=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case ${args[i]} in
+  -a | --app-name | -i | --icon | -n | --app-icon | --app-name=* | --icon=* | --app-icon=*) exec "$real" "$@" ;;
+  --) title=${args[i + 1]-}; break ;;
+  -u | -t | -c | -h | -A | -r | --urgency | --expire-time | --category | --hint | --action | --replace-id) ((i++)) ;;
+  -*) ;;
+  *) title=${args[i]}; break ;;
+  esac
+done
+
+word=${title%%[[:space:]]*}
+word=${word,,}
+
+if [[ -n $word && -f $icons/$word.png ]]; then
+  exec "$real" -a "$word" -n "file://$icons/$word.png" "$@"
+fi
+
+if [[ $(ps -o comm= -p "$PPID" 2>/dev/null) == herdr ]]; then
+  exec "$real" -a herdr -n "file://$icons/herdr.png" "$@"
+fi
+
+exec "$real" "$@"

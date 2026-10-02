@@ -1,0 +1,44 @@
+--- a/NotificationCard.qml	2026-10-02 18:36:27.857124614 +0900
++++ b/NotificationCard.qml	2026-10-02 18:36:39.554019225 +0900
+@@ -36,7 +36,12 @@
+   signal cardClicked()
+   // Prefer per-notification media/avatar data, then fall back to the app icon.
+   // The `check` flag avoids Qt's missing-texture placeholder for unknown names.
+-  readonly property string smallIconSource: image.length > 0 ? image : iconSource(appIcon)
++  // Local patch (notification-icons-patch): Chromium only ever sends its own logo
++  // as app_icon, so use the site's favicon exported by notification-icons-sync.
++  readonly property string siteIcon: chromiumSiteIcon()
++  property bool siteIconFailed: false
++  readonly property string smallIconSource: image.length > 0 ? image
++    : (siteIcon.length > 0 && !siteIconFailed ? siteIcon : iconSource(appIcon))
+   readonly property bool hasGlyph: glyph.length > 0
+   readonly property bool compactGlyph: NotificationLogic.shouldRenderCompactGlyph(glyph, smallIconSource, singleLineToast)
+   readonly property bool hasSmallIcon: smallIconSource.length > 0
+@@ -63,6 +68,13 @@
+     return Quickshell.iconPath(value, true)
+   }
+ 
++  function chromiumSiteIcon() {
++    if (!NotificationLogic.isChromiumDerived(app, appIcon)) return ""
++    var match = String(body || "").match(/^\s*(?:<a\b[^>]*>\s*)?(?:https?:\/\/)?((?:[a-z0-9-]+\.)+[a-z]{2,})/i)
++    if (!match) return ""
++    return "file://" + Quickshell.env("HOME") + "/.local/share/notification-icons/" + match[1].toLowerCase() + ".png"
++  }
++
+   implicitWidth: Style.space(380)
+   // Add vertical border insets so mainColumn (inset by border on top/left/right)
+   // doesn't push content under the bottom edge.
+@@ -128,6 +140,13 @@
+           asynchronous: true
+           smooth: true
+           visible: !root.hasGlyph || smallIconImage.status === Image.Ready
++          // No exported favicon for this site yet: show the app icon now and
++          // refresh the export so the next notification from it has one.
++          onStatusChanged: {
++            if (status !== Image.Error || source.toString() !== root.siteIcon || root.siteIconFailed) return
++            root.siteIconFailed = true
++            Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/notification-icons-sync"])
++          }
+         }
+ 
+         // Glyph fallback (Nerd Font character) when no image icon is
