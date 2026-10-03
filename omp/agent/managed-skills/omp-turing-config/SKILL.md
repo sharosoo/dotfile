@@ -7,7 +7,8 @@ description: "Use when tuning this machine's omp (oh-my-pi) setup: context windo
 
 ## Files
 - Live: `~/.omp/agent/config.yml` (settings, `modelRoles`, `task.agentModelOverrides`, `retry.fallbackChains`), `~/.omp/agent/models.yml` (provider `modelOverrides`), `~/.omp/agent/models.db` (sqlite `model_cache(provider_id, models JSON)`; provider ids may carry a `:suffix`, e.g. `devin:models-v2`, `openai-codex:0.159.0` — the provider name is the part before `:`).
-- Snapshot repo: `~/workspaces/sharosoo/dotfile/omp/` (copied, not linked; `README.md` table lists each file). Restore steps are in that README.
+- Snapshot repo: `~/workspaces/sharosoo/dotfile/omp/` (public GitHub repo). It holds config.yml, mcp.json (secrets as `${SERVER_TOKEN}` placeholders), agents/, managed-skills/, rules/ (incl. `projects/`), skills/, extensions/, and `agents-skills/` (= `~/.agents/skills` minus symlinks and `synced/`).
+- After any change to agents, skills, rules, extensions or settings: `dotfile/omp/sync.sh capture`, check `git diff` for secrets, commit. New machine: `sync.sh restore` (keeps an existing mcp.json, regenerates the context caps). Details in `omp/README.md`.
 - Settings reference: `read cfg://` (all keys + defaults), docs at `omp://settings.md`, `omp://models.md`, `omp://compaction.md`. Writing via `cfg://` needs explicit user approval.
 
 ## Context window cap (decided 2026-10-03)
