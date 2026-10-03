@@ -27,12 +27,13 @@ omarchy pkg add fish fcitx5-hangul tailscale
 
 ## 3. Omarchy 서드파티 플러그인 설치
 
-`shell.json` 설정에서 바(bar)에 표시할 외부 플러그인을 미리 지정해 두었으므로, 4단계를 진행하기 전에 먼저 설치해야 합니다. 외부 저장소 코드이므로 이 저장소에는 포함되어 있지 않습니다. Omarchy 플러그인 관리자로 Git에서 직접 설치하며, 추후 `omarchy plugin update`로 최신 상태를 유지할 수 있습니다.
+서드파티 바 플러그인도 이 저장소에 함께 보관합니다(`omarchy/vendor/plugins/`, 커밋 및 업스트림 정보는 `omarchy/vendor/plugins.lock`에 고정). 따라서 직접 설치할 필요가 없습니다. 4단계에서 `./sync.sh`를 실행하면 설치되지 않은 플러그인을 지정된 커밋으로 알아서 복제해 오며, 네트워크 연결이 없거나 원본 저장소가 사라져 복제에 실패하더라도 저장소에 보관된 코드를 대신 복사합니다.
+
+설치된 플러그인은 일반 git 저장소 상태를 유지하므로 `omarchy plugin update`로 바로 업데이트할 수 있습니다. 업데이트한 뒤에는 `./sync.sh capture`를 실행해 변경된 코드와 커밋 해시를 저장소에 기록하고 커밋하면 됩니다. 새 서드파티 플러그인을 추가할 때는 `omarchy plugin add <git-url>`로 설치하고 `vendor/plugins.lock`에 새 줄로 플러그인 ID를 추가한 다음 `./sync.sh capture`를 실행하세요.
 
 ```bash
-omarchy plugin add https://github.com/jankeesvw/omarchy-herdr.git --yes
-omarchy plugin add https://github.com/jankeesvw/omarchy-notification-center.git --yes
-omarchy plugin add https://github.com/stappmus/Omarchy-Spotify.git --yes
+omarchy plugin update
+cd ~/workspaces/sharosoo/dotfile/omarchy && ./sync.sh capture
 ```
 
 | 플러그인 | 용도 |

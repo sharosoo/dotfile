@@ -14,7 +14,7 @@ hyprctl reload
 
 `./sync.sh`는 `home/` 안의 각 파일을 `$HOME`의 동일한 경로로 심볼릭 링크합니다. 대상 경로에 이미 다른 내용의 파일이 있다면 `*.bak.<timestamp>`로 이름을 바꿔 백업한 뒤 링크하고, 내용이 같다면 링크로 바로 교체합니다. 언제든 다시 실행해도 안전합니다.
 
-**복사 방식 파일**: `.config/omarchy/shell.json`, `.config/fcitx5/profile`, `.config/herdr/config.toml`, `.config/fish/fish_plugins`는 심볼릭 링크 대신 복사해서 관리합니다. 해당 프로그램들이 설정을 덮어쓸 때 심볼릭 링크가 일반 파일로 풀려버리기 때문입니다. Omarchy shell은 `shell.json`을 임시 파일 생성 후 이름 변경(rename) 방식으로 원자적으로 저장하고, fcitx5의 `profile`도 같은 방식으로 동작합니다. fisher는 `fish_plugins`를 삭제한 뒤 새로 만들며, herdr 설정 역시 안전을 위해 복사 방식을 적용했습니다. 상단 바의 시계 형식 순환 등으로 `shell.json`이 갱신되는 경우를 포함해 로컬에서 설정을 바꾼 뒤에는 `./sync.sh capture`를 실행해 저장소로 가져와야 합니다.
+**복사 방식 파일**: `.config/omarchy/shell.json`, `.config/fcitx5/profile`, `.config/herdr/config.toml`, `.config/fish/fish_plugins`는 심볼릭 링크 대신 복사해서 관리합니다. 해당 프로그램들이 설정을 덮어쓸 때 심볼릭 링크가 일반 파일로 풀려버리기 때문입니다. Omarchy shell은 `shell.json`을 임시 파일 생성 후 이름 변경(rename) 방식으로 원자적으로 저장하고, fcitx5의 `profile`도 같은 방식으로 동작합니다. fisher는 `fish_plugins`를 삭제한 뒤 새로 만들며, herdr 설정 역시 안전을 위해 복사 방식을 적용했습니다. 상단 바의 시계 형식 순환 등으로 `shell.json`이 갱신되는 경우를 포함해 로컬에서 설정을 바꾼 뒤에는 `./sync.sh capture`를 실행해 저장소로 가져와야 합니다. 서드파티 플러그인도 심볼릭 링크로 연결하지 않습니다. `~/.config/omarchy/plugins/`에 일반 git 저장소 형태로 유지하며, 최신 코드는 `./sync.sh capture`로 다시 복사해 가져옵니다.
 
 ## 변경 내역
 
@@ -38,6 +38,7 @@ hyprctl reload
 | herdr | `.config/herdr/config.toml`<br>`.local/bin/herdr-agent-picker` | Omarchy의 tmux 키바인딩(접두사 `ctrl+b`)을 그대로 따르며, 새 창은 fish로 열립니다. Hyprland 그룹 바에 맞춘 창 제목 형식을 지원하고 시스템 알림 연동(`[ui.toast] delivery = "system"`, 에이전트 아이콘 표시용)을 사용합니다. `prefix+f`를 누르면 fzf 기반 에이전트 선택기가 열려 원하는 창으로 바로 전환할 수 있습니다. |
 | 바 위젯: 시스템 통계 및 OMP 사용량 | `.config/omarchy/plugins/sharosoo.sysstat/`<br>`.config/omarchy/plugins/sharosoo.omp-usage/` | 상단 바에 CPU·메모리 사용량을 표시(클릭 시 btop 실행)하고 OMP 사용량 패널을 제공합니다. 기존 `~/workspaces/sharosoo/omarchy-plugins`에서 이곳으로 옮겨왔습니다. |
 | 블루투스 키보드 페어링 | `.local/bin/bt-keyboard-pair` | 페어링 모드 상태인 키보드를 찾아 페어링·신뢰·연결까지 진행하며, 화면 알림으로 패스키를 보여줍니다. |
+| 서드파티 바 플러그인 | `vendor/plugins/`<br>`vendor/plugins.lock` | `jankeesvw.herdr`, `jankeesvw.notification-center`, `quickshell.spotify`(MIT)의 코드(업스트림 문서·스크린샷 제외)와 업스트림 주소 및 커밋 해시입니다. `sync.sh`가 해당 커밋으로 복제하며 실패 시 보관된 코드로 대체합니다. `omarchy plugin update` 후에는 `sync.sh capture`로 코드와 락 파일을 갱신합니다. |
 
 ## Omarchy 업데이트 후
 

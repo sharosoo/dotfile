@@ -2,16 +2,24 @@
 # Install or capture the Omarchy customisations kept under omarchy/home/ (mirrors $HOME).
 #
 #   ./sync.sh          link: symlink every file into $HOME (differing live files are backed up)
-#   ./sync.sh capture  copy the copy-managed files from $HOME back into the repo
+#   ./sync.sh capture  copy the copy-managed files and third-party plugins from $HOME back into the repo
 #
 # Some files are copied, not linked, because their owner rewrites them in a way that can
 # replace a symlink with a plain file and silently detach it: the Omarchy shell saves
 # shell.json atomically (temp file + rename), fcitx5 does the same for profile, fisher
 # deletes and recreates fish_plugins, and herdr's config.toml is treated the same way to be
 # safe. Run `./sync.sh capture` after changing any of them.
+#
+# Third-party bar plugins are vendored under vendor/plugins/<id>/ with their source in
+# vendor/plugins.lock (`id url commit`). They stay real git checkouts in $HOME so
+# `omarchy plugin update` and the Spotify plugin's source verification keep working: link
+# clones a missing plugin at the locked commit (falling back to the vendored copy offline),
+# capture copies the tracked files back (minus docs/ and .github/) and refreshes the lock.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/home"
+VENDOR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/vendor/plugins"
+LIVE_PLUGINS="$HOME/.config/omarchy/plugins"
 COPIED=(
   .config/omarchy/shell.json
   .config/fcitx5/profile
@@ -54,17 +62,52 @@ install_file() {
   echo "link $dest"
 }
 
+install_plugins() {
+  local id url commit dest
+  while read -r id url commit; do
+    [[ -z $id || $id == \#* ]] && continue
+    dest="$LIVE_PLUGINS/$id"
+    [[ -e $dest ]] && continue
+    mkdir -p "$LIVE_PLUGINS"
+    if git clone -q "$url" "$dest" && git -C "$dest" checkout -q "$commit"; then
+      echo "clone $dest @ $commit"
+    else
+      rm -rf "$dest"
+      cp -r "$VENDOR/$id" "$dest"
+      echo "copy $dest (vendored; clone failed)"
+    fi
+  done <"$VENDOR.lock"
+}
+
+capture_plugins() {
+  local id src
+  : >"$VENDOR.lock.tmp"
+  while read -r id _; do
+    [[ -z $id || $id == \#* ]] && continue
+    src="$LIVE_PLUGINS/$id"
+    rm -rf "${VENDOR:?}/$id"
+    mkdir -p "$VENDOR/$id"
+    git -C "$src" ls-files -z -- . ':!docs' ':!.github' |
+      (cd "$src" && xargs -0 cp --parents -t "$VENDOR/$id")
+    printf '%s %s %s\n' "$id" "$(git -C "$src" remote get-url origin)" "$(git -C "$src" rev-parse HEAD)" >>"$VENDOR.lock.tmp"
+    echo "capture plugin $id"
+  done <"$VENDOR.lock"
+  mv "$VENDOR.lock.tmp" "$VENDOR.lock"
+}
+
 case ${1:-link} in
 link)
   while IFS= read -r -d '' f; do
     install_file "${f#"$ROOT"/}"
   done < <(find "$ROOT" -type f -print0)
+  install_plugins
   ;;
 capture)
   for rel in "${COPIED[@]}"; do
     cp "$HOME/$rel" "$ROOT/$rel"
     echo "capture $rel"
   done
+  capture_plugins
   ;;
 *)
   echo "usage: $0 [link|capture]" >&2
