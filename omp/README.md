@@ -11,6 +11,7 @@ CLI: `omp` — bun 전역 설치 (`@oh-my-pi/pi-coding-agent`), 실체는 `~/.bu
 |---------|-----------|------|
 | `agent/config.yml` | `~/.omp/agent/config.yml` | 모델 role 매핑, 테마, provider 우선순위 |
 | `agent/mcp.json` | `~/.omp/agent/mcp.json` | MCP 서버 목록 |
+| `cap-context.py` | `~/.omp/agent/models.yml` (생성) | 1M급 모델의 컨텍스트 창을 320K로 줄여 약 272K에서 요약하게 한다. 새 모델이 추가되면 `python3 omp/cap-context.py`를 다시 실행한다. |
 | `agent/agents/` | `~/.omp/agent/agents/` | 커스텀 서브에이전트 |
 | `marketplaces.json` | `~/.omp/marketplaces.json` | 플러그인 마켓플레이스 등록 |
 | `installed_plugins.json` | `~/.omp/plugins/installed_plugins.json` | 설치된 플러그인 목록 |
