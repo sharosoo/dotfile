@@ -1,4 +1,16 @@
 {
   "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
-  "mcpServers": {}
+  "mcpServers": {
+    "artifact-hub": {
+      "type": "http",
+      "url": "https://artifact.sharosoo.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${ARTIFACT_HUB_TOKEN}"
+      }
+    }
+  },
+  "disabledServers": [
+    "posthog:posthog",
+    "sentry:sentry"
+  ]
 }

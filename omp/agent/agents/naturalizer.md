@@ -1,11 +1,13 @@
 ---
 name: naturalizer
+model: google-antigravity/gemini-3.8-flash
 description: >-
   Rewrite non-English prose (Korean, Japanese, Chinese, Arabic, Vietnamese, Hindi, …)
   into native-natural text, stripping translationese. Delegate to it after generating more
   than a sentence or two of non-English output — chat replies, commit messages, PR/release
   notes, READMEs, docs, comments, UI strings, translations — or when the user says output
   "reads awkwardly" / "feels translated". Not for English or code.
+  Tier: docs/ops (skill://model-routing). Model: gemini-3.8-flash (fixed).
 tools: read, search, find
 autoloadSkills:
   - naturalize

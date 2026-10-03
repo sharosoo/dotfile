@@ -1,60 +1,199 @@
-symbolPreset: nerd
-theme: 
-  dark: titanium
-setupVersion: 1
-modelRoles: 
-  slow: openai-codex/gpt-5.6-sol:high
-  vision: openai-codex/gpt-5.6-luna
-  smol: openai-codex/gpt-5.6-terra
-  designer: zai/glm-5.2:high
-  plan: openai-codex/gpt-5.6-sol:xhigh
-  advisor: openai-codex/gpt-5.6-sol:xhigh
-  task: openai-codex/gpt-5.6-sol:medium
+modelRoles:
+  slow: openai-codex/gpt-6-astra:xhigh
+  vision: google-antigravity/gemini-3.7-flash:auto
+  smol: google-antigravity/gemini-3.8-flash:high
+  plan: google-antigravity/gemini-3.8-flash
+  advisor: openai-codex/gpt-6-astra:high
   tiny: openai-codex/gpt-5.6-luna
-  commit: openai-codex/gpt-5.6-terra
-  default: openai-codex/gpt-5.6-sol:high
+  commit: google-antigravity/gemini-3.7-flash:auto
+  web: openai-codex/gpt-5.6-luna
+  image: openai/gpt-image-1
+  default: anthropic/claude-opus-5-5:medium
+symbolPreset: nerd
+composer:
+  shape: band
+theme:
+  dark: titanium
+  light: light
+setupVersion: 2
+dev:
+  autoqaConsent: granted
 defaultThinkingLevel: auto
-memory: 
+advisor:
+  enabled: false
+retry:
+  modelFallback: true
+  usageAwareFallback: true
+  usageReservePct: 2
+  fallbackChains:
+    devin/swe-2:
+      - openai-codex/gpt-6-luna
+      - commandcode/xiaomi/mimo-v2.6-pro
+    openai-codex/gpt-5.6-sol:
+      - openai-codex/gpt-5.6-terra
+      - kimi-code/k3
+      - commandcode/deepseek/deepseek-v4-pro
+    openai-codex/gpt-5.6-terra:
+      - kimi-code/k3
+      - commandcode/deepseek/deepseek-v4-pro
+    kimi-code/k3:
+      - commandcode/deepseek/deepseek-v4-pro
+    web:
+      - web/perplexity
+      - google/gemini-2.5-flash
+      - anthropic/claude-haiku-4-5
+      - xai/grok-4.5
+      - web/exa
+      - web/tinyfish
+      - web/jina
+      - web/kagi
+      - web/tavily
+      - web/firecrawl
+      - web/brave
+      - web/kimi
+      - web/parallel
+      - web/synthetic
+      - web/searxng
+      - web/startpage
+      - web/duckduckgo
+      - web/ecosia
+      - web/google
+      - web/mojeek
+      - web/public
+      - google-antigravity/gemini-2.5-flash
+      - openai-codex/gpt-5.6
+      - openai-codex/gpt-5.5
+      - xai-oauth/grok-4.5
+      - web/zai
+      - web/ollama
+    image:
+      - openai-codex/gpt-image-1
+      - google-antigravity/gemini-3-pro-image
+      - xai/grok-imagine-image
+      - openrouter/google/gemini-3-pro-image-preview
+      - google/gemini-3-pro-image-preview
+      - xai-oauth/grok-imagine-image
+      - deepinfra/black-forest-labs/FLUX-2-pro
+autolearn:
+  enabled: true
+disabledProviders:
+  - zai
+memory:
   backend: mnemopi
 readLineNumbers: false
-providers: 
-  webSearchOrder: 
-    - codex
-    - perplexity
-    - gemini
-    - anthropic
-    - xai
-    - zai
-    - exa
-    - tinyfish
-    - jina
-    - kagi
-    - tavily
-    - firecrawl
-    - brave
-    - kimi
-    - parallel
-    - synthetic
-    - searxng
-    - startpage
-    - duckduckgo
-    - ecosia
-    - google
-    - mojeek
-    - public
-  imageOrder: 
-    - openai
-    - openai-codex
-    - antigravity
-    - xai
-    - openrouter
-    - gemini
-inspect_image: 
-  mode: "on"
-github: 
+github:
   enabled: true
-collab: 
+collab:
   webUrl: ""
-hideThinkingBlock: true
-dev: 
-  autoqaConsent: granted
+hideThinkingBlock: false
+browser:
+  relay: true
+skills:
+  ignoredSkills:
+    - analyzing-experiment-session-replays
+    - assessing-heatmaps
+    - auditing-endpoints
+    - auditing-experiments-flags
+    - auditing-warehouse-source-health
+    - auditing-warehouse-view-health
+    - authoring-error-tracking-alerts
+    - authoring-log-alerts
+    - authoring-signals-scouts
+    - building-workflows
+    - choosing-trend-or-slope-view
+    - cleaning-up-stale-feature-flags
+    - configuring-experiment-analytics
+    - configuring-experiment-rollout
+    - consuming-endpoints-from-client-code
+    - copying-flags-across-projects
+    - creating-ai-subscription
+    - creating-an-endpoint
+    - creating-experiments
+    - creating-replay-vision-scanners
+    - debugging-local-replay
+    - debugging-signals-pipeline
+    - designing-email-templates
+    - diagnosing-ci-and-merge-bottlenecks
+    - diagnosing-endpoint-performance
+    - diagnosing-experiment-results
+    - diagnosing-failed-warehouse-syncs
+    - diagnosing-missing-recordings
+    - diagnosing-sdk-health
+    - diagnosing-stacktrace-symbolication
+    - downloading-batch-export-files
+    - exploring-apm-traces
+    - exploring-autocapture-events
+    - exploring-endpoint-execution-logs
+    - exploring-live-traffic
+    - exploring-llm-clusters
+    - exploring-llm-costs
+    - exploring-llm-evaluations
+    - exploring-llm-traces
+    - exploring-mcp-intent-clusters
+    - exploring-mcp-sessions
+    - exploring-mcp-tool-quality
+    - exploring-signals-scouts
+    - feature-usage-feed
+    - finding-deleted-feature-flags
+    - finding-experiments
+    - finding-replay-for-issue
+    - finding-sessions-to-watch
+    - formatting-insight-axes
+    - grouping-noisy-errors
+    - inbox-exploration
+    - instrument-error-tracking
+    - instrument-feature-flags
+    - instrument-integration
+    - instrument-llm-analytics
+    - instrument-logs
+    - instrument-product-analytics
+    - investigate-metric
+    - investigating-error-issue
+    - investigating-metric-anomalies
+    - investigating-replay
+    - managing-endpoint-versions
+    - managing-experiment-lifecycle
+    - managing-path-cleaning-rules
+    - managing-reminders
+    - managing-subscriptions
+    - planning-user-interviews
+    - querying-posthog-data
+    - setting-up-a-data-warehouse-source
+    - signals
+    - signals-scout-ai-observability
+    - signals-scout-anomaly-detection
+    - signals-scout-csp-violations
+    - signals-scout-customer-analytics
+    - signals-scout-data-pipelines
+    - signals-scout-error-tracking
+    - signals-scout-experiments
+    - signals-scout-feature-flags
+    - signals-scout-general
+    - signals-scout-health-checks
+    - signals-scout-inbox-validation
+    - signals-scout-logs
+    - signals-scout-observability-gaps
+    - signals-scout-product-analytics
+    - signals-scout-replay-vision
+    - signals-scout-revenue-analytics
+    - signals-scout-session-replay
+    - signals-scout-surveys
+    - signals-scout-web-analytics
+    - skills-store
+    - suggesting-data-imports
+    - suppressing-noisy-errors
+    - triaging-error-issues
+    - triaging-visual-review-runs
+    - tuning-incremental-sync-config
+    - working-with-skills
+codexResets:
+  autoRedeem: "no"
+task:
+  enableEffort: true
+  maxEffort: xhigh
+  agentModelOverrides:
+    task: devin/swe-2, openai-codex/gpt-6-luna, commandcode/xiaomi/mimo-v2.6-pro
+    sonic: devin/swe-2:medium, commandcode/deepseek/deepseek-v4.1-flash
+    scout: google-antigravity/gemini-3.8-flash:medium, devin/swe-2:medium, openai-codex/gpt-6-luna:low
+    reviewer: devin/swe-2, xai-oauth/grok-4.7, google-antigravity/gemini-3.8-flash
+    security-reviewer: openai-codex/gpt-6-astra:high, devin/gpt-6-astra:high

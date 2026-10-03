@@ -4,55 +4,46 @@
     "context7@claude-plugins-official": [
       {
         "scope": "user",
-        "installPath": "/home/global/.omp/plugins/cache/plugins/claude-plugins-official___context7___0.0.0",
+        "installPath": "/home/sharosoo/.omp/plugins/cache/plugins/claude-plugins-official___context7___0.0.0",
         "version": "0.0.0",
-        "installedAt": "2026-06-22T05:15:52.491Z",
-        "lastUpdated": "2026-06-22T05:15:52.491Z"
+        "installedAt": "2026-09-30T05:14:51.390Z",
+        "lastUpdated": "2026-09-30T05:14:51.390Z"
       }
     ],
     "sentry@claude-plugins-official": [
       {
         "scope": "user",
-        "installPath": "/home/global/.omp/plugins/cache/plugins/claude-plugins-official___sentry___1.0.0",
-        "version": "1.0.0",
-        "installedAt": "2026-06-22T05:15:53.873Z",
-        "lastUpdated": "2026-06-22T05:15:53.873Z"
-      }
-    ],
-    "posthog@claude-plugins-official": [
-      {
-        "scope": "user",
-        "installPath": "/home/global/.omp/plugins/cache/plugins/claude-plugins-official___posthog___1.1.39",
-        "version": "1.1.39",
-        "installedAt": "2026-06-22T05:15:55.316Z",
-        "lastUpdated": "2026-06-22T05:15:55.316Z"
+        "installPath": "/home/sharosoo/.omp/plugins/cache/plugins/claude-plugins-official___sentry___1.4.0",
+        "version": "1.4.0",
+        "installedAt": "2026-09-30T05:14:52.654Z",
+        "lastUpdated": "2026-09-30T05:14:52.654Z"
       }
     ],
     "code-review@claude-plugins-official": [
       {
         "scope": "user",
-        "installPath": "/home/global/.omp/plugins/cache/plugins/claude-plugins-official___code-review___0.0.0",
+        "installPath": "/home/sharosoo/.omp/plugins/cache/plugins/claude-plugins-official___code-review___0.0.0",
         "version": "0.0.0",
-        "installedAt": "2026-06-22T05:15:55.931Z",
-        "lastUpdated": "2026-06-22T05:15:55.931Z"
+        "installedAt": "2026-09-30T05:14:52.869Z",
+        "lastUpdated": "2026-09-30T05:14:52.869Z"
       }
     ],
     "typescript-lsp@claude-plugins-official": [
       {
         "scope": "user",
-        "installPath": "/home/global/.omp/plugins/cache/plugins/claude-plugins-official___typescript-lsp___1.0.0",
+        "installPath": "/home/sharosoo/.omp/plugins/cache/plugins/claude-plugins-official___typescript-lsp___1.0.0",
         "version": "1.0.0",
-        "installedAt": "2026-06-22T05:16:02.632Z",
-        "lastUpdated": "2026-06-22T05:16:02.632Z"
+        "installedAt": "2026-09-30T05:14:53.093Z",
+        "lastUpdated": "2026-09-30T05:14:53.093Z"
       }
     ],
     "pyright-lsp@claude-plugins-official": [
       {
         "scope": "user",
-        "installPath": "/home/global/.omp/plugins/cache/plugins/claude-plugins-official___pyright-lsp___1.0.0",
+        "installPath": "/home/sharosoo/.omp/plugins/cache/plugins/claude-plugins-official___pyright-lsp___1.0.0",
         "version": "1.0.0",
-        "installedAt": "2026-06-22T05:16:03.248Z",
-        "lastUpdated": "2026-06-22T05:16:03.248Z"
+        "installedAt": "2026-09-30T05:14:53.314Z",
+        "lastUpdated": "2026-09-30T05:14:53.314Z"
       }
     ]
   }
