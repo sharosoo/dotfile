@@ -25,13 +25,34 @@ omarchy pkg add fish fcitx5-hangul tailscale
 
 그 외 개인 도구 모음은 선택 사항입니다. 필요하다면 `scripts/packages.arch`, `scripts/packages.aur`, `scripts/packages.mise` 및 루트 `README.md`를 참고하세요.
 
-## 3. Omarchy 서드파티 패널 플러그인 설치
-`shell.json`에서 아래 플러그인을 불러오므로 설정을 동기화하기 전에 먼저 설치해야 합니다.
+## 3. Omarchy 서드파티 플러그인 설치
+
+`shell.json` 설정에서 바(bar)에 표시할 외부 플러그인을 미리 지정해 두었으므로, 4단계를 진행하기 전에 먼저 설치해야 합니다. 외부 저장소 코드이므로 이 저장소에는 포함되어 있지 않습니다. Omarchy 플러그인 관리자로 Git에서 직접 설치하며, 추후 `omarchy plugin update`로 최신 상태를 유지할 수 있습니다.
+
 ```bash
-git clone https://github.com/jankeesvw/omarchy-herdr.git ~/.config/omarchy/plugins/jankeesvw.herdr
-git clone https://github.com/jankeesvw/omarchy-notification-center.git ~/.config/omarchy/plugins/jankeesvw.notification-center
+omarchy plugin add https://github.com/jankeesvw/omarchy-herdr.git --yes
+omarchy plugin add https://github.com/jankeesvw/omarchy-notification-center.git --yes
+omarchy plugin add https://github.com/stappmus/Omarchy-Spotify.git --yes
 ```
-개인 플러그인(`sharosoo.sysstat`, `sharosoo.omp-usage`, `sharosoo.workspaces`)은 저장소 안에 포함되어 있으며 4단계에서 함께 반영됩니다.
+
+| 플러그인 | 용도 |
+| --- | --- |
+| `jankeesvw.herdr` | 바에서 herdr 에이전트 상태 확인 |
+| `jankeesvw.notification-center` | 알림 히스토리 패널. 플러그인 자체는 원본 그대로 사용하며, 알림 커스텀(배경 투명도, 에이전트 아이콘, Chromium 사이트 아이콘)은 `shell.toml`, `notify-send`, 패치 파일에 적용되어 있습니다. 자세한 내용은 `README.md`를 참고하세요. |
+| `quickshell.spotify` | 바에서 가볍게 쓸 수 있는 Spotify 플레이어. 공식 클라이언트(~950MB) 대비 메모리를 약 60MB만 차지합니다. Spotify Premium 계정이 필요합니다. |
+
+### Spotify 로그인 (수동 작업, 5단계 이후)
+
+5단계를 마친 뒤 수동으로 로그인을 진행합니다.
+
+1. 바 왼쪽에 있는 Spotify 아이콘을 클릭합니다.
+2. 미니 플레이어 화면에 **Set up and continue** 버튼이 나타나면 클릭합니다.
+3. 브라우저에서 로그인 페이지가 열리면 계정 로그인 후 연동을 승인합니다.
+4. 승인이 끝나면 로컬 재생 백엔드 설정을 진행합니다. (검증된 바이너리 다운로드, 로컬 Rust 빌드, 또는 Omarchy의 `spotifyd` 패키지 대체 설치 안내가 제공됩니다.)
+
+나중에 "Spotify is busy" 오류가 뜬다면 공유 Client ID의 요청 한도가 초과된 상태입니다. [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)에서 Redirect URI를 `http://127.0.0.1:8989/login`으로 지정해 전용 앱을 직접 생성한 뒤, 발급받은 Client ID를 플러그인 설정에 입력하면 해결됩니다.
+
+> **참고:** 개인 플러그인(`sharosoo.sysstat`, `sharosoo.omp-usage`, `sharosoo.workspaces`)은 저장소 안에 포함되어 있으므로 4단계에서 함께 반영됩니다.
 
 ## 4. 설정 동기화
 ```bash

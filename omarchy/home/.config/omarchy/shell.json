@@ -45,6 +45,9 @@
           "id": "omarchy.tray"
         },
         {
+          "id": "quickshell.spotify"
+        },
+        {
           "id": "jankeesvw.notification-center"
         },
         {
@@ -54,7 +57,10 @@
           "id": "sharosoo.omp-usage"
         },
         {
-          "id": "omarchy.tailscale"
+          "id": "omarchy.tailscale",
+          "recentMullvadRegions": [
+            "Japan\nOsaka"
+          ]
         },
         {
           "id": "omarchy.bluetooth"
