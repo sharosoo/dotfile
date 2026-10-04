@@ -92,6 +92,12 @@ Omarchy의 `NotificationCard.qml`을 패치하고 Chromium 파비콘을 추출�
 - Discord 웹 앱: `omarchy-webapp-install Discord https://discord.com/channels/@me omarchy-discord`
 - omp(에이전트, 스킬, 룰, 모델 설정): `dotfile/omp/sync.sh restore`를 실행합니다. 이어지는 플러그인 연결과 MCP 토큰 설정은 [`omp/README.md`](../omp/README.md)를 따릅니다.
 - Hermes 데스크톱: Omarchy의 `hermes-desktop` 패키지는 설치하지 않습니다. 이 패키지는 자기 런타임을 따로 설치하려 해서 기존 `~/.hermes` 설치에 자동으로 연결되지 않습니다. Hermes CLI를 설치한 뒤 `hermes desktop --build-only`를 실행하면 같은 런타임으로 앱을 빌드하고 앱 런처 항목(`com.nousresearch.hermes.desktop`)도 만들어 줍니다. Hermes를 업데이트한 뒤에도 같은 명령으로 다시 빌드합니다.
+- Hermes 색상: Omarchy 테마마다 들어 있는 `hermes.yaml`을 Hermes 스킨으로 연결합니다. 이렇게 하면 데스크톱 앱, CLI, TUI가 모두 Omarchy 테마 색을 따르고, 테마를 바꾸면 Hermes 색도 같이 바뀝니다.
+  ```bash
+  mkdir -p ~/.hermes/skins
+  ln -sfn ~/.local/state/omarchy/current/theme/hermes.yaml ~/.hermes/skins/omarchy.yaml
+  hermes config set display.skin omarchy
+  ```
 - Tailscale (수동): `sudo systemctl enable --now tailscaled && sudo tailscale up`
 - 블루투스 키보드: `systemctl --user enable --now bt-agent`를 실행하고 키보드를 페어링 모드로 둔 뒤 `bt-keyboard-pair`를 실행합니다. 패스키 알림이 화면에 뜹니다.
 - herdr: Omarchy 기본 포함 프로그램입니다. 설정은 4단계에서 반영됩니다. herdr 알림이 데스크톱으로 전달되고 `notify-send` 래퍼를 통해 에이전트 아이콘이 제대로 표시되려면 `[ui.toast]` 섹션의 `delivery = "system"` 설정을 반드시 유지해야 합니다.
