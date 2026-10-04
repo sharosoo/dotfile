@@ -30,7 +30,8 @@ hyprctl reload
 | 바 워크스페이스 1–2 상시 표시 | `.config/omarchy/plugins/sharosoo.workspaces/`<br>`shell.json` | 1~5번이 하드코딩된 `omarchy.workspaces` 플러그인의 포크입니다. `persistent`로 지정한 워크스페이스(기본 2개)와 창이 열려 있는 다른 워크스페이스를 표시합니다. |
 | 알림 창 반투명화 | `.config/omarchy/shell.toml` | `[notifications] background-alpha = 0.55`를 적용합니다. |
 | 알림 에이전트 아이콘 | `.local/bin/notify-send`<br>`.local/share/notification-icons/agents/*.png` | herdr 및 에이전트들이 인자 없이 호출하는 `notify-send`를 감싸는 래퍼입니다. 제목 첫 단어(`omp`, `claude`, `codex`)를 파싱해 알맞은 아이콘을 고르며, 그 외 herdr가 보낸 알림에는 herdr 아이콘을 띄웁니다. `--app-icon`을 사용해 알림 센터 기록에도 아이콘이 남습니다. 에이전트를 추가하려면 해당 디렉터리에 소문자로 `<name>.png`를 넣으면 됩니다. |
-| Chromium 알림 사이트 아이콘 | `.local/bin/notification-icons-sync`<br>`.local/bin/notification-icons-patch`<br>`.local/share/omarchy-overrides/notification-card-site-icons.patch`<br>`.config/omarchy/hooks/post-update.d/notification-site-icons.hook` | 리눅스 환경의 Chromium은 모든 알림에 브라우저 자체 로고만 보냅니다. `notification-icons-sync`가 Chromium에 저장된 파비콘을 `~/.local/share/notification-icons/<host>.png`로 추출하고, 패치를 통해 Omarchy의 `NotificationCard.qml`이 본문 시작 부분에 해당 사이트 호스트 아이콘을 표시하도록 수정합니다 (없으면 Chromium 로고 표시). |
+| Chromium 알림 사이트 아이콘 | `.local/bin/notification-icons-sync`<br>`.local/bin/notification-icons-patch`<br>`.local/share/omarchy-overrides/notification-card.patch`<br>`.config/omarchy/hooks/post-update.d/notification-site-icons.hook` | 리눅스 환경의 Chromium은 모든 알림에 브라우저 자체 로고만 보냅니다. `notification-icons-sync`가 Chromium에 저장된 파비콘을 `~/.local/share/notification-icons/<host>.png`로 추출하고, 패치를 통해 Omarchy의 `NotificationCard.qml`이 본문 시작 부분에 해당 사이트 호스트 아이콘을 표시하도록 수정합니다 (없으면 Chromium 로고 표시). |
+| 알림 닫기 버튼 | `.local/share/omarchy-overrides/notification-card.patch` | 알림 카드 오른쪽 위에 × 버튼을 붙입니다. 카드를 누르면 알림의 링크나 동작이 실행되므로, 닫기만 하려면 이 버튼을 누릅니다. 마우스를 올리면 버튼이 진해집니다. Chromium 사이트 아이콘과 같은 패치 파일에 들어 있습니다. |
 | Ghostty 설정 | `.config/ghostty/config` | Omarchy 환경에 맞춘 터미널 설정입니다. Omarchy 테마 색상을 따르며 `D2Coding Nerd Font` 9pt, 배경 불투명도 0.6을 적용했습니다. 로그인 셸은 bash로 유지하되 터미널 창은 fish(`command = /usr/bin/fish`)로 열리며, TUI 환경을 위해 Shift+Enter를 CSI-u로 전송합니다. |
 | D2Coding Nerd Font | `.local/share/fonts/D2CodingNerd/D2CodingNerdFont.ttf` | Ghostty에서 쓰는 폰트입니다. Omarchy 기본 설치에는 포함되어 있지 않습니다. |
 | Fish | `.config/fish/config.fish`<br>`.config/fish/fish_plugins` | 기존 개인 fish 설정을 Omarchy에 맞게 다듬었습니다. Omarchy의 PATH(mise shims, `~/.local/bin`)와 일치시키고 mise·zoxide·fzf·starship 초기화, Omarchy 스타일의 eza 별칭과 개인 git/에이전트 별칭(`h`=herdr, `cx`=claude, `cy`=codex)을 등록했습니다. fisher를 통해 `fish-ai` 플러그인을 설치해 사용합니다. |
@@ -42,7 +43,7 @@ hyprctl reload
 
 ## Omarchy 업데이트 후
 
-'Chromium 알림 사이트 아이콘'만 시스템 파일(`/usr/share/omarchy/shell/plugins/notifications/components/NotificationCard.qml`)을 직접 수정하므로, Omarchy가 업데이트되면 패치가 풀립니다.
+'Chromium 알림 사이트 아이콘'과 '알림 닫기 버튼'만 시스템 파일(`/usr/share/omarchy/shell/plugins/notifications/components/NotificationCard.qml`)을 직접 수정하므로, Omarchy가 업데이트되면 패치가 풀립니다.
 업데이트 후 훅(post-update hook)이 알림을 띄우며, 해당 알림을 클릭하면 `notification-icons-patch`가 실행됩니다(sudo 비밀번호 필요). 패치 후에는 `omarchy-restart-shell`을 실행해 셸을 다시 시작합니다.
 업스트림에서 카드 컴포넌트를 크게 변경해 패치가 자동 적용되지 않으면 스크립트가 안내 메시지를 출력하므로 직접 수동으로 다시 패치해야 합니다.
 또한 '차분한 화면보호기' 스크립트는 Omarchy 스크립트를 복사해 둔 것이므로, 업스트림의 변경 사항이 자동으로 반영되지 않습니다.

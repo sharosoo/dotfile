@@ -1,5 +1,5 @@
---- a/NotificationCard.qml	2026-10-02 18:36:27.857124614 +0900
-+++ b/NotificationCard.qml	2026-10-02 18:36:39.554019225 +0900
+--- a/NotificationCard.qml	2026-10-04 11:15:29.142686155 +0900
++++ b/NotificationCard.qml	2026-10-04 11:15:41.192061802 +0900
 @@ -36,7 +36,12 @@
    signal cardClicked()
    // Prefer per-notification media/avatar data, then fall back to the app icon.
@@ -28,7 +28,17 @@
    implicitWidth: Style.space(380)
    // Add vertical border insets so mainColumn (inset by border on top/left/right)
    // doesn't push content under the bottom edge.
-@@ -128,6 +140,13 @@
+@@ -103,7 +115,8 @@
+     RowLayout {
+       Layout.fillWidth: true
+       Layout.leftMargin: Style.space(12)
+-      Layout.rightMargin: Style.space(12)
++      // Leaves room for the close button overlaid in the top-right corner.
++      Layout.rightMargin: Style.space(30)
+       Layout.topMargin: root.singleLineToast ? Style.space(7) : Style.space(10)
+       Layout.bottomMargin: root.singleLineToast ? Style.space(7) : Style.space(10)
+       spacing: root.collapseRedundantIcon ? 0 : (root.compactGlyph ? Style.space(8) : Style.space(12))
+@@ -128,6 +141,13 @@
            asynchronous: true
            smooth: true
            visible: !root.hasGlyph || smallIconImage.status === Image.Ready
@@ -42,3 +52,43 @@
          }
  
          // Glyph fallback (Nerd Font character) when no image icon is
+@@ -193,4 +213,39 @@
+     }
+   }
+ 
++  // Local patch: a visible close button, so dismissing never means clicking the card
++  // (which runs its action) or knowing that right-click dismisses. Declared after the
++  // card-wide MouseArea so it takes the click first.
++  Rectangle {
++    id: closeButton
++    anchors.top: parent.top
++    anchors.right: parent.right
++    anchors.topMargin: root.borderTop + Style.space(8)
++    anchors.rightMargin: root.borderRight + Style.space(8)
++    width: Style.space(18)
++    height: width
++    radius: width / 2
++    opacity: root.hovered || closeMouse.containsMouse ? 1 : 0.45
++    color: Qt.rgba(Color.notifications.text.r, Color.notifications.text.g, Color.notifications.text.b,
++                   closeMouse.containsMouse ? 0.25 : 0.12)
++
++    Text {
++      textFormat: Text.PlainText
++      anchors.centerIn: parent
++      text: "×"
++      font.family: "Liberation Sans"
++      font.pixelSize: Style.font.title
++      color: Color.notifications.text
++    }
++
++    MouseArea {
++      id: closeMouse
++      anchors.fill: parent
++      anchors.margins: -Style.space(4)
++      hoverEnabled: true
++      cursorShape: Qt.PointingHandCursor
++      onClicked: root.closeRequested()
++    }
++  }
++
+ }

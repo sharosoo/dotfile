@@ -1,12 +1,12 @@
 #!/bin/bash
-# (Re)apply the site-icon patch to Omarchy's NotificationCard.qml.
+# (Re)apply the local patch to Omarchy's NotificationCard.qml (Chromium site icons, close button).
 # Omarchy updates overwrite /usr/share/omarchy, so run this again after an update.
 # Safe to re-run: an already-applied patch is detected and skipped.
 
 set -euo pipefail
 
 target=/usr/share/omarchy/shell/plugins/notifications/components/NotificationCard.qml
-patch_file="$HOME/.local/share/omarchy-overrides/notification-card-site-icons.patch"
+patch_file="$HOME/.local/share/omarchy-overrides/notification-card.patch"
 
 if patch --dry-run -R -s -f "$target" <"$patch_file" >/dev/null 2>&1; then
   echo "already applied"
