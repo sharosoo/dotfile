@@ -32,6 +32,7 @@ Omarchy 기본 제공 패키지와 제외한 항목은 각 파일 주석에 적�
 | **Fish 셸** | [fish.md](docs/fish.md) | `fish/` |
 | **터미널 (Ghostty, Starship)** | [TERMINAL_SETUP.md](docs/TERMINAL_SETUP.md) | `ghostty/`, `starship/` |
 | **OMP (oh-my-pi)** | [omp/README.md](omp/README.md) | `omp/` |
+| **Hermes Agent** | [hermes/README.md](hermes/README.md) | `hermes/` |
 | **Claude Code** | [.claude/README.md](.claude/README.md) | `.claude/` |
 | **Neovim** | [nvim.md](docs/nvim.md) | `nvim/` |
 | **Tmux** | [tmux.md](docs/tmux.md) | `tmux/` |

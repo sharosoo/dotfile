@@ -12,6 +12,7 @@ Omarchy 4.x, Hyprland 0.56 with **Lua config**, Omarchy shell = Quickshell (`oma
 - `omarchy/home/` mirrors `$HOME`. `omarchy/sync.sh` symlinks every file into `$HOME` (backs up differing files as `*.bak.<ts>`); idempotent.
 - **Copy-managed files** (owner rewrites them, which breaks symlinks): `.config/omarchy/shell.json`, `.config/fcitx5/profile`, `.config/herdr/config.toml`, `.config/fish/fish_plugins`. After changing them live run `omarchy/sync.sh capture`.
 - **Everything the user installs or tweaks belongs in the dotfile repo**, including third-party code. Third-party bar plugins (herdr, notification-center, Omarchy-Spotify) are vendored in `omarchy/vendor/plugins/<id>/` with `vendor/plugins.lock` (`id url commit`); live copies stay git checkouts. New one: `omarchy plugin add <url>`, add the id to the lock, `sync.sh capture`. After `omarchy plugin update`: `sync.sh capture`.
+- Hermes Agent (`~/.hermes`) is tracked in `dotfile/hermes/` (config.yaml, SOUL.md, memories, cron/jobs.json, scripts, own plugins, non-bundled skills, gateway unit) via `hermes/sync.sh capture|restore`; `.env`/`auth.json`/`vault` never go in. Desktop app = `hermes desktop --build-only` (not Omarchy's `hermes-desktop` package); theme = `~/.hermes/skins/omarchy.yaml` → current Omarchy theme's `hermes.yaml`.
 - Docs: `omarchy/README.md` (table: 기능 | 파일 | 내용 per customization), `omarchy/NEW-PC.md` (ordered runbook + verification checklist + excluded items). Update both when adding a customization.
 - `.gitignore` has `*.local`; `!omarchy/home/.local` re-includes the mirror.
 

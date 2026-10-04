@@ -1,0 +1,288 @@
+{
+  "jobs": [
+    {
+      "id": "edb6ccea4c8b",
+      "name": "llm-serving-daily-report",
+      "prompt": "너는 Hermes Agent로서, 일일 LLM 서빙 PR/Issue 리포트를 작성하고 사용자에게 전달하는 일을 한다.\n\n**컨텍스트**:\n- 사용자: 정혁 (Discord `샤로수` 서버 `#일반` 채널, channel ID 1523289661680910469)\n- 목적: LLM 서빙 엔지니어로 전향하기 위한 오픈소스 모니터링. 10개 레포의 PR/Issue를 매일 추적.\n- 타겟 레포 (10개):\n  - Tier 1 (5): vllm-project/vllm, sgl-project/sglang, NVIDIA/TensorRT-LLM, llm-d/llm-d, ai-dynamo/dynamo\n  - Tier 1 (1): triton-inference-server/server\n  - Tier 2 (4): LMCache/LMCache, kvcache-ai/Mooncake, triton-lang/triton, flashinfer-ai/flashinfer\n- 리포트 깊이: **깊게 모드** — 각 머지 PR마다 기술 배경 2-3문장, reject 사유 추정, 신규 issue 요약\n- 리포트 저장 위치: `~/workspaces/llm_serving_study/notes/daily_pr/YYYY-MM-DD.md`\n- 리포트 생성 스크립트: `~/workspaces/llm_serving_study/scripts/daily_pr_report.py`\n\n**작성 원칙**:\n- 정혁은 서빙 internals 자체에 관심이 깊음. **기술적 배경 설명을 짧고 정확하게** — \"왜 이 PR이 의미 있는지\" 위주.\n- application framing (\"X 모델에 적용\") 거절. system-level 변경점만 다룬다.\n- 각 repo별로 3-4개 PR 요약 (머지/reject/open 중 hot한 것)\n- 머지 PR: 배경 설명 + 영향 범위 + 코드 위치 (가능하면)\n- reject PR: reject 사유 추정 (라벨 + 코멘트 기반)\n- 신규 open issue: 요약 + 관련 PR 있으면 링크\n\n**출력 형식**:\n- # 📡 LLM Serving Daily Report — YYYY-MM-DD (요일) HH:MM KST\n- 각 repo 헤더: 🔷 {repo} — focus 키워드\n- 섹션: ✅ MERGED (핵심 3-4) / ❌ REJECTED (핵심 2-3) / 🆕 NEW OPEN (핵심 3)\n- 각 항목: PR number, title, author, 배경 설명 (2-3문장), labels, URL\n- 발송은 Discord로 (channel 1523289661680910469). 한국어 + 기술 용어는 영어 그대로.\n\n## Artifact Hub 게시 및 Discord 전달 (필수)\n- 긴 본문은 Discord에 직접 붙이지 말고, 첨부된 `artifact-hub-publishing` skill 절차에 따라 `artifact.sharosoo.com`의 Artifact Hub에 게시한다.\n- 기본 형식은 rich Markdown(`format: md`)이다. 실제 interactive/custom UI가 필요한 경우에만 HTML을 사용한다.\n- 게시 제목 규칙: `LLM Serving Daily Report — YYYY-MM-DD`\n- deterministic slug 규칙: `llm-serving-daily-report-YYYY-MM-DD`\n- `project: llm-serving`, `visibility: link`, 적절한 tags, `agent_source: cron:edb6ccea4c8b`를 설정한다.\n- exact title로 기존 문서를 먼저 검색한다. 같은 날짜/주차 문서가 있으면 중복 생성하지 말고 skill의 safe update 절차를 따른다.\n- cron prompt·scheduler header·tool-planning chatter가 아닌 최종 독자용 본문만 게시한다. GitHub excerpt의 raw HTML comment와 angle-bracket placeholder를 정리한다.\n- 게시 후 Artifact Hub detail page와 실제 열린 문서의 렌더링을 확인한다.\n- 최종 응답은 Discord용으로 짧게 작성한다: 진행 결과/핵심 1~3줄 + `https://artifact.sharosoo.com/a/<id>` detail link. 긴 본문을 반복하지 않는다.\n- 새 내용이 없어 `[SILENT]`가 맞는 날에는 빈 artifact를 만들지 않는다.\n",
+      "skills": [
+        "artifact-hub-publishing"
+      ],
+      "skill": "artifact-hub-publishing",
+      "model": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "provider_snapshot": null,
+      "model_snapshot": null,
+      "base_url": null,
+      "script": null,
+      "no_agent": false,
+      "context_from": null,
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 5 * * *",
+        "display": "0 5 * * *"
+      },
+      "schedule_display": "0 5 * * *",
+      "repeat": {
+        "times": null,
+        "completed": 93
+      },
+      "enabled": true,
+      "state": "scheduled",
+      "paused_at": null,
+      "paused_reason": null,
+      "created_at": "2026-07-08T00:19:22.816554+09:00",
+      "next_run_at": "2026-10-05T05:00:00+09:00",
+      "last_run_at": "2026-10-04T05:08:19.858111+09:00",
+      "last_status": "ok",
+      "last_error": null,
+      "last_delivery_error": null,
+      "deliver": "discord:1523289661680910469",
+      "origin": {
+        "platform": "discord",
+        "chat_id": "1523978043733966848",
+        "chat_name": "샤로수 / #일반 / llm서빙 관련 논문을 쓰고 싶은데 현실적으로 어떻게 해야하지? 지도 교수나 동료들은 잇어야 하는거아니야 ? 회사는 계속 다니고 싶은데",
+        "thread_id": "1523978043733966848",
+        "user_id": "368793596595404801"
+      },
+      "enabled_toolsets": null,
+      "workdir": "/home/sharosoo/workspaces/llm_serving_study",
+      "fire_claim": null,
+      "failure_streak": 0,
+      "last_dispatch": {
+        "scheduled_at": "2026-10-04T05:00:00+09:00",
+        "dispatched_at": "2026-10-04T05:00:59.598332+09:00",
+        "lateness_seconds": 59.6,
+        "kind": "on_time"
+      }
+    },
+    {
+      "id": "500be816d6df",
+      "name": "arxiv-llm-serving",
+      "prompt": "너는 Hermes Agent로서, 매일 LLM 서빙 관련 신규 arXiv 논문을 추적하고 정혁에게 전달한다.\n\n**컨텍스트**:\n- 사용자: 정혁 (Discord `샤로수` 서버 `#일반` 채널, channel ID 1523289661680910469)\n- 목적: LLM 서빙 internals 흐름 흡수. read-only knowledge accumulation.\n- 정혁: 서울대 학사 백엔드 엔지니어, LLM 서빙 career 전환 목표. application framing 거절. system-level 변경점만.\n\n**Step 1 — fetch**\n\narXiv API 직접 호출 (cron job이 외부 도구로 실행 가능). arXiv API 사용:\n- `http://export.arxiv.org/api/query?search_query=...&start=0&max_results=20&sortBy=submittedDate&sortOrder=descending`\n- search_query 조합: `(abs:\"LLM serving\" OR abs:\"LLM inference\" OR abs:\"disaggregated serving\" OR abs:\"KV cache\" OR abs:\"MoE serving\" OR abs:\"prefill decode\" OR abs:\"attention backend\") AND (cat:cs.DC OR cat:cs.LG OR cat:cs.PF)`\n- 결과를 JSON 아닌 raw XML으로 받지만, 너는 LLM이므로 직접 파싱 가능.\n\nStep 1-2 (alternative): 직접 curl + python으로 파싱 후 stdout JSON. 가능하면 이쪽 선호:\n```\npython3 - <<'PY'\nimport urllib.request, urllib.parse, re, json\nfrom datetime import datetime, timedelta, timezone\n# ... fetch arxiv, filter by submittedDate >= yesterday, dedup by id, build JSON\nPY\n```\n\n**Step 2 — dedup / state**\n\n어제 본 paper를 다시 안 보내려면 state file 필요:\n- state 위치: `~/.hermes/cron/arxiv/state.json`\n- shape: `{\"seen_ids\": [\"2607.00001\", ...]}`\n- 매 cron run 시 seen에 없으면 new, 있으면 skip.\n\n**Step 3 — format**\n\n**new가 없으면**: \"오늘 새 논문 없음\" 한 줄. 끝.\n\n**new가 있으면**, 각 논문마다 block:\n\n  📄 [arxiv id] [cs.DC/cs.LG]\n  Title (영어)\n  - 저자: 1-2명 (앞 두 명)\n  - 1-2문장 한국어 요약 (12살 비유 톤, 정혁 스타일 — system-level 의미만)\n  - 🏷 keywords (3-5개)\n  - URL\n\n**Rules**:\n- application framing (\"X 모델에 적용\", \"LLaMA-3에 적용\") 절대 안 함. system-level 변경 (architecture, scheduling, kernel, disagg)만.\n- hire-readiness 신호: 너는 \"이게 industry 어디에 적용되는지\" 가 아니라 \"서빙 시스템 구조가 어떻게 변하는지\" 가 관심.\n- 한국어 1-2문장 안에 \"왜 이게 hot topic인지\" 들어가야 함.\n- 하루 최대 5개. 그 이상이면 가장 system-relevant 5개만.\n\n**출력**:\n- 헤더: `# 📚 LLM Serving arXiv — YYYY-MM-DD`\n- 푸터: \"전체 N개 중 top 5. ghc-arxiv로 더 보기\" (단, ghc-arxiv는 가짜 명령; 정혁이 직접 arxiv.org에서 볼 거)\n\n**Step 4 — deliver**\n\nstdout이 곧 Discord message. deliver: discord:1523289661680910469 = #일반.\n\n## Artifact Hub 게시 및 Discord 전달 (필수)\n- 긴 본문은 Discord에 직접 붙이지 말고, 첨부된 `artifact-hub-publishing` skill 절차에 따라 `artifact.sharosoo.com`의 Artifact Hub에 게시한다.\n- 기본 형식은 rich Markdown(`format: md`)이다. 실제 interactive/custom UI가 필요한 경우에만 HTML을 사용한다.\n- 게시 제목 규칙: `LLM Serving arXiv — YYYY-MM-DD`\n- deterministic slug 규칙: `llm-serving-arxiv-YYYY-MM-DD`\n- `project: llm-serving`, `visibility: link`, 적절한 tags, `agent_source: cron:500be816d6df`를 설정한다.\n- exact title로 기존 문서를 먼저 검색한다. 같은 날짜/주차 문서가 있으면 중복 생성하지 말고 skill의 safe update 절차를 따른다.\n- cron prompt·scheduler header·tool-planning chatter가 아닌 최종 독자용 본문만 게시한다. GitHub excerpt의 raw HTML comment와 angle-bracket placeholder를 정리한다.\n- 게시 후 Artifact Hub detail page와 실제 열린 문서의 렌더링을 확인한다.\n- 최종 응답은 Discord용으로 짧게 작성한다: 진행 결과/핵심 1~3줄 + `https://artifact.sharosoo.com/a/<id>` detail link. 긴 본문을 반복하지 않는다.\n- 새 내용이 없어 `[SILENT]`가 맞는 날에는 빈 artifact를 만들지 않는다.\n",
+      "skills": [
+        "artifact-hub-publishing"
+      ],
+      "skill": "artifact-hub-publishing",
+      "model": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "provider_snapshot": null,
+      "model_snapshot": null,
+      "base_url": null,
+      "script": null,
+      "no_agent": false,
+      "context_from": null,
+      "schedule": {
+        "kind": "cron",
+        "expr": "30 5 * * *",
+        "display": "30 5 * * *"
+      },
+      "schedule_display": "30 5 * * *",
+      "repeat": {
+        "times": null,
+        "completed": 92
+      },
+      "enabled": true,
+      "state": "scheduled",
+      "paused_at": null,
+      "paused_reason": null,
+      "created_at": "2026-07-08T00:19:43.541491+09:00",
+      "next_run_at": "2026-10-05T05:30:00+09:00",
+      "last_run_at": "2026-10-04T05:34:23.330312+09:00",
+      "last_status": "ok",
+      "last_error": null,
+      "last_delivery_error": null,
+      "deliver": "discord:1523289661680910469",
+      "origin": {
+        "platform": "discord",
+        "chat_id": "1523978043733966848",
+        "chat_name": "샤로수 / #일반 / llm서빙 관련 논문을 쓰고 싶은데 현실적으로 어떻게 해야하지? 지도 교수나 동료들은 잇어야 하는거아니야 ? 회사는 계속 다니고 싶은데",
+        "thread_id": "1523978043733966848",
+        "user_id": "368793596595404801"
+      },
+      "enabled_toolsets": null,
+      "workdir": null,
+      "fire_claim": null,
+      "failure_streak": 0,
+      "last_dispatch": {
+        "scheduled_at": "2026-10-04T05:30:00+09:00",
+        "dispatched_at": "2026-10-04T05:30:59.598365+09:00",
+        "lateness_seconds": 59.6,
+        "kind": "on_time"
+      }
+    },
+    {
+      "id": "7ae582aac69f",
+      "name": "llm-serving-industry-weekly",
+      "prompt": "너는 Hermes Agent로서, 매주 LLM 서빙 industry trends를 추적하고 정혁에게 전달한다.\n\n**컨텍스트**:\n- 사용자: 정혁 (Discord `샤로수` 서버 `#일반` 채널, channel ID 1523289661680910469)\n- 목적: industry 흐름 + hiring signals 흡수. LLM 서빙 engineer로서 hot한 회사/기술/벤치 동향 파악.\n- 정혁: 서울대 학사 백엔드 엔지니어, LLM 서빙 career 전환 목표. application framing 거절.\n\n**Step 1 — fetch sources**\n\n매주 아래 3개 source에서 최신 글 추출:\n\n1. **SemiAnalysis (newsletter.semianalysis.com)** — InferenceMAX™ / inference 관련 글\n   - URL: https://newsletter.semianalysis.com/search/inference\n   - 또는 메인 페이지 + \"inference\" 검색\n\n2. **turion.ai blog** — production vLLM/SGLang/TensorRT-LLM 분석\n   - URL: https://turion.ai/blog/\n   - LLM serving 관련 글\n\n3. **devopsbeast.com** — production LLM 운영 분석\n   - URL: https://devopsbeast.com/\n   - LLM serving 관련 글\n\n각 source에서 최근 7일 내 작성된 글 중 LLM 서빙 관련 (vLLM, SGLang, TensorRT-LLM, llm-d, Dynamo, MoE serving, disagg, KV cache, kernel) 만 추출.\n\n**Step 2 — dedup / state**\n\nstate 위치: `~/.hermes/cron/industry/state.json`\nshape: `{\"seen_urls\": [\"url1\", ...]}`\n매주 seen에 없는 URL만 출력.\n\n**Step 3 — format**\n\n**출력 형식**:\n\n  # 🏢 LLM Serving Industry Weekly — 2026-W28 (MM-DD ~ MM-DD)\n\n  ## 🔥 Top Pick (반드시 1개, 5-7줄 한국어 요약 + URL)\n  - 가장 영향력 있는 글. 정혁의 hire-readiness 관점에서 의미 있는 글.\n  - 12살 비유 톤, system-level 의미만. application framing 거절.\n  - \"이 글이 industry에서 왜 hot한지\" + \"정혁 커리어에 어떤 signal\" (hiring, 기술 트렌드, 회사 동향).\n\n  ## 📰 Other Highlights (3-5개, 각 1-2줄)\n  - 제목 + URL + 1-2줄 한국어 요약.\n\n  ## 🎯 Hire-Readiness Signal (1-2줄)\n  - 이번 주 채용/기술 흐름에서 정혁이 신경 써야 할 1-2가지.\n  - 예: \"SGLang RadixArk $400M 펀딩 → SGLang contributor가 hire signal로 강해짐\", \"TensorRT-LLM engine build pipeline 수요 증가\", 등.\n\n**Rules**:\n- 매주 금요일 17:00 KST 발송.\n- 한국어 + 기술 용어 영어 그대로.\n- 12살 비유 톤, 정혁 스타일 (terse, action-oriented).\n- application framing (\"이걸 X 모델에 적용\") 거절.\n- 매주 골드픽은 다를 수 있지만, SGLang/vLLM ecosystem의 convergence/divergence와 MoE/disagg 동향은 hot keyword로 지속 등장.\n\n**Step 4 — deliver**\n\nstdout = Discord message. deliver: discord:1523289661680910469 = #일반.\n\n## Artifact Hub 게시 및 Discord 전달 (필수)\n- 긴 본문은 Discord에 직접 붙이지 말고, 첨부된 `artifact-hub-publishing` skill 절차에 따라 `artifact.sharosoo.com`의 Artifact Hub에 게시한다.\n- 기본 형식은 rich Markdown(`format: md`)이다. 실제 interactive/custom UI가 필요한 경우에만 HTML을 사용한다.\n- 게시 제목 규칙: `LLM Serving Industry Weekly — YYYY-Www`\n- deterministic slug 규칙: `llm-serving-industry-weekly-YYYY-Www`\n- `project: llm-serving`, `visibility: link`, 적절한 tags, `agent_source: cron:7ae582aac69f`를 설정한다.\n- exact title로 기존 문서를 먼저 검색한다. 같은 날짜/주차 문서가 있으면 중복 생성하지 말고 skill의 safe update 절차를 따른다.\n- cron prompt·scheduler header·tool-planning chatter가 아닌 최종 독자용 본문만 게시한다. GitHub excerpt의 raw HTML comment와 angle-bracket placeholder를 정리한다.\n- 게시 후 Artifact Hub detail page와 실제 열린 문서의 렌더링을 확인한다.\n- 최종 응답은 Discord용으로 짧게 작성한다: 진행 결과/핵심 1~3줄 + `https://artifact.sharosoo.com/a/<id>` detail link. 긴 본문을 반복하지 않는다.\n- 새 내용이 없어 `[SILENT]`가 맞는 날에는 빈 artifact를 만들지 않는다.\n",
+      "skills": [
+        "artifact-hub-publishing"
+      ],
+      "skill": "artifact-hub-publishing",
+      "model": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "provider_snapshot": null,
+      "model_snapshot": null,
+      "base_url": null,
+      "script": null,
+      "no_agent": false,
+      "context_from": null,
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 6 * * 5",
+        "display": "0 6 * * 5"
+      },
+      "schedule_display": "0 6 * * 5",
+      "repeat": {
+        "times": null,
+        "completed": 14
+      },
+      "enabled": true,
+      "state": "scheduled",
+      "paused_at": null,
+      "paused_reason": null,
+      "created_at": "2026-07-08T00:20:11.561398+09:00",
+      "next_run_at": "2026-10-09T06:00:00+09:00",
+      "last_run_at": "2026-10-02T06:04:14.401924+09:00",
+      "last_status": "ok",
+      "last_error": null,
+      "last_delivery_error": null,
+      "deliver": "discord:1523289661680910469",
+      "origin": {
+        "platform": "discord",
+        "chat_id": "1523978043733966848",
+        "chat_name": "샤로수 / #일반 / llm서빙 관련 논문을 쓰고 싶은데 현실적으로 어떻게 해야하지? 지도 교수나 동료들은 잇어야 하는거아니야 ? 회사는 계속 다니고 싶은데",
+        "thread_id": "1523978043733966848",
+        "user_id": "368793596595404801"
+      },
+      "enabled_toolsets": null,
+      "workdir": null,
+      "fire_claim": null,
+      "failure_streak": 0,
+      "last_dispatch": {
+        "scheduled_at": "2026-10-02T06:00:00+09:00",
+        "dispatched_at": "2026-10-02T06:00:59.597848+09:00",
+        "lateness_seconds": 59.6,
+        "kind": "on_time"
+      }
+    },
+    {
+      "id": "2dfd6515b734",
+      "name": "llm-serving-daily-learning-and-pr-plan",
+      "prompt": "매일 13:00 KST에 정혁에게 전달할 **LLM serving 학습·OSS 기여 우선순위 브리핑**을 작성한다. 직전의 두 upstream cron 최근 완료 출력이 컨텍스트로 제공된다: (A) 11시 LLM-serving GitHub PR/Issue 리포트, (B) 12시 신규 arXiv LLM-serving 논문 리포트.\n\n정혁은 백엔드/K8s/ML 배포 경험이 있으며 LLM serving 커리어 전환을 준비한다. 설명은 한국어로, 영어 기술 고유명사·repo명은 유지한다. 목적은 뉴스 요약이 아니라, **오늘 무엇을 이해하고 무엇을 기여 후보로 검증할지**를 이해 가능한 원리에서 제시하는 것이다.\n\n사실성 규칙:\n- 두 upstream 출력과 실제 링크 확인만 근거로 쓴다. 없는 논문·issue·파일·claim·bug 원인을 만들어내지 않는다.\n- GitHub에는 PR과 issue가 섞여 있다. **PR 후보로 제안할 수 있는 것은 open GitHub issue뿐이다.** 이미 열린 타인의 PR은 '읽을 코드/연관 신호'로만 사용하며, 그 PR에 intent-to-fix를 남기거나 같은 수정 PR을 만들라고 권하지 않는다. eligible open issue가 없거나 claim/WIP가 있으면 '**오늘 PR 착수 보류**'로 판정한다.\n- issue를 제안할 때에는 issue URL, OPEN/claim/WIP 확인 근거, 해결해야 할 재현 가능한 증상, 최소 수정 범위만 제시한다. 확인 불가 사항은 '확인 필요'로 표시한다.\n- application framing 또는 특정 모델 적용 제안은 피한다. LLM serving 시스템 자체(KV cache, scheduler, attention, disaggregation, networking, observability 등)로 설명한다.\n\n설명 깊이 규칙:\n1. 첫 문단은 **12살도 이해할 비유**로, 오늘의 논문/버그가 해결하려는 문제를 3~4문장으로 설명한다. 그 뒤 정확한 시스템 용어로 다시 연결한다.\n2. 논문 1개를 고를 때: (a) 해결 전 failure mode, (b) 핵심 idea가 동작하는 2~4단계, (c) 무엇이 변하고 무엇은 해결하지 못하는지/trade-off, (d) 논문에서 오늘 읽을 section과 확인 질문을 쓴다. 숫자는 upstream에 있을 때만 인용한다.\n3. GitHub 신호/bug fix를 고를 때: (a) 사용자 또는 운영자가 보는 증상, (b) 내부에서 어떤 contract/state가 어긋나는지, (c) 왜 이 bug가 KV transfer·storage·scheduler 등에 중요한지, (d) 추적할 repo 파일/함수(근거가 있을 때만)를 설명한다. PR이면 '왜 이 PR을 읽는가'까지 적되 contribution 후보로 분류하지 않는다.\n4. 논문과 GitHub 사이 연결은 억지로 만들지 말고, 공유하는 invariant/contract가 실제로 있을 때만 연결한다. 없으면 각각 독립 학습이라고 말한다.\n5. 후보는 적게: 학습 1개, 기여 후보 0~1개. 대신 각 항목의 맥락은 충분히 준다.\n\n출력 (Discord 총 3,600자 이내; 길면 의미 단위로 2개 메시지로 나뉘어도 됨):\n# 오늘의 LLM Serving 계획 — YYYY-MM-DD\n## 0) 먼저 감 잡기 (비유 → 실제 시스템)\n## 1) 오늘 읽을 논문: <제목/URL>\n- 문제 / 핵심 동작 / trade-off / 오늘 읽을 곳 / 60–90분 실행 단계 / 산출물\n## 2) 오늘 볼 GitHub 신호\n- PR 또는 issue별: 링크, 맥락, 내부 원리, 왜 볼 가치가 있는지, 코드 tracing 시작점(확실한 경우만)\n## 3) PR로 만들어 볼 후보\n- open issue가 있으면: URL, 증상, 최소 재현/수정 범위, claim/WIP 상태, 난이도\n- 없으면: '**오늘 PR 착수 보류**' 및 재현·test·code trace로 이어지는 30분 준비 과제\n## 4) 오늘 끝내는 기준\n- 체크박스 2~3개\n\n빈 upstream 입력은 명확히 표기한다. 새 항목이 없어도 최근 유효 항목 하나를 골라 깊게 복습/코드 tracing 계획을 제시한다. 최종 답변만 전달용 한국어 브리핑으로 작성한다.\n\n## Artifact Hub 게시 및 Discord 전달 (필수)\n- 긴 본문은 Discord에 직접 붙이지 말고, 첨부된 `artifact-hub-publishing` skill 절차에 따라 `artifact.sharosoo.com`의 Artifact Hub에 게시한다.\n- 기본 형식은 rich Markdown(`format: md`)이다. 실제 interactive/custom UI가 필요한 경우에만 HTML을 사용한다.\n- 게시 제목 규칙: `오늘의 LLM Serving 계획 — YYYY-MM-DD`\n- deterministic slug 규칙: `llm-serving-plan-YYYY-MM-DD`\n- `project: llm-serving`, `visibility: link`, 적절한 tags, `agent_source: cron:2dfd6515b734`를 설정한다.\n- exact title로 기존 문서를 먼저 검색한다. 같은 날짜/주차 문서가 있으면 중복 생성하지 말고 skill의 safe update 절차를 따른다.\n- cron prompt·scheduler header·tool-planning chatter가 아닌 최종 독자용 본문만 게시한다. GitHub excerpt의 raw HTML comment와 angle-bracket placeholder를 정리한다.\n- 게시 후 Artifact Hub detail page와 실제 열린 문서의 렌더링을 확인한다.\n- 최종 응답은 Discord용으로 짧게 작성한다: 진행 결과/핵심 1~3줄 + `https://artifact.sharosoo.com/a/<id>` detail link. 긴 본문을 반복하지 않는다.\n- 새 내용이 없어 `[SILENT]`가 맞는 날에는 빈 artifact를 만들지 않는다.\n",
+      "skills": [
+        "artifact-hub-publishing"
+      ],
+      "skill": "artifact-hub-publishing",
+      "model": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "provider_snapshot": null,
+      "model_snapshot": null,
+      "base_url": null,
+      "script": null,
+      "no_agent": false,
+      "context_from": [
+        "edb6ccea4c8b",
+        "500be816d6df"
+      ],
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 6 * * *",
+        "display": "0 6 * * *"
+      },
+      "schedule_display": "0 6 * * *",
+      "repeat": {
+        "times": null,
+        "completed": 82
+      },
+      "enabled": true,
+      "state": "scheduled",
+      "paused_at": null,
+      "paused_reason": null,
+      "created_at": "2026-07-16T14:06:29.432221+09:00",
+      "next_run_at": "2026-10-05T06:00:00+09:00",
+      "last_run_at": "2026-10-04T06:04:14.754020+09:00",
+      "last_status": "ok",
+      "last_error": null,
+      "last_delivery_error": null,
+      "deliver": "discord:1523289661680910469",
+      "origin": {
+        "platform": "discord",
+        "chat_id": "1527179439920779434",
+        "chat_name": "샤로수 / #일반 / arxiv, opensource github pr크론이 11시, 12시에 각각 돌아가는데 그 내용을 읽고 매일 오후 한시에 어떤 것을 공부...",
+        "thread_id": "1527179439920779434",
+        "user_id": "368793596595404801"
+      },
+      "enabled_toolsets": [
+        "web"
+      ],
+      "workdir": null,
+      "fire_claim": null,
+      "failure_streak": 0,
+      "last_dispatch": {
+        "scheduled_at": "2026-10-04T06:00:00+09:00",
+        "dispatched_at": "2026-10-04T06:00:59.598381+09:00",
+        "lateness_seconds": 59.6,
+        "kind": "on_time"
+      }
+    },
+    {
+      "id": "8df8ae502923",
+      "name": "agent-oss-watch",
+      "prompt": "너는 Hermes Agent로서, 매일 정혁의 agent 생태계 OSS 전체 watchlist 9개 레포(pydantic/pydantic-ai, BerriAI/litellm, modelcontextprotocol/python-sdk, openai/openai-agents-python, google/adk-python, langchain-ai/deepagents, earendil-works/pi, can1357/oh-my-pi, NousResearch/hermes-agent)의 PR/issue 활동을 분석해 리포트를 전달한다.\n\n**컨텍스트**\n- 사용자: 정혁 — LLM serving 경력 전환 중. GPAI에서 Model×Provider×Transport LLM runtime, provider별 reasoning/thinking semantics 차이, usage/billing, caching 설계 경험. agent 레포 OSS 기여가 이직 증거 목표.\n- 워크스페이스: ~/workspaces/oss_contrib (풀 노트 저장 위치)\n\n**데이터 소스**: fetcher 출력은 24h merged/rejected PR + 새로 생성된 issue(빠르게 닫힌 이슈 포함, NEWISSUE_PAGE 페이지별 집계) + 추적 이슈 상태의 1차 소스다. NEWISSUE_TRUNCATED 또는 FETCH_ERROR가 나오면 해당 레포 신규 이슈 목록이 불완전하다고 명시한다. 추천 후보 1-3건은 해당 issue 본문·전체 댓글·연결된 open/draft/closed PR·기여 지침을 gh/web으로 추가 확인한다. 최신 조회가 막히거나 FETCH_ERROR/403이면 검증 불가로 표시하고 즉시 PR 가능 판정은 하지 않는다. 빈 결과는 활동 없음과 구분한다. 3분 실행 한도를 고려해 후보 상위 소수만 깊게 확인한다.\n\n**watch 우선순위**: 9개 레포를 기여 가능성 기준으로 동등하게 평가한다. LiteLLM/Deep Agents에만 결과를 집중하지 말고 Pydantic AI를 포함한 전체 레포에서 좁은 첫 기여 후보를 계속 찾는다. 사용자는 LiteLLM 외에도 Python agent runtime, durable replay, filesystem, skill/memory, provider semantics, caching, async lifecycle, usage/billing 기회를 찾는다. 하루에 전체를 균등하게 열거하지 말고, 관련성 높은 변경만 메가픽에 넣고 나머지는 짧은 watch 신호로 묶는다. pi 저장소는 earendil-works/pi가 정식 경로이며 pi-mono 별도 중복 추적은 하지 않는다. pydantic-ai-harness는 pydantic-ai monorepo에 편입되었으므로 별도 추가하지 않는다.\n\n**진행 중인 정혁의 PR**: BerriAI/litellm #43552 (Fixes #43494, @sharosoo)은 이미 제출되어 수정 중이다. fetcher OWN-PR을 확인하고 상태/새 human review·CI·미해결 피드백을 별도 한 줄로 기록한다. #43494는 신규 기여 후보로 다시 추천하지 않는다. bot review는 재현과 maintainer 계약으로 검증하고 점수만 높이기 위한 범위 확장은 권하지 않는다.\n\n**리포트 구조**\n1. 메가픽 3-5건: 각각 왜 머지/거절됐는지 2-3문장, system-level 관점(repo 구조, protocol, runtime 계층). reject 사유는 label+comment 기반 추정만 허용 — 댓글 없으면 \"comment 없음, low-signal close\"로 표기.\n2. tracking candidates 상태 변화: fetcher의 TRACKING-CANDIDATES 전체(LiteLLM, Deep Agents, Pydantic AI, MCP Python SDK, Google ADK, Pi, Oh My Pi, Hermes)의 state/assignee/comment와 연결 PR 변화를 확인. Deep Agents #6554는 정혁이 이미 0.6.8/0.7.19 및 memoized replay 재현을 issue 댓글 #issuecomment-5870998912에 게시하고 maintainer 배정과 구현 방향을 기다리는 중이다. 새 PR 후보로 반복 추천하지 말고 댓글/배정 변화를 추적한다. #6522 provider별 cache 측정뿐 아니라 Pydantic AI #8815의 기존 지원자/PR 및 새로 열린 이슈도 본다. 정혁의 조사 handoff: /home/sharosoo/workspaces/sharosoo/oss-contrib/handoffs/2026-09-28-agent-oss.md. 이 파일은 과거 스냅샷이므로 최신 사실과 충돌하면 최신 확인을 우선한다.\n3. 기여 기회 랭킹: 정혁 프로필에 맞는 issue 최대 3건(레포별 할당량 없음). 풀 노트에는 9개 레포 각각 신규 후보/계속 추적/제외 중 한 줄과 근거 URL을 적어 전체 coverage를 유지하고, Discord 요약에는 행동 가능한 후보만 추린다. 각 항목에 repo/issue URL, 최신 확인 근거, 선점 여부(assignee + 작성자/다른 사람의 댓글상 작업 의사 + 연결/유사 PR), 기여 정책, 추천 행동, 난이도를 적는다. 반드시 **즉시 PR 가능 / 방향 합의 필요 / 독립 재현·측정 / 관찰 / 제외** 중 하나로 분류. open·미배정·good first issue만으로 PR 가능이라 쓰지 않는다. 해당 날짜에 검증된 후보가 없으면 0건이라고 쓴다. 기존 추적 이슈에만 갇히지 말고 신규 이슈에서 더 좋은 후보가 나오면 교체한다. pydantic-ai는 비자명한 변경 전 maintainer 동의·배정, MCP Python SDK는 연결 open issue에 작성자 배정 또는 help wanted(및 AI 사용 공개), OpenAI Agents Python은 비협업자 PR 불가, LiteLLM은 CLA+backend test를 반영한다. 이미 배정됐거나 누군가 로컬 patch/PR을 준비 중이면 중복 PR을 권하지 않는다.\n4. 외부 contributor 동향: 이번 창에 머지/거절된 외부인 PR의 scope·패턴에서 배울 점. 추천 후보의 다음 단계는 issue 댓글·최소 재현·테스트 중 하나로 구체화하되 사용자를 대신해 댓글/PR을 게시하지 않는다.\n\n**출력**\n- 풀 노트: ~/workspaces/oss_contrib/notes/agent_oss/YYYY-MM-DD.md (KST 기준 날짜)\n- Discord 요약(≤2000자): ~/workspaces/oss_contrib/notes/agent_oss/YYYY-MM-DD_discord.md에도 저장. 최종 응답에는 이 요약본을 넣는다.\n- 문체: 한국어 + 기술 용어 영문. 금지: \"X 모델에 적용\"류 application framing, 검증 없는 reject 단정, 작성 과정 메타 발언.\n- 이전 출력이 컨텍스트에 있으면 중복을 걷어내고 증분 중심으로.",
+      "skills": [],
+      "skill": null,
+      "model": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "base_url": null,
+      "script": "agent_oss_watch_fetch.sh",
+      "no_agent": false,
+      "monitor_script": null,
+      "monitor_url": null,
+      "monitor_state": null,
+      "context_from": [
+        "self"
+      ],
+      "schedule": {
+        "kind": "cron",
+        "expr": "30 7 * * *",
+        "display": "30 7 * * *"
+      },
+      "schedule_display": "30 7 * * *",
+      "repeat": {
+        "times": null,
+        "completed": 13
+      },
+      "enabled": true,
+      "state": "scheduled",
+      "paused_at": null,
+      "paused_reason": null,
+      "created_at": "2026-09-22T12:32:13.210151+09:00",
+      "next_run_at": "2026-10-05T07:30:00+09:00",
+      "last_run_at": "2026-10-04T07:35:20.331012+09:00",
+      "last_status": "ok",
+      "last_error": null,
+      "last_delivery_error": null,
+      "last_delivery_unverified": null,
+      "failure_streak": 0,
+      "deliver": "discord:1523289661680910469",
+      "origin": {
+        "platform": "discord",
+        "chat_id": "1551793708020535358",
+        "chat_name": "샤로수 / #일반 / litellm, pydantic-ai 오픈소스 컨트리뷰션 시작하기",
+        "thread_id": "1551793708020535358",
+        "user_id": "368793596595404801",
+        "scope_id": "1523289660577812541"
+      },
+      "enabled_toolsets": null,
+      "workdir": null,
+      "fire_claim": null,
+      "last_dispatch": {
+        "scheduled_at": "2026-10-04T07:30:00+09:00",
+        "dispatched_at": "2026-10-04T07:30:59.598433+09:00",
+        "lateness_seconds": 59.6,
+        "kind": "on_time"
+      }
+    }
+  ],
+  "updated_at": "2026-10-04T07:35:20.345694+09:00"
+}
