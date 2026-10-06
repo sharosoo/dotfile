@@ -29,5 +29,6 @@ if [[ -f $B ]]; then
   echo
   jq -r '"SUBAGENT BUDGET (rotate-accounts, \((now - .updatedAt) / 60 | floor) min old, \(.workingSessions) working omp session(s)) — obey per spawn wave:",
     (.perSession | to_entries[] | "  \(.key): max \(.value.cap) concurrent subagents on this family (\(.value.phase))"),
-    "  hard cap task.maxConcurrency = \(.maxConcurrency)"' "$B"
+    "  hard cap task.maxConcurrency = \(.maxConcurrency)",
+    (if .steer then "ROUTING STEER: \(.steer)" else empty end)' "$B"
 fi
