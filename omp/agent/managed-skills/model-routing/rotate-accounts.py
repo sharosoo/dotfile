@@ -203,16 +203,20 @@ def claude_steer(p, rates, blocked):
         r5 = rates.get("5h")
         on_pace_to_wall = (w5["used"] + r5 * left_s >= WALL) if r5 is not None else w5["used"] >= STEER_5H_USED
         if on_pace_to_wall and left_s > STEER_MIN_LEFT_S:
-            return "shift-astra", (
-                f"Claude yh 5-hour window is on pace to hit its limit before it resets ({w5['used']:.0%} used, resets in {left_s / 3600:.1f}h). "
-                "Until then route backend, logic, review, verifier, advisor and planning slots to astra (Codex yh has saved resets, spend it freely); "
-                "keep opus for frontend/UI/copy and critical slots that need an Anthropic seat. Do not downgrade to cheap models.")
+            # Share of the current Claude burn the window can sustain until its reset.
+            share = (WALL - w5["used"]) / left_s / r5 if r5 else 0.5
+            n = min(8, max(2, round(share * 10)))
+            return f"mix-opus-{n}", (
+                f"Claude yh 5-hour window is on pace to hit its limit before it resets ({w5['used']:.0%} used, resets in {left_s / 3600:.1f}h); "
+                f"it can sustain about {share:.0%} of the current Claude burn. Mix, do not move everything to astra: until the reset keep about "
+                f"{n} in 10 spawns that could run on opus (any slot kind, backend included) on opus and send the rest to astra "
+                "(Codex yh has saved resets, spend it freely). Pure-backend sessions split backend slots the same way. Do not downgrade to cheap models.")
     if w7 and w7.get("resetsAt"):
         left_h = (w7["resetsAt"] - now) / 3600
         if 1 - w7["used"] >= BURN_MIN_LEFT + 0.05 and left_h < 30:
             return "burn-opus", (
-                f"Claude yh 7-day window has {1 - w7['used']:.0%} left that expires in {left_h:.0f}h. Burn it: opus first for every slot it can take "
-                "(frontend, planning, second backend seat, reviews of non-Anthropic work), wide parallel waves. astra stays the backend lead.")
+                f"Claude yh 7-day window has {1 - w7['used']:.0%} left that expires in {left_h:.0f}h. Burn it: put opus on every slot it fits "
+                "and run wide parallel waves; in backend-heavy sessions split backend slots about half opus, half astra.")
     return "normal", "Claude yh pacing is normal: follow model-routing §0 (astra and opus aggressively)."
 
 
