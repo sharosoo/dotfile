@@ -9,7 +9,8 @@ import "Model.js" as Model
 // Bar button + popup for `omp usage`: every provider oh-my-pi is signed in
 // to, every account under it, and each rate-limit window with its reset.
 // The first tab is an overview (the fullest window per account); the others
-// show one provider in full.
+// show one provider in full, with a switch per account that takes its omp
+// credentials in or out of rotation (bin/omp-accounts).
 Panel {
   id: root
   moduleName: "sharosoo.omp-usage"
@@ -27,8 +28,14 @@ Panel {
   readonly property bool redact: setting("redact", false) === true
   readonly property bool showPercent: setting("showPercent", true) !== false
 
-  property var model: null
+  property var usageData: null
+  property var credentials: []
+  readonly property var model: usageData ? Model.build(usageData, credentials) : null
   property bool loading: false
+  // Account key whose switch is being applied.
+  property string switchingKey: ""
+  readonly property string accountsScript:
+    Qt.resolvedUrl("bin/omp-accounts").toString().replace(/^file:\/\//, "")
   property string error: ""
   property double fetchedAt: 0
   property double nowMs: Date.now()
@@ -75,7 +82,15 @@ Panel {
 
   function accountLabel(account, short) {
     if (!account) return ""
+    if (root.redact) return Model.redactAccount(account.email)
     return short ? Model.shortAccount(account.email) : account.email
+  }
+
+  function setAccountEnabled(account, enabled) {
+    if (toggleProc.running || !account || !account.switchable) return
+    root.switchingKey = account.key
+    toggleProc.command = [root.accountsScript, enabled ? "on" : "off"].concat(account.credentialIds.map(String))
+    toggleProc.running = true
   }
 
   function capitalize(text) {
@@ -84,9 +99,9 @@ Panel {
   }
 
   function refresh() {
+    if (!credsProc.running) credsProc.running = true
     if (usageProc.running) return
     root.loading = true
-    usageProc.command = root.redact ? ["omp", "usage", "--json", "--redact"] : ["omp", "usage", "--json"]
     usageProc.running = true
   }
 
@@ -121,10 +136,12 @@ Panel {
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
   onTabChanged: if (panelFlick) panelFlick.contentY = 0
-  onRedactChanged: refresh()
 
   Process {
     id: usageProc
+    // Always unredacted: switches match accounts to credentials by email, so
+    // the redact setting only changes how accounts are labelled.
+    command: ["omp", "usage", "--json"]
     stdout: StdioCollector {
       id: usageOut
       waitForEnd: true
@@ -141,12 +158,39 @@ Panel {
         return
       }
       try {
-        root.model = Model.build(JSON.parse(usageOut.text))
+        root.usageData = JSON.parse(usageOut.text)
         root.fetchedAt = Date.now()
         root.error = ""
       } catch (e) {
         root.error = "Could not parse omp output"
       }
+    }
+  }
+
+  Process {
+    id: credsProc
+    command: [root.accountsScript, "list"]
+    stdout: StdioCollector {
+      id: credsOut
+      waitForEnd: true
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) return
+      try { root.credentials = JSON.parse(credsOut.text) } catch (e) {}
+    }
+  }
+
+  Process {
+    id: toggleProc
+    stderr: StdioCollector {
+      id: toggleErr
+      waitForEnd: true
+    }
+    onExited: function(exitCode) {
+      root.switchingKey = ""
+      if (exitCode !== 0)
+        root.error = "Switching the account failed: " + (String(toggleErr.text || "").trim().split("\n").pop() || ("exit " + exitCode))
+      root.refresh()
     }
   }
 
@@ -249,7 +293,9 @@ Panel {
             meta: {
               if (root.provider) {
                 var n = root.provider.accounts.length
-                return n + " account" + (n > 1 ? "s" : "") + (root.provider.peak ? " · peak " + root.pct(root.provider.peak.percent) : "")
+                var off = root.provider.accounts.filter(function(a) { return !a.enabled }).length
+                return n + " account" + (n > 1 ? "s" : "") + (off > 0 ? " · " + off + " off" : "")
+                  + (root.provider.peak ? " · peak " + root.pct(root.provider.peak.percent) : "")
               }
               if (!root.model) return root.loading ? "Asking omp…" : ""
               return root.providers.length + " providers · " + root.model.accountCount + " accounts"
@@ -377,16 +423,59 @@ Panel {
                 }
               }
 
+              // Every account, switched-off ones included, so the overview
+              // doubles as the on/off list.
               Repeater {
                 model: overviewSection.modelData.accounts
 
-                LimitRow {
+                Item {
+                  id: overviewRow
                   required property var modelData
                   width: overviewSection.width
-                  visible: !!modelData.peak
-                  limit: modelData.peak
-                  label: root.accountLabel(modelData, true)
-                  sublabel: modelData.peak ? modelData.peak.title : ""
+                  visible: !!modelData.peak || modelData.switchable
+                  implicitHeight: Math.max(modelData.enabled && modelData.peak ? overviewLimit.implicitHeight : offLabel.implicitHeight,
+                                           overviewSwitch.visible ? overviewSwitch.implicitHeight : 0)
+
+                  LimitRow {
+                    id: overviewLimit
+                    visible: overviewRow.modelData.enabled && !!overviewRow.modelData.peak
+                    anchors.left: parent.left
+                    anchors.right: overviewSwitch.visible ? overviewSwitch.left : parent.right
+                    anchors.rightMargin: overviewSwitch.visible ? Style.spacing.md : 0
+                    anchors.verticalCenter: parent.verticalCenter
+                    limit: overviewRow.modelData.peak
+                    label: root.accountLabel(overviewRow.modelData, true)
+                    sublabel: overviewRow.modelData.peak ? overviewRow.modelData.peak.title : ""
+                  }
+
+                  Text {
+                    id: offLabel
+                    visible: !overviewLimit.visible
+                    anchors.left: parent.left
+                    anchors.right: overviewSwitch.visible ? overviewSwitch.left : parent.right
+                    anchors.rightMargin: Style.spacing.md
+                    anchors.verticalCenter: parent.verticalCenter
+                    textFormat: Text.PlainText
+                    text: root.accountLabel(overviewRow.modelData, true)
+                      + (root.switchingKey === overviewRow.modelData.key ? "  · switching…" : (overviewRow.modelData.enabled ? "" : "  · off"))
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    elide: Text.ElideRight
+                  }
+
+                  ToggleSwitch {
+                    id: overviewSwitch
+                    visible: overviewRow.modelData.switchable
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    cursorRing: false
+                    trackHeight: Math.max(16, Math.round(Style.spacing.controlHeight * 0.42))
+                    checked: overviewRow.modelData.enabled
+                    busy: root.switchingKey !== ""
+                    foreground: root.foreground
+                    onToggled: root.setAccountEnabled(overviewRow.modelData, !overviewRow.modelData.enabled)
+                  }
                 }
               }
             }
@@ -404,20 +493,20 @@ Panel {
 
               PanelSeparator { foreground: root.foreground }
 
-              // Account header: email, plan pill, org.
+              // Account header: email, plan pill, on/off switch; org below.
               Item {
                 width: parent.width
-                implicitHeight: Math.max(accountName.implicitHeight, planPill.implicitHeight)
+                implicitHeight: Math.max(accountName.implicitHeight, planPill.implicitHeight, accountSwitch.implicitHeight)
 
                 Text {
                   id: accountName
                   textFormat: Text.PlainText
                   anchors.left: parent.left
-                  anchors.right: planPill.visible ? planPill.left : parent.right
+                  anchors.right: planPill.visible ? planPill.left : (accountSwitch.visible ? accountSwitch.left : parent.right)
                   anchors.rightMargin: Style.spacing.sm
                   anchors.verticalCenter: parent.verticalCenter
                   text: root.accountLabel(accountSection.modelData, false)
-                  color: root.foreground
+                  color: accountSection.modelData.enabled ? root.foreground : root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
                   font.bold: true
@@ -427,7 +516,8 @@ Panel {
                 Rectangle {
                   id: planPill
                   visible: accountSection.modelData.plan !== ""
-                  anchors.right: parent.right
+                  anchors.right: accountSwitch.visible ? accountSwitch.left : parent.right
+                  anchors.rightMargin: accountSwitch.visible ? Style.spacing.sm : 0
                   anchors.verticalCenter: parent.verticalCenter
                   implicitWidth: planText.implicitWidth + Style.space(12)
                   implicitHeight: planText.implicitHeight + Style.space(4)
@@ -444,6 +534,19 @@ Panel {
                     font.pixelSize: Style.font.caption
                   }
                 }
+
+                ToggleSwitch {
+                  id: accountSwitch
+                  visible: accountSection.modelData.switchable
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  cursorRing: false
+                  trackHeight: Math.max(16, Math.round(Style.spacing.controlHeight * 0.42))
+                  checked: accountSection.modelData.enabled
+                  busy: root.switchingKey !== ""
+                  foreground: root.foreground
+                  onToggled: root.setAccountEnabled(accountSection.modelData, !accountSection.modelData.enabled)
+                }
               }
 
               Text {
@@ -453,6 +556,8 @@ Panel {
                 text: {
                   var a = accountSection.modelData
                   var parts = []
+                  if (!a.enabled) parts.push(root.switchingKey === a.key ? "Switching on…" : "Off · omp does not use this account")
+                  else if (root.switchingKey === a.key) parts.push("Switching off…")
                   if (a.org !== "" && a.org.indexOf(a.email) < 0) parts.push(a.org)
                   if (a.resetCredits > 0) parts.push(a.resetCredits + " reset credit" + (a.resetCredits > 1 ? "s" : "") + " available")
                   if (a.limitReached) parts.push("limit reached")

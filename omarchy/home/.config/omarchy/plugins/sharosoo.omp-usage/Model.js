@@ -52,7 +52,74 @@ function shortAccount(email) {
   return at > 0 ? text.slice(0, at) : text
 }
 
-function build(data) {
+function redactAccount(email) {
+  var text = String(email || "")
+  var at = text.indexOf("@")
+  var local = at > 0 ? text.slice(0, at) : text
+  return local.length > 2 ? local.slice(0, 2) + "…" : local
+}
+
+function credentialEmail(cred) {
+  if (cred.email) return String(cred.email)
+  var key = String(cred.identityKey || "")
+  return key.indexOf("email:") === 0 ? key.slice(6).split("|")[0] : ""
+}
+
+// Hangs omp's credential rows (from bin/omp-accounts) under the usage
+// accounts they belong to, matched by provider plus email or account id.
+// Disabled credentials never show up in `omp usage`, so the ones a person
+// switched off become accounts of their own; the ones omp disabled after an
+// auth failure or that were deleted stay hidden, a switch cannot fix them.
+// Credentials without any identity (API keys) cannot be matched to an
+// account, so those accounts get no switch.
+function attachCredentials(byProvider, list, credentials) {
+  for (var i = 0; i < credentials.length; i++) {
+    var c = credentials[i] || {}
+    var pid = String(c.provider || "")
+    if (pid === "") continue
+    var email = credentialEmail(c)
+    var accountId = String(c.accountId || "")
+    var prov = byProvider[pid]
+    var acct = null
+    if (prov) {
+      for (var a = 0; a < prov.accounts.length && !acct; a++) {
+        var x = prov.accounts[a]
+        if ((email !== "" && x.rawEmail === email) || (accountId !== "" && x.rawAccountId === accountId)) acct = x
+      }
+    }
+    if (!acct) {
+      if (c.userDisabled !== 1) continue
+      if (!prov) {
+        prov = byProvider[pid] = { id: pid, name: providerName(pid), accounts: [], keys: {} }
+        list.push(prov)
+      }
+      acct = newAccount("credential|" + (email || accountId || c.id), String(email || accountId || ("credential " + c.id)), {})
+      acct.rawEmail = email
+      acct.rawAccountId = accountId
+      prov.accounts.push(acct)
+    }
+    acct.credentials.push({ id: Number(c.id), enabled: !c.disabledCause, userDisabled: c.userDisabled === 1 })
+  }
+}
+
+function newAccount(key, label, m) {
+  return {
+    key: key,
+    email: label,
+    rawEmail: String(m.email || ""),
+    rawAccountId: String(m.accountId || ""),
+    plan: String(m.planType || ""),
+    org: String(m.orgName || ""),
+    limitReached: m.limitReached === true,
+    resetCredits: 0,
+    limits: [],
+    balances: [],
+    credentials: [],
+    seen: {}
+  }
+}
+
+function build(data, credentials) {
   var byProvider = {}
   var list = []
   var reports = (data && data.reports) || []
@@ -70,17 +137,8 @@ function build(data) {
     var key = [m.email || "", m.accountId || "", m.projectId || ""].join("|")
     var acct = prov.keys[key]
     if (!acct) {
-      acct = prov.keys[key] = {
-        key: key,
-        email: String(m.email || m.accountId || m.projectId || "account"),
-        plan: String(m.planType || ""),
-        org: String(m.orgName || ""),
-        limitReached: m.limitReached === true,
-        resetCredits: r.resetCredits ? Number(r.resetCredits.availableCount || 0) : 0,
-        limits: [],
-        balances: [],
-        seen: {}
-      }
+      acct = prov.keys[key] = newAccount(key, String(m.email || m.accountId || m.projectId || "account"), m)
+      acct.resetCredits = r.resetCredits ? Number(r.resetCredits.availableCount || 0) : 0
       prov.accounts.push(acct)
     } else {
       if (acct.org === "" && m.orgName) acct.org = String(m.orgName)
@@ -119,6 +177,8 @@ function build(data) {
     }
   }
 
+  attachCredentials(byProvider, list, credentials || [])
+
   var accountCount = 0
   for (var p = 0; p < list.length; p++) {
     var provider = list[p]
@@ -127,6 +187,12 @@ function build(data) {
     for (var a = 0; a < provider.accounts.length; a++) {
       var account = provider.accounts[a]
       delete account.seen
+      // Off once every credential is off; switchable only when each disabled
+      // credential is one a person switched off.
+      var creds = account.credentials
+      account.credentialIds = creds.map(function(c) { return c.id })
+      account.enabled = creds.length === 0 || creds.some(function(c) { return c.enabled })
+      account.switchable = creds.length > 0 && creds.every(function(c) { return c.enabled || c.userDisabled })
       account.limits.sort(function(x, y) {
         return (x.durationMs || Infinity) - (y.durationMs || Infinity) || x.title.localeCompare(y.title)
       })

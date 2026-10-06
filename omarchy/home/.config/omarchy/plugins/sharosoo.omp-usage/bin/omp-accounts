@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Switches omp credentials on and off for the omp-usage bar widget.
+#
+#   omp-accounts list            credential rows as JSON (no secrets)
+#   omp-accounts off <id>...     disable the given credentials
+#   omp-accounts on <id>...      re-enable credentials a user switched off
+#
+# omp keeps credentials in agent.db; a non-NULL disabled_cause takes a row out
+# of rotation and running sessions pick the change up through the
+# auth_change_revision trigger. `on` only clears causes a person set
+# ("manual: ..." or "temporarily disabled by user ..."): rows omp disabled after
+# an OAuth failure need a real re-login, and rows with cause "deleted by user"
+# stay deleted.
+set -euo pipefail
+
+db="${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/agent.db"
+user_cause="(disabled_cause LIKE 'manual:%' OR disabled_cause LIKE 'temporarily disabled by user%')"
+
+ids() {
+  local id out=""
+  [ "$#" -gt 0 ] || { echo "no credential ids given" >&2; exit 2; }
+  for id in "$@"; do
+    [[ "$id" =~ ^[0-9]+$ ]] || { echo "bad credential id: $id" >&2; exit 2; }
+    out="${out:+$out,}$id"
+  done
+  printf '%s' "$out"
+}
+
+action="${1:-}"
+[ "$#" -gt 0 ] && shift
+
+case "$action" in
+  list)
+    out=$(sqlite3 -readonly -json -cmd '.timeout 3000' "$db" "
+      SELECT id, provider, identity_key AS identityKey,
+             json_extract(data, '\$.email') AS email,
+             json_extract(data, '\$.accountId') AS accountId,
+             disabled_cause AS disabledCause,
+             CASE WHEN disabled_cause IS NOT NULL AND $user_cause THEN 1 ELSE 0 END AS userDisabled
+      FROM auth_credentials
+      WHERE provider NOT LIKE 'mcp_oauth:%'
+      ORDER BY id")
+    printf '%s\n' "${out:-[]}"
+    ;;
+  off)
+    list=$(ids "$@")
+    sqlite3 -cmd '.timeout 5000' "$db" "
+      UPDATE auth_credentials
+      SET disabled_cause = 'manual: switched off in the omp-usage bar ' || strftime('%Y-%m-%d', 'now', 'localtime'),
+          updated_at = CAST(strftime('%s', 'now') AS INTEGER)
+      WHERE id IN ($list) AND disabled_cause IS NULL"
+    ;;
+  on)
+    list=$(ids "$@")
+    sqlite3 -cmd '.timeout 5000' "$db" "
+      UPDATE auth_credentials
+      SET disabled_cause = NULL,
+          updated_at = CAST(strftime('%s', 'now') AS INTEGER)
+      WHERE id IN ($list) AND $user_cause"
+    ;;
+  *)
+    echo "usage: omp-accounts list | off <id>... | on <id>..." >&2
+    exit 2
+    ;;
+esac
