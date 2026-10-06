@@ -205,3 +205,4 @@ task:
     security-reviewer: "openai-codex/gpt-6-astra:high, devin/gpt-6-astra:high"
 tier:
   openai: priority
+  anthropic: priority

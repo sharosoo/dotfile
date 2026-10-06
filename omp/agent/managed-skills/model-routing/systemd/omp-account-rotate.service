@@ -1,0 +1,7 @@
+[Unit]
+Description=Rotate omp Claude/Codex accounts by quota (model-routing skill)
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/share/mise/shims:/usr/local/bin:/usr/bin
+ExecStart=/usr/bin/python3 %h/.omp/agent/managed-skills/model-routing/rotate-accounts.py
