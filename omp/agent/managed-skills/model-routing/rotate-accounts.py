@@ -46,6 +46,9 @@ BUDGET = f"{HOME}/.omp/agent/rotate-budget.json"
 WIDE_CAP = 32  # primary has quota: run wide to spend it
 HELPER_TOTAL = 12  # concurrent subagents across all working sessions while on helper accounts
 HELPER_MIN = 2
+STEER_5H_USED = 0.75  # no burn rate yet: treat the 5-hour window as tight from here
+STEER_MIN_LEFT_S = 45 * 60  # a 5-hour wall this close to its reset is not worth steering away from
+STEER_MIN_GAP_S = 20 * 60  # minimum gap between non-urgent steering broadcasts
 
 PROVIDERS = {
     "anthropic": {
@@ -180,19 +183,62 @@ def rate(prev, win):
     return (win["used"] - prev["used"]) / dt if dt > 30 else None
 
 
-def working_sessions():
-    """omp sessions herdr reports as working (at least 1: the caller)."""
+def omp_panes():
+    """herdr panes running omp, as (pane_id, status)."""
     try:
         out = subprocess.run(["herdr", "agent", "list"], capture_output=True, text=True, timeout=10).stdout
         agents = json.loads(out)["result"]["agents"]
-        return max(1, sum(a.get("agent") == "omp" and a.get("agent_status") == "working" for a in agents))
+        return [(a["pane_id"], a.get("agent_status")) for a in agents if a.get("agent") == "omp"]
     except (OSError, ValueError, KeyError, subprocess.SubprocessError):
-        return 1
+        return []
 
 
-def apply_budget(plan):
+def claude_steer(p, rates, blocked):
+    """Which family running Mains should lean on, from Claude yh pacing."""
+    w5, w7 = p.get("5h"), p.get("7d")
+    if blocked:
+        return "claude-helpers", "Claude yh is spent; admin-developers/global carry Claude now (rotation handles it, Claude fast tier is off). Keep using opus normally."
+    if w5 and w5.get("resetsAt"):
+        left_s = w5["resetsAt"] - now
+        r5 = rates.get("5h")
+        on_pace_to_wall = (w5["used"] + r5 * left_s >= WALL) if r5 is not None else w5["used"] >= STEER_5H_USED
+        if on_pace_to_wall and left_s > STEER_MIN_LEFT_S:
+            return "shift-astra", (
+                f"Claude yh 5-hour window is on pace to hit its limit before it resets ({w5['used']:.0%} used, resets in {left_s / 3600:.1f}h). "
+                "Until then route backend, logic, review, verifier, advisor and planning slots to astra (Codex yh has saved resets, spend it freely); "
+                "keep opus for frontend/UI/copy and critical slots that need an Anthropic seat. Do not downgrade to cheap models.")
+    if w7 and w7.get("resetsAt"):
+        left_h = (w7["resetsAt"] - now) / 3600
+        if 1 - w7["used"] >= BURN_MIN_LEFT + 0.05 and left_h < 30:
+            return "burn-opus", (
+                f"Claude yh 7-day window has {1 - w7['used']:.0%} left that expires in {left_h:.0f}h. Burn it: opus first for every slot it can take "
+                "(frontend, planning, second backend seat, reviews of non-Anthropic work), wide parallel waves. astra stays the backend lead.")
+    return "normal", "Claude yh pacing is normal: follow model-routing §0 (astra and opus aggressively)."
+
+
+def broadcast(state, steer, text):
+    """Tell working omp sessions about a steering change (config edits do not reach live sessions)."""
+    last = state.get("steer", {})
+    if last.get("key") == steer:
+        return
+    urgent = "claude-helpers" in (steer, last.get("key"))
+    if not urgent and now - last.get("at", 0) < STEER_MIN_GAP_S:
+        return
+    targets = [pid for pid, status in omp_panes() if status == "working"]
+    msg = (f"[Routing directive from the account-rotation service ({steer}); live sessions do not reload config, so apply by hand. "
+           f"Do not stop current work.] {text} Before each spawn wave run ~/.omp/agent/managed-skills/model-routing/headroom.sh "
+           "and stay within its SUBAGENT BUDGET lines.")
+    log(f"steer -> {steer}; directing {targets}")
+    if DRY:
+        return
+    for pid in targets:
+        subprocess.run(["herdr", "agent", "prompt", pid, msg], capture_output=True, timeout=10)
+    state["steer"] = {"key": steer, "text": text, "at": now}
+
+
+def apply_budget(plan, steer_text):
     """Per-family subagent caps for Main (read via headroom.sh) plus the hard task.maxConcurrency."""
-    working = working_sessions()
+    working = max(1, sum(status == "working" for _, status in omp_panes()))
     helper_cap = max(HELPER_MIN, HELPER_TOTAL // working)
     caps = {p: (helper_cap if spent else WIDE_CAP) for p, spent in plan.items()}
     hard = max(caps.values(), default=WIDE_CAP)
@@ -201,13 +247,14 @@ def apply_budget(plan):
         "workingSessions": working,
         "perSession": {p: {"cap": c, "phase": "helpers" if plan[p] else "burn-yh"} for p, c in caps.items()},
         "maxConcurrency": hard,
+        "steer": steer_text,
     }
     try:
         with open(BUDGET) as f:
             old = json.load(f)
     except (OSError, ValueError):
         old = {}
-    if {k: v for k, v in old.items() if k != "updatedAt"} != {k: v for k, v in budget.items() if k != "updatedAt"}:
+    if {k: v for k, v in old.items() if k not in ("updatedAt", "steer")} != {k: v for k, v in budget.items() if k not in ("updatedAt", "steer")}:
         log(f"budget: {working} working session(s), per-session caps {caps}, task.maxConcurrency {hard}")
     if DRY:
         return
@@ -232,6 +279,7 @@ def run_once():
     samples = state.setdefault("samples", {})
     interval = MAX_INTERVAL_S
     plan = {}
+    steer = None
 
     for provider, cfg in PROVIDERS.items():
         reports = {r["metadata"].get("email"): r for r in usage["reports"] if r.get("provider") == provider and r.get("metadata")}
@@ -300,6 +348,8 @@ def run_once():
             # Every helper looks spent; enable them anyway rather than stall on a dead primary.
             helpers = {e: True for e in helpers}
         plan[provider] = blocked
+        if provider == "anthropic":
+            steer = claude_steer(p, rates, blocked)
 
         changed = False
         if not DRY:
@@ -322,7 +372,9 @@ def run_once():
                 omp("config", "set", "tier.anthropic", want)
 
     if plan:
-        apply_budget(plan)
+        if steer:
+            broadcast(state, *steer)
+        apply_budget(plan, steer[1] if steer else None)
 
     if not DRY:
         with open(STATE, "w") as f:
