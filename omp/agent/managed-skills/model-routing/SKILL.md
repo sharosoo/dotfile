@@ -9,7 +9,10 @@ The user runs many subscriptions in parallel: Claude ×3, ChatGPT ×2 (Pro + Pro
 ## 0. Current account policy (2026-10-06) — overrides older guidance below
 
 - **Use `astra` aggressively (user rule, 2026-10-06).** While Codex `yh*` has headroom, `astra` is the **first** candidate for every backend / logic / data slot at every criticality (critical, normal and fill-in), and takes review, verifier, advisor and planning seats whenever family independence (§5) allows (it cannot review GPT-authored work; under a GPT Main pick a non-GPT reviewer). The "avoid routine work" notes in §2 and §4 do not apply. Spawn it explicitly with `agent: "astra"`; omit `effort` (medium), `hi` (= xhigh) only for the hardest problems.
-- **Service tier: `priority` (fast) only, for every model.** Config: `tier.openai: priority` (Codex: astra, sol, luna), `tier.anthropic: priority` (Opus, Fable), subagents inherit (`tier.subagent: inherit`), and `task.agentServiceTierOverrides: { astra: priority, security-reviewer: priority }`. The `task` tool has no per-spawn tier field, so never try to set one per spawn. Do not use `ultrafast` (measured 2026-10-06: Codex runs it at standard speed). Fast spends quota faster (Codex priority 2.5× astra, 2× sol/luna); check headroom before big waves and tell the user when an account in use drops to LOW.
+- **Service tier: `priority` (fast), never `ultrafast`** (measured 2026-10-06: Codex runs ultrafast at standard speed). The `task` tool has no per-spawn tier field, so tiers live only in config; subagents inherit (`tier.subagent: inherit`).
+  - **Codex: always `priority`.** `tier.openai: priority` plus `task.agentServiceTierOverrides: { astra: priority, security-reviewer: priority }`. Codex priority costs 2.5× (astra) / 2× (sol, luna) quota.
+  - **Claude: `priority` only while every enabled Claude account is `yh*` or an account being burned before its window resets; otherwise off.** omp cannot set a tier per account, so Main switches it whenever it flips Claude accounts (table below): enabled set ⊆ {`yh*`, burn-target} → `omp config set tier.anthropic priority`; any other account enabled (e.g. `ad*` after yh hits 80%, or `gl*` re-enabled after its reset as a normal account) → `omp config reset tier.anthropic` (back to `none`). Check with `omp config get tier.anthropic`, then `dotfile/omp/sync.sh capture`. A burn-target is an account whose current window resets soon with quota left that would otherwise be wasted (e.g. `gl*` on 2026-10-06).
+  - Check headroom before big waves and tell the user when an account in use drops to LOW.
 
 ### Account priority — managed by hand (user rule, 2026-10-06)
 
@@ -20,7 +23,7 @@ No `auth.accountPolicies` in config: omp's automatic ranking is not used to orde
 | `anthropic` | 1. `gl*` (global@teamturing.com) → 2. `yh*` (yh04060) → 3. `ad*` (admin-developers) | Burn `gl*` first while its current window lasts (7 Day 63% used, resets ~2026-10-07 21:00). When `gl*` is spent (window ≥ 95% used or limit errors), **disable `gl*`**, leaving only `yh*`. When `yh*` reaches **80% used on `Claude 7 Day`**, **enable `ad*`** (and `gl*` if its window has reset). |
 | `openai-codex` | 1. `yh*` (yh04060, Pro Max $500) → 2. `zk*` (zkwmak08, Pro) | Only `yh*` enabled. Enable `zk*` when `yh*` reaches 80% used on `7 days`, or when the user asks. |
 
-State on 2026-10-06: disabled = Claude `ad*` (id 14), Codex `zk*` (ids 1, 2); enabled = Claude `gl*` (23), `yh*` (25), Codex `yh*` (24).
+State on 2026-10-06: disabled = Claude `ad*` (id 14), Codex `zk*` (ids 1, 2); enabled = Claude `gl*` (23, burn-target), `yh*` (25), Codex `yh*` (24). `tier.anthropic: priority` (enabled Claude set = yh + burn-target).
 
 Disable / enable (credential rows in `~/.omp/agent/agent.db`, table `auth_credentials`; running sessions pick the change up through the auth revision trigger). `omp usage` labels such rows "re-login to restore" — ignore that; clearing `disabled_cause` restores them, no re-login needed:
 ```bash
@@ -33,7 +36,7 @@ sqlite3 ~/.omp/agent/agent.db "update auth_credentials set disabled_cause=NULL, 
 ```
 - Only touch rows whose `disabled_cause` starts with `manual:` or `temporarily disabled by user` — never revive rows omp disabled for OAuth failures (`invalid_grant`, `Grant not found`); those need a user re-login.
 - Never leave a provider with zero enabled accounts. Before disabling the last-but-one, confirm the remaining account has headroom.
-- After each flip: run `omp usage`, update the "State" line above, and tell the user which account changed and why.
+- After each flip: re-apply the Claude tier rule above, run `omp usage`, update the "State" line, and tell the user which account changed, why, and whether Claude fast is on or off.
 - Backup taken before the first manual change: `~/.omp/agent/agent.db.bak-20261006`.
 
 
