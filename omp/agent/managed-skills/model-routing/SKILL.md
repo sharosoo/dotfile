@@ -45,12 +45,14 @@ A systemd user service rotates Claude and Codex accounts and sets the subagent b
 | `sol` | openai-codex/gpt-6.1-sol | high | OpenAI |
 | `astra` | openai-codex/gpt-6-astra | medium | OpenAI |
 | `luna` | openai-codex/gpt-6-luna | high | OpenAI |
-| `gemini` | google-antigravity/gemini-3.8-flash | high | Google |
+| `gemini` | google-antigravity/gemini-3.8-flash → `commandcode/google/gemini-3.8-flash` when antigravity is exhausted | high | Google |
 | `swe` | devin/swe-2 (Kimi K3-based) | high | Devin — **overflow only** |
 | `mimo` | commandcode/xiaomi/mimo-v2.6-pro | — | CommandCode credits |
 | `deepseek` | commandcode/deepseek/deepseek-v4.1-flash | high | CommandCode credits |
 | `muse` | commandcode/meta/muse-spark-1.3-contributor | high | CommandCode credits, **Contributor: prompts may be retained for training** |
-| `ci` `committer` `pr` `reporter` `naturalizer` | gemini-3.8-flash | fixed | Google |
+| `ci` `committer` `pr` `reporter` `naturalizer` | google-antigravity/gemini-3.8-flash (same commandcode fallback) | fixed | Google |
+
+`retry.fallbackChains["google-antigravity/gemini-3.8-flash"] = [commandcode/google/gemini-3.8-flash]` (user rule, 2026-10-07): on antigravity 429/quota walls every Gemini 3.8 Flash user (`gemini`, the fixed-purpose agents, `smol`/`plan` roles, `scout`/`reviewer` overrides) moves to CommandCode credits, and returns to antigravity when its cooldown expires. That spend is accepted; do not swap Gemini slots to other families to avoid it.
 
 `effort` on a task item (`lo`/`med`/`hi`) overrides the default and maps to the model's lowest, middle or highest level, capped at `xhigh` (`task.maxEffort`). Observed 2026-10-02: `sol` lo = low, `swe` hi = high (its `max` is above the cap, so it is clamped).
 
