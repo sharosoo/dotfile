@@ -21,8 +21,6 @@ dev:
 defaultThinkingLevel: auto
 advisor:
   enabled: false
-tier:
-  openai: priority
 auth:
   accountPolicies:
     - provider: anthropic
