@@ -196,8 +196,8 @@ task:
   enableEffort: true
   maxEffort: xhigh
   agentServiceTierOverrides:
-    astra: ultrafast
-    security-reviewer: ultrafast
+    astra: priority
+    security-reviewer: priority
   agentModelOverrides:
     task: "devin/swe-2, openai-codex/gpt-6-luna, commandcode/xiaomi/mimo-v2.6-pro"
     sonic: "devin/swe-2:medium, commandcode/deepseek/deepseek-v4.1-flash"
