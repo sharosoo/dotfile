@@ -51,6 +51,11 @@ STEER_MIN_LEFT_S = 45 * 60  # a 5-hour wall this close to its reset is not worth
 STEER_MIN_GAP_S = 20 * 60  # minimum gap between non-urgent steering broadcasts
 WEEK_S = 7 * 86400
 MIN_AVG_ELAPSED_S = 2 * 3600  # a younger weekly window gives too noisy an average burn
+SPRINT_START_S = 35 * 60  # a helper's 5-hour window this close to reset may take a sprint
+SPRINT_END_S = 60  # hand back to the primary this long before the helper's reset
+SPRINT_MAX_USED = 0.70  # sprint only on a helper with at least 30% of its 5-hour window unused
+SPRINT_MIN_7D_LEFT = 0.15
+SPRINT_PRIMARY_5H = 0.75  # only worth it while the primary's own 5-hour window is tight
 
 PROVIDERS = {
     "anthropic": {
@@ -231,7 +236,7 @@ def broadcast(state, steer, text):
     last = state.get("steer", {})
     if last.get("key") == steer:
         return
-    urgent = "claude-helpers" in (steer, last.get("key"))
+    urgent = bool({"claude-helpers", "claude-sprint"} & {steer, last.get("key")})
     if not urgent and now - last.get("at", 0) < STEER_MIN_GAP_S:
         return
     targets = [pid for pid, status in omp_panes() if status == "working"]
@@ -274,6 +279,37 @@ def apply_budget(plan, steer_text):
         omp("config", "set", "task.maxConcurrency", str(hard))
 
 
+def owned_off(db, provider, email):
+    rs = rows(db, provider, email)
+    return bool(rs) and all(cause == CAUSE for _, cause in rs)
+
+
+def pick_sprint(cache, cfg, p):
+    """Helper whose 5-hour window resets soon with much unused, while the primary's 5-hour is tight.
+
+    Its expiring 5-hour capacity takes all Claude traffic (primary off) until just before its reset,
+    which saves the primary's scarce 5-hour quota. Returns (helper or None, seconds until the next
+    sprint decision point).
+    """
+    wake = MAX_INTERVAL_S
+    best = None
+    tight = p.get("5h", {"used": 0})["used"] >= SPRINT_PRIMARY_5H
+    for email in cfg["helpers"]:
+        win = current(cache.get(email, {}))
+        w5, w7 = win.get("5h"), win.get("7d")
+        if not w5 or not w5.get("resetsAt") or not w7:
+            continue
+        left = w5["resetsAt"] - now
+        if left > SPRINT_START_S:
+            wake = min(wake, left - SPRINT_START_S + 5)
+        elif left > SPRINT_END_S:
+            wake = min(wake, left - SPRINT_END_S + 5)
+            ok = tight and w5["used"] <= SPRINT_MAX_USED and 1 - w7["used"] >= SPRINT_MIN_7D_LEFT
+            if ok and (best is None or w5["used"] < best[1]):
+                best = (email, w5["used"])
+    return (best[0] if best else None), max(30, wake)
+
+
 def run_once():
     """One rotation pass; returns seconds until the next check."""
     global now
@@ -298,11 +334,15 @@ def run_once():
         for email, r in reports.items():
             cache[email] = windows_of(r, cfg["windows"])
         primary = reports.get(cfg["primary"])
+        # A primary the script itself switched off (sprint) is tracked from cache; one the user
+        # switched off pauses the provider.
+        if primary is None and owned_off(db, provider, cfg["primary"]):
+            primary = {}
         if primary is None or not cache.get(cfg["primary"]):
             log(f"{provider}: no usage for primary, skipped")
             interval = min(interval, MIN_INTERVAL_S)
             continue
-        p = cache[cfg["primary"]]
+        p = current(cache[cfg["primary"]])
         prev = samples.get(provider, {})
         rates = {wid: rate(prev.get(wid), w) for wid, w in p.items()}
         # Keep the older sample until 30 s have passed so short polls still yield a rate.
@@ -314,7 +354,7 @@ def run_once():
 
         at_wall = any(w["used"] >= WALL for w in p.values())
         if provider == "openai-codex":
-            at_wall |= primary["metadata"].get("limitReached") is True
+            at_wall |= (primary.get("metadata") or {}).get("limitReached") is True
             credits = (primary.get("resetCredits") or {}).get("availableCount", 0)
             if at_wall:
                 state.setdefault("codexWallSince", now)
@@ -373,17 +413,28 @@ def run_once():
         if blocked and not any(helpers.values()):
             # Every helper looks spent; enable them anyway rather than stall on a dead primary.
             helpers = {e: True for e in helpers}
+        sprint = None
+        if provider == "anthropic":
+            sprint, sprint_wake = pick_sprint(cache, cfg, p)
+            interval = min(interval, sprint_wake)
+            if sprint:
+                helpers = {e: e == sprint for e in helpers}
         plan[provider] = blocked
         if provider == "anthropic":
             steer = claude_steer(p, rates, blocked)
+            if sprint:
+                w5 = cache[sprint]["5h"]
+                steer = ("claude-sprint", (
+                    f"Claude yh is resting while {sprint.split('@')[0]}'s 5-hour window ({1 - w5['used']:.0%} unused) runs out in "
+                    f"{(w5['resetsAt'] - now) / 60:.0f} min: opus is free capacity right now, use it generously until then. {GPT_SPLIT}"))
 
         changed = False
         if not DRY:
-            changed = set_enabled(db, provider, cfg["primary"], True)
+            changed = set_enabled(db, provider, cfg["primary"], not sprint)
             for email, on in helpers.items():
                 changed |= set_enabled(db, provider, email, on)
         if changed or DRY:
-            log(f"{provider}: primary {'spent' if blocked else 'burning'} {json.dumps({k: v['used'] for k, v in p.items()})} "
+            log(f"{provider}: primary {'sprint-rest' if sprint else 'spent' if blocked else 'burning'} {json.dumps({k: v['used'] for k, v in p.items()})} "
                 f"rates/10min {json.dumps({k: (round(v * 600, 3) if v is not None else None) for k, v in rates.items()})}; helpers {helpers}")
 
     if not DRY:
