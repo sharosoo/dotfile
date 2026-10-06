@@ -9,6 +9,7 @@ The user runs many subscriptions in parallel: Claude ×3, ChatGPT ×2 (Pro + Pro
 ## 0. Current account policy (2026-10-06) — overrides older guidance below
 
 - **Use `astra` aggressively (user rule, 2026-10-06).** While Codex `yh*` has headroom, `astra` is the **first** candidate for every backend / logic / data slot at every criticality (critical, normal and fill-in), and takes review, verifier, advisor and planning seats whenever family independence (§5) allows (it cannot review GPT-authored work; under a GPT Main pick a non-GPT reviewer). The "avoid routine work" notes in §2 and §4 do not apply. Spawn it explicitly with `agent: "astra"`; omit `effort` (medium), `hi` (= xhigh) only for the hardest problems.
+- **Use `opus` (Claude Opus 5.5 on `yh*`) aggressively too (user rule, 2026-10-06).** While `yh*` is under 80% on `Claude 7 Day`, `opus` is the first pick for frontend / UI / copy at every criticality, the default second seat next to `astra` for backend critical/normal work, one of the two planners, and a standing review-panel and verifier seat for non-Anthropic-authored work. Prefer `opus` over `gemini`/`luna` for any slot that needs judgement; keep cheap searchers only for search/scans. The "do not route to your own family by habit" rule is suspended for `opus` while this holds — independence (§5) still applies: `opus` cannot review Opus/Anthropic-authored work, and under an Opus Main its review counts only alongside a non-Anthropic reviewer. Omit `effort` (medium); `hi` only for the hardest problems. Spread parallel Opus waves over time if `Claude 5 Hour` passes 70%.
 - **Service tier: `priority` (fast), never `ultrafast`** (measured 2026-10-06: Codex runs ultrafast at standard speed). The `task` tool has no per-spawn tier field, so tiers live only in config; subagents inherit (`tier.subagent: inherit`).
   - **Codex: always `priority`.** `tier.openai: priority` plus `task.agentServiceTierOverrides: { astra: priority, security-reviewer: priority }`. Codex priority costs 2.5× (astra) / 2× (sol, luna) quota.
   - **Claude: `priority` only while every enabled Claude account is `yh*` or an account being burned before its window resets; otherwise off.** omp cannot set a tier per account, so Main switches it whenever it flips Claude accounts (table below): enabled set ⊆ {`yh*`, burn-target} → `omp config set tier.anthropic priority`; any other account enabled (e.g. `ad*` after yh hits 80%, or `gl*` re-enabled after its reset as a normal account) → `omp config reset tier.anthropic` (back to `none`). Check with `omp config get tier.anthropic`, then `dotfile/omp/sync.sh capture`. A burn-target is an account whose current window resets soon with quota left that would otherwise be wasted (e.g. `gl*` on 2026-10-06).
@@ -20,10 +21,10 @@ No `auth.accountPolicies` in config: omp's automatic ranking is not used to orde
 
 | provider | order | rule |
 |---|---|---|
-| `anthropic` | 1. `gl*` (global@teamturing.com) → 2. `yh*` (yh04060) → 3. `ad*` (admin-developers) | Burn `gl*` first while its current window lasts (7 Day 63% used, resets ~2026-10-07 21:00). When `gl*` is spent (window ≥ 95% used or limit errors), **disable `gl*`**, leaving only `yh*`. When `yh*` reaches **80% used on `Claude 7 Day`**, **enable `ad*`** (and `gl*` if its window has reset). |
+| `anthropic` | 1. `yh*` (yh04060) → 2. `ad*` (admin-developers) / `gl*` (global@teamturing.com) | **Only `yh*` enabled.** When `yh*` reaches **80% used on `Claude 7 Day`**, enable `ad*` (and `gl*` if its window has reset) and turn Claude fast off (tier rule above). If `gl*`/`ad*` later sit on quota that a near reset would waste, enable them as a burn-target first. |
 | `openai-codex` | 1. `yh*` (yh04060, Pro Max $500) → 2. `zk*` (zkwmak08, Pro) | Only `yh*` enabled. Enable `zk*` when `yh*` reaches 80% used on `7 days`, or when the user asks. |
 
-State on 2026-10-06: disabled = Claude `ad*` (id 14), Codex `zk*` (ids 1, 2); enabled = Claude `gl*` (23, burn-target), `yh*` (25), Codex `yh*` (24). `tier.anthropic: priority` (enabled Claude set = yh + burn-target).
+State on 2026-10-06 (later): disabled = Claude `ad*` (id 14), `gl*` (23, burned), Codex `zk*` (ids 1, 2); enabled = Claude `yh*` (25), Codex `yh*` (24). `tier.anthropic: priority` (enabled Claude set = yh only). yh `Claude 7 Day` 13% used, resets ~2026-10-07.
 
 Disable / enable (credential rows in `~/.omp/agent/agent.db`, table `auth_credentials`; running sessions pick the change up through the auth revision trigger). `omp usage` labels such rows "re-login to restore" — ignore that; clearing `disabled_cause` restores them, no re-login needed:
 ```bash
@@ -69,12 +70,12 @@ Take the first candidate whose provider still has quota.
 
 | | **critical** | **normal** | **fill-in** |
 |---|---|---|---|
-| backend / logic / data | `astra` · `sol` · `opus` | `astra` · `sol` · `luna` hi · `grok` · `opus` | `astra` · `luna` · `gemini` · `grok` |
-| frontend / UI / copy | `opus` · `sol` · `opus` hi only for the hardest | `opus` · `gemini` · `luna` | `gemini` · `luna` · `opus` |
-| planning | 2 plans: `sol` + `opus` (`fable` as 3rd) | one primary of the ticket's kind + `gemini` or `grok` | — |
+| backend / logic / data | `astra` · `opus` · `sol` | `astra` · `opus` · `sol` · `luna` hi · `grok` | `astra` · `opus` · `luna` · `gemini` |
+| frontend / UI / copy | `opus` · `sol` · `opus` hi only for the hardest | `opus` · `astra` · `gemini` | `opus` · `gemini` · `luna` |
+| planning | 2 plans: `astra` + `opus` (`fable` as 3rd) | `opus` or `astra` (by the ticket's kind) + `gemini` or `grok` | — |
 | advisor | `astra` · `fable` | `astra` · `fable` · `sol` | — |
 | review panel | `grok` · `gemini` · `opus` · `fable` · `astra` · `sol`, every one with quota; for diffs, exclude the author's family | 2–3 primary families | — |
-| verifier | primary family different from author and Main, hi (`astra` when the author is non-GPT) | `astra` · `luna` · `gemini` · `grok` (not the author's family) | — |
+| verifier | primary family different from author and Main, hi (`astra` when the author is non-GPT, `opus` when the author is non-Anthropic) | `astra` · `opus` · `luna` · `gemini` · `grok` (not the author's family) | — |
 | research / search / vision | fan out 2–4 searchers in parallel: `gemini` · `luna` · `grok` · `scout` (each a different slice of the question) | same, 1–2 searchers | — |
 | scans, cross-checks | `luna` · `gemini` · `grok` | | |
 | docs, commits, PRs, reports | `reporter`/`committer`/`pr`/`naturalizer` (Gemini) | | |
