@@ -4,7 +4,18 @@ description: "Use before spawning subagents or picking a model: model agents, wo
 ---
 # Model routing
 
-The user runs many subscriptions in parallel: Claude ×2, ChatGPT Pro ×2, Antigravity ×2, Devin Pro, SuperGrok and CommandCode ×2. **Each subagent is a model.** Main chooses the model per task item through `agent` and the effort through `effort`, and gives the role in the packet (`skill://agent-orchestration`).
+The user runs many subscriptions in parallel: Claude ×3, ChatGPT ×2 (Pro + Pro Max), Antigravity ×2, Devin Pro, SuperGrok and CommandCode ×2. **Each subagent is a model.** Main chooses the model per task item through `agent` and the effort through `effort`, and gives the role in the packet (`skill://agent-orchestration`).
+
+## 0. Current account policy (2026-10-06) — overrides older guidance below
+
+- **Codex `yh*` is the Pro Max ($500) plan** with a large 7-day quota. omp prefers it (`auth.accountPolicies` priority 100); the `zk*` Pro account is the fallback.
+- **Codex on `yh*` always runs at the fastest tier available: `ultrafast` when offered, else `priority` (fast). Never standard.** Config: `tier.openai` (Main + inherited by subagents via `tier.subagent: inherit`) and `task.agentServiceTierOverrides` for `astra` and `security-reviewer`. omp cannot set a tier per account, but yh has priority 100, so in practice every Codex turn is a yh turn. Anthropic stays on the standard tier (`tier.anthropic` unset — Claude fast burns quota much faster).
+  - **Why not `ultrafast` right now:** omp's `zv()` sends `ultrafast` to a Codex model only if its catalog `serviceTiers` contains it; otherwise it sends **no** tier, i.e. standard speed — slower than `priority`. As of 2026-10-06 every Codex model (astra, sol, luna) advertises only `["priority"]`, so the config is `priority`.
+  - **Mandatory check before every astra/Codex wave:** `omp models refresh >/dev/null; sqlite3 ~/.omp/agent/models.db "select models from model_cache where provider_id like 'openai-codex%'" | jq -c '.. | objects | select(has("serviceTiers")) | {id, serviceTiers}'`. As soon as `ultrafast` appears for a model, switch `tier.openai` and the `astra`/`security-reviewer` overrides to `ultrafast` (all Codex models advertise it → global; only some → per-agent overrides for those), run `dotfile/omp/sync.sh capture`, and tell the user.
+- **Use `astra` aggressively.** The "avoid routine work" note in §4 no longer applies while Codex yh has headroom. `astra` is the **first** candidate for backend/logic slots at every criticality, and takes review, verifier and advisor seats whenever family independence (§5) allows (it cannot review GPT-authored work). Keep omitting `effort` (medium); `hi` only for the hardest problems. Fast costs quota: `priority` = 2.5× for astra, 2× for sol/luna (catalog `serviceTierCost`); if yh drops to LOW, tell the user.
+- **Claude: spend `yh*` first.** Policy gives the Claude yh account priority 100 with `reservePct: 20`. omp routes every Claude turn to yh until it has 20% left (80% used) in any window, then moves to the other accounts (`gl*`, `ad*`, priority 0, reserve 2%) automatically — no manual enable/disable. omp's ranking puts reserve state and a 5-hour window ≥ 85% used ahead of priority, so a drained yh 5-hour window shifts turns to `gl*`/`ad*` until it refills.
+- Check: `omp usage` shows `policy: priority … · reserve …` per account. Policies match by `accountId`; if an account is re-logged in under a new id, omp errors with "matches no stored OAuth account" — update the id in config.
+
 
 ## 1. Model agents
 
@@ -76,8 +87,8 @@ One provider can hold several logins. omp's quota is **per account and per windo
 
 | provider | accounts | windows per account | notes |
 |---|---|---|---|
-| `anthropic` | 2 (Claude subscriptions, two orgs) | 5 Hour · 7 Day · 7 Day (Fable) | Opus spends 5 Hour + 7 Day. Fable spends 5 Hour + **its own** 7 Day (Fable) window, so Fable is often green when Opus is not. Each OAuth grant expires ~30 days after login; `omp usage` warns, and the user must re-login. |
-| `openai-codex` | **1 unique account**, stored twice | 7 days | The two `omp usage` rows share one `accountId`. That is one quota, not two; the script dedupes it. Saved resets exist, but redeem them only on user request (`codexResets.autoRedeem: "no"`). |
+| `anthropic` | 3 (Claude subscriptions, three orgs: `yh*`, `gl*`, `ad*`) | 5 Hour · 7 Day · 7 Day (Fable) | Opus spends 5 Hour + 7 Day. Fable spends 5 Hour + **its own** 7 Day (Fable) window, so Fable is often green when Opus is not. `yh*` is spent first (§0). Each OAuth grant expires ~30 days after login; `omp usage` warns, and the user must re-login. |
+| `openai-codex` | 2 unique: `yh*` Pro Max (preferred, §0) and `zk*` Pro (stored twice) | 7 days | The two `zk*` rows share one `accountId`: one quota, the script dedupes it. Saved resets exist, but redeem them only on user request (`codexResets.autoRedeem: "no"`). |
 | `google-antigravity` | 2 | Gemini (several model-group windows) · Claude & GPT (shared) | The Claude & GPT window serves only older Claude 4.x and gpt-oss here, not Opus 5.5. |
 | `devin` | 1 Pro seat + overage balance | Daily · Weekly | Hosts SWE-2 and mirrors of Opus, Fable, GPT-6.x, Grok, Gemini. Usage beyond quota draws on the overage balance (real money). |
 | `xai-oauth` | 1 | SuperGrok Weekly · Grok Build | |

@@ -1,5 +1,5 @@
 modelRoles:
-  slow: openai-codex/gpt-6-astra:xhigh
+  slow: openai-codex/gpt-6.1-sol:high
   vision: google-antigravity/gemini-3.7-flash:auto
   smol: google-antigravity/gemini-3.8-flash:high
   plan: google-antigravity/gemini-3.8-flash
@@ -21,14 +21,31 @@ dev:
 defaultThinkingLevel: auto
 advisor:
   enabled: false
+tier:
+  openai: priority
+auth:
+  accountPolicies:
+    - provider: anthropic
+      account:
+        accountId: a059419b-f0ba-4021-9f38-e2b234d028fa
+      priority: 100
+      reservePct: 20
+    - provider: openai-codex
+      account:
+        accountId: 7e958aea-06e7-4540-9552-9a6baf2c89f7
+      priority: 100
 retry:
   modelFallback: true
   usageAwareFallback: true
   usageReservePct: 2
   fallbackChains:
     devin/swe-2:
+      - devin/gpt-6-1-sol
+      - devin/kimi-k3
       - openai-codex/gpt-6-luna
       - commandcode/xiaomi/mimo-v2.6-pro
+    openai-codex/gpt-6.1-sol:
+      - devin/gpt-6-1-sol
     openai-codex/gpt-5.6-sol:
       - openai-codex/gpt-5.6-terra
       - kimi-code/k3
@@ -191,9 +208,14 @@ codexResets:
 task:
   enableEffort: true
   maxEffort: xhigh
+  agentServiceTierOverrides:
+    astra: priority
+    security-reviewer: priority
   agentModelOverrides:
-    task: devin/swe-2, openai-codex/gpt-6-luna, commandcode/xiaomi/mimo-v2.6-pro
-    sonic: devin/swe-2:medium, commandcode/deepseek/deepseek-v4.1-flash
-    scout: google-antigravity/gemini-3.8-flash:medium, devin/swe-2:medium, openai-codex/gpt-6-luna:low
-    reviewer: devin/swe-2, xai-oauth/grok-4.7, google-antigravity/gemini-3.8-flash
-    security-reviewer: openai-codex/gpt-6-astra:high, devin/gpt-6-astra:high
+    task: "devin/swe-2, openai-codex/gpt-6-luna, commandcode/xiaomi/mimo-v2.6-pro"
+    sonic: "devin/swe-2:medium, commandcode/deepseek/deepseek-v4.1-flash"
+    scout: "google-antigravity/gemini-3.8-flash:medium, devin/swe-2:medium, openai-codex/gpt-6-luna:low"
+    reviewer: "devin/swe-2, xai-oauth/grok-4.7, google-antigravity/gemini-3.8-flash"
+    security-reviewer: "openai-codex/gpt-6-astra:high, devin/gpt-6-astra:high"
+tier:
+  openai: priority
