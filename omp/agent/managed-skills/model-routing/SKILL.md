@@ -23,9 +23,9 @@ No `auth.accountPolicies` in config: omp's automatic ranking is not used to orde
 | provider | order | rule |
 |---|---|---|
 | `anthropic` | 1. `yh*` (yh04060) → 2. `ad*` (admin-developers) / `gl*` (global@teamturing.com) | **Only `yh*` enabled.** When `yh*` reaches **90% used on `Claude 7 Day`**, enable `ad*` (and `gl*` if its window has reset) and turn Claude fast off (tier rule above). If `gl*`/`ad*` later sit on quota that a near reset would waste, enable them as a burn-target first. |
-| `openai-codex` | 1. `yh*` (yh04060, Pro Max $500) → 2. `zk*` (zkwmak08, Pro) | Only `yh*` enabled. Enable `zk*` when `yh*` reaches **90% used on `7 days`**, or when the user asks. |
+| `openai-codex` | 1. `yh*` (yh04060, Pro Max $500) → 2. `zk*` (zkwmak08, Pro) | Only `yh*` enabled. Normally enable `zk*` when `yh*` reaches **90% used on `7 days`**, or when the user asks. **Exception for the current window (user, 2026-10-06; yh window resets ~2026-10-13):** burn `yh*` to **100%**, do not enable `zk*`; when yh is blocked, omp auto-redeems **one** saved reset (`codexResets.autoRedeem: yes`, `keepCredits: 1` = never auto-spend the last of yh's 2 credits). Right after that redeem shows in `omp usage` (saved resets 2 → 1), set `omp config set codexResets.autoRedeem no`, `omp config set codexResets.keepCredits 0`, capture to dotfile, drop this exception, and return to the 90% rule. |
 
-State on 2026-10-06 (later): disabled = Claude `ad*` (id 14), `gl*` (23, burned), Codex `zk*` (ids 1, 2); enabled = Claude `yh*` (25), Codex `yh*` (24). `tier.anthropic: priority` (enabled Claude set = yh only). yh `Claude 7 Day` 13% used, resets ~2026-10-07.
+State on 2026-10-06 (later): disabled = Claude `ad*` (id 14), `gl*` (23, burned), Codex `zk*` (ids 1, 2); enabled = Claude `yh*` (25), Codex `yh*` (24). `tier.anthropic: priority` (enabled Claude set = yh only). yh `Claude 7 Day` 13% used, resets ~2026-10-07. yh Codex `7 days` 69% used, 2 saved resets, one-shot auto-redeem armed.
 
 Disable / enable (credential rows in `~/.omp/agent/agent.db`, table `auth_credentials`; running sessions pick the change up through the auth revision trigger). `omp usage` labels such rows "re-login to restore" — ignore that; clearing `disabled_cause` restores them, no re-login needed:
 ```bash
@@ -113,7 +113,7 @@ One provider can hold several logins. omp's quota is **per account and per windo
 | provider | accounts | windows per account | notes |
 |---|---|---|---|
 | `anthropic` | 3 (Claude subscriptions, three orgs: `yh*`, `gl*`, `ad*`) | 5 Hour · 7 Day · 7 Day (Fable) | Opus spends 5 Hour + 7 Day. Fable spends 5 Hour + **its own** 7 Day (Fable) window, so Fable is often green when Opus is not. `yh*` is spent first (§0). Each OAuth grant expires ~30 days after login; `omp usage` warns, and the user must re-login. |
-| `openai-codex` | 2 unique: `yh*` Pro Max (preferred, §0) and `zk*` Pro (stored twice) | 7 days | The two `zk*` rows share one `accountId`: one quota, the script dedupes it. Saved resets exist, but redeem them only on user request (`codexResets.autoRedeem: "no"`). |
+| `openai-codex` | 2 unique: `yh*` Pro Max (preferred, §0) and `zk*` Pro (stored twice) | 7 days | The two `zk*` rows share one `accountId`: one quota, the script dedupes it. Saved resets are redeemed only on user request; the user may arm a one-shot auto-redeem (see the §0 account table) — otherwise `codexResets.autoRedeem: "no"`. |
 | `google-antigravity` | 2 | Gemini (several model-group windows) · Claude & GPT (shared) | The Claude & GPT window serves only older Claude 4.x and gpt-oss here, not Opus 5.5. |
 | `devin` | 1 Pro seat + overage balance | Daily · Weekly | Hosts SWE-2 and mirrors of Opus, Fable, GPT-6.x, Grok, Gemini. Usage beyond quota draws on the overage balance (real money). |
 | `xai-oauth` | 1 | SuperGrok Weekly · Grok Build | |
@@ -131,7 +131,7 @@ How accounts affect routing:
 
 - **GREEN** (≥ 40% left): route freely.
 - **LOW** (5–40%): still route to it — primary quota is meant to be spent. Prefer GREEN primaries for big parallel waves.
-- **EXHAUSTED** (< 5%, limit error, or reset pending): no new work. Move to the next primary candidate in the matrix; only when every primary candidate is exhausted, use the overflow order (`swe` → `mimo` → `deepseek`). For a critical slot with no primary left, tell the user: wait for the reset, use overflow, or redeem a Codex saved reset (manual — `codexResets.autoRedeem` is `no`).
+- **EXHAUSTED** (< 5%, limit error, or reset pending): no new work. Move to the next primary candidate in the matrix; only when every primary candidate is exhausted, use the overflow order (`swe` → `mimo` → `deepseek`). For a critical slot with no primary left, tell the user: wait for the reset, use overflow, or redeem a Codex saved reset (user decision; `codexResets.autoRedeem` is `no` unless a one-shot redeem is armed in §0).
 - **Overflow** (`devin`, `commandcode`) spends free-promo or paid credits. Never the default; record the reason when used.
 - When the GPT family is exhausted, the backend preference temporarily yields: `opus` takes backend critical/normal slots, and the verifier must then be non-Anthropic (`grok`, `gemini`).
 - Record it in the plan/todo: `slot → agent/effort (kind, criticality, quota state)`.
