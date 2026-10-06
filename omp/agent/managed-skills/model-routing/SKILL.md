@@ -29,7 +29,7 @@ Disable / enable (credential rows in `~/.omp/agent/agent.db`, table `auth_creden
 ```bash
 # list
 sqlite3 ~/.omp/agent/agent.db "select id, provider, identity_key, disabled_cause from auth_credentials where provider in ('anthropic','openai-codex')"
-# disable (EMAIL prefix e.g. global, yh04060, admin-developers, zkwmak08)
+# disable (EMAIL prefix e.g. global, yh04060, admin-developers, zkwmak08; set provider to 'anthropic' or 'openai-codex')
 sqlite3 ~/.omp/agent/agent.db "update auth_credentials set disabled_cause='manual: account priority (model-routing skill)', updated_at=strftime('%s','now') where provider='anthropic' and identity_key like 'email:EMAIL%'"
 # enable
 sqlite3 ~/.omp/agent/agent.db "update auth_credentials set disabled_cause=NULL, updated_at=strftime('%s','now') where provider='anthropic' and identity_key like 'email:EMAIL%'"
