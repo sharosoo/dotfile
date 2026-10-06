@@ -8,7 +8,7 @@ modelRoles:
   commit: google-antigravity/gemini-3.7-flash:auto
   web: openai-codex/gpt-5.6-luna
   image: openai/gpt-image-1
-  default: anthropic/claude-opus-5-5:medium
+  default: openai-codex/gpt-6-astra:high
 symbolPreset: nerd
 composer:
   shape: band
@@ -207,8 +207,8 @@ task:
   enableEffort: true
   maxEffort: xhigh
   agentServiceTierOverrides:
-    astra: priority
-    security-reviewer: priority
+    astra: ultrafast
+    security-reviewer: ultrafast
   agentModelOverrides:
     task: "devin/swe-2, openai-codex/gpt-6-luna, commandcode/xiaomi/mimo-v2.6-pro"
     sonic: "devin/swe-2:medium, commandcode/deepseek/deepseek-v4.1-flash"
