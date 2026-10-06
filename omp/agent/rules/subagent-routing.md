@@ -7,7 +7,7 @@ alwaysApply: true
 
 # Subagent routing
 
-- Before the first `task`/`agent()` spawn in a session, read `skill://agent-orchestration` and `skill://model-routing`, and run `~/.omp/agent/managed-skills/model-routing/headroom.sh`.
+- Before the first `task`/`agent()` spawn in a session, read `skill://agent-orchestration` and `skill://model-routing`, and run `~/.omp/agent/managed-skills/model-routing/headroom.sh`. Re-run it before each later spawn wave and keep concurrent subagents per model family within its `SUBAGENT BUDGET` lines (set by the account-rotation service from quota state and the number of working omp sessions).
 - Always set `agent` explicitly to a model agent (`swe`, `gemini`, `luna`, `deepseek`, `mimo`, `sol`, `astra`, `opus`, `fable`, `muse`) or to a fixed-purpose agent (`ci`, `committer`, `pr`, `reporter`, `naturalizer`). Omitting `agent` runs the generic `task` agent on SWE-2, which is not a routing decision. Grok is disabled (2026-10-07): no `grok` agent, no xAI routes.
 - **Do not route to your own family by habit.** An Opus or Fable Main spawns `opus`/`fable` only for a critical frontend/product slot, a hardest-tier problem, or a review panel seat. A GPT Main follows the same rule for `sol`/`astra`.
 - Research, search, exploration and summaries go to cheap models fanned out in parallel (`gemini`, `swe`, `luna`, `deepseek`). Never to `opus`, `fable`, `sol` or `astra`.

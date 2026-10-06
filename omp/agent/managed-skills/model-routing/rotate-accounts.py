@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Rotate Claude and Codex OAuth accounts by quota (model-routing skill §0).
 
-`--loop` (systemd omp-account-rotate.service) runs forever and picks its own next check,
-5–10 minutes apart; `--once` runs one pass; `--dry-run` runs one pass without changing
-anything. The primary account (yh04060) always stays enabled. Helper accounts are enabled
-while the primary is at its limit, or projected to reach it before the next check, and to
-burn quota that an imminent weekly reset would otherwise waste. Codex saved resets are
-redeemed by omp itself (codexResets.autoRedeem), so the primary is held alone at its wall
-until omp redeems.
+Goal: spend the primary account (yh04060) to its wall first, then hand load to helpers
+without a stall. Helpers stay disabled while the primary has quota, because omp routes
+away from an account once its 5-hour window is >= 85% used whenever another account is
+enabled; keeping helpers off is what lets yh burn to 100%. Instead, checks tighten as the
+primary approaches its wall (projected from its measured burn rate) and helpers come on as
+soon as it is reached. Helpers whose weekly quota would otherwise expire unused are burned
+too. omp does not report usage for disabled accounts, so a helper with no recent data is
+enabled for a few seconds to read its usage (probe).
+
+`--loop` (systemd omp-account-rotate.service) runs forever and picks its own next check;
+`--once` runs one pass; `--dry-run` runs one pass without changing anything.
+Codex saved resets are redeemed by omp itself (codexResets.autoRedeem).
 """
 
 import json
@@ -24,21 +29,23 @@ CAUSE = "manual: account rotation (model-routing skill)"
 # Rows disabled by omp itself (OAuth failures, user deletes) are never touched.
 OWN_CAUSES = ("manual:", "temporarily disabled by user")
 
-PRIMARY_5H_LIMIT = 0.95
-PRIMARY_7D_LIMIT = 0.90
-CODEX_WALL = 0.995
-# omp redeems a Codex reset on the first blocked request. Shorter than MIN_INTERVAL_S, so a
-# wall seen on two consecutive checks means the redeem did not happen and helpers take over.
-REDEEM_GRACE_S = 4 * 60
+WALL = 0.99  # a primary window at or above this is spent
+# omp redeems a Codex reset on the first blocked request; a wall that outlives this means
+# the redeem did not happen and helpers take over.
+REDEEM_GRACE_S = 2 * 60
 HELPER_LIMIT = 0.95
 BURN_HOURS = 24
 BURN_MIN_LEFT = 0.10
 MIN_INTERVAL_S = 5 * 60
 MAX_INTERVAL_S = 10 * 60
-# A primary within this distance of a limit, or burning at least HOT_RATE of a window per
-# MAX_INTERVAL_S, is checked at MIN_INTERVAL_S.
-HOT_MARGIN = 0.15
-HOT_RATE = 0.05
+NEAR_POLL_S = 60  # cadence once the primary is about to hit its wall
+NEAR_MARGIN = 0.15  # within this of the wall: check at MIN_INTERVAL_S or tighter
+UNKNOWN_RATE_POLL_S = 2 * 60  # no burn rate yet: resample soon to measure one
+PROBE_MAX_AGE_S = 3 * 3600
+BUDGET = f"{HOME}/.omp/agent/rotate-budget.json"
+WIDE_CAP = 32  # primary has quota: run wide to spend it
+HELPER_TOTAL = 12  # concurrent subagents across all working sessions while on helper accounts
+HELPER_MIN = 2
 
 PROVIDERS = {
     "anthropic": {
@@ -63,7 +70,11 @@ def log(msg):
 
 
 def omp(*args):
-    return subprocess.run(["omp", *args], capture_output=True, text=True, timeout=60).stdout.strip()
+    return subprocess.run(["omp", *args], capture_output=True, text=True, timeout=90).stdout.strip()
+
+
+def fetch_usage():
+    return json.loads(omp("usage", "--json"))
 
 
 def load_state():
@@ -80,21 +91,28 @@ def windows_of(report, labels):
         wid = labels.get(lim.get("label"))
         if wid:
             resets = (lim.get("window") or {}).get("resetsAt")
-            out[wid] = {"used": lim["amount"]["usedFraction"], "resetsAt": resets / 1000 if resets else None}
+            out[wid] = {"used": lim["amount"]["usedFraction"], "resetsAt": resets / 1000 if resets else None, "t": now}
     return out
 
 
 def current(win):
-    """Cached windows for an account omp no longer reports (disabled): a passed reset means empty."""
+    """Cached windows: a passed reset means the window is empty again."""
     return {
-        wid: ({"used": 0.0, "resetsAt": None} if w["resetsAt"] and w["resetsAt"] < now else w)
+        wid: ({**w, "used": 0.0, "resetsAt": None} if w.get("resetsAt") and w["resetsAt"] < now else w)
         for wid, w in win.items()
     }
 
 
+def stale(win):
+    """No usable data for a disabled helper: never seen, or old and not known to have reset."""
+    if not win:
+        return True
+    return all(now - w.get("t", 0) > PROBE_MAX_AGE_S and not (w.get("resetsAt") and w["resetsAt"] < now) for w in win.values())
+
+
 def burnable(win):
     w7 = win.get("7d")
-    if not w7 or not w7["resetsAt"]:
+    if not w7 or not w7.get("resetsAt"):
         return False
     soon = w7["resetsAt"] - now < BURN_HOURS * 3600
     return soon and 1 - w7["used"] >= BURN_MIN_LEFT and win.get("5h", {"used": 0})["used"] < HELPER_LIMIT
@@ -111,30 +129,92 @@ def rows(db, provider, email):
     ).fetchall()
 
 
-def set_enabled(db, provider, email, enable):
+def set_enabled(db, provider, email, enable, quiet=False):
     changed = False
     for rid, cause in rows(db, provider, email):
         if cause is not None and not cause.startswith(OWN_CAUSES):
             continue
         if enable and cause is not None:
-            if not DRY:
-                db.execute("update auth_credentials set disabled_cause=NULL, updated_at=strftime('%s','now') where id=?", (rid,))
+            db.execute("update auth_credentials set disabled_cause=NULL, updated_at=strftime('%s','now') where id=?", (rid,))
             changed = True
         elif not enable and cause is None:
-            if not DRY:
-                db.execute("update auth_credentials set disabled_cause=?, updated_at=strftime('%s','now') where id=?", (CAUSE, rid))
+            db.execute("update auth_credentials set disabled_cause=?, updated_at=strftime('%s','now') where id=?", (CAUSE, rid))
             changed = True
-    if changed:
+    if changed and not quiet:
         log(f"{provider} {email}: {'enable' if enable else 'disable'}")
     return changed
 
 
+def is_enabled(db, provider, email):
+    return any(cause is None for _, cause in rows(db, provider, email))
+
+
+def probe(db, targets, state):
+    """Enable disabled helpers for one usage fetch to learn their windows, then restore."""
+    flipped = [(p, e) for p, e in targets if not is_enabled(db, p, e)]
+    if DRY:
+        log(f"would probe {targets}")
+        return
+    for p, e in flipped:
+        set_enabled(db, p, e, True, quiet=True)
+    db.commit()
+    try:
+        usage = fetch_usage()
+    finally:
+        for p, e in flipped:
+            set_enabled(db, p, e, False, quiet=True)
+        db.commit()
+    for p, e in targets:
+        for r in usage["reports"]:
+            if r.get("provider") == p and (r.get("metadata") or {}).get("email") == e:
+                state.setdefault(p, {})[e] = windows_of(r, PROVIDERS[p]["windows"])
+                log(f"probed {p} {e}: {json.dumps({k: v['used'] for k, v in state[p][e].items()})}")
+                break
+
+
 def rate(prev, win):
-    """Usage fraction per second since the previous sample of the same window, else 0."""
+    """Usage fraction per second since the previous sample of the same window, or None."""
     if not prev or prev.get("resetsAt") != win["resetsAt"] or win["used"] < prev["used"]:
-        return 0.0
+        return None
     dt = now - prev["t"]
-    return (win["used"] - prev["used"]) / dt if dt > 0 else 0.0
+    return (win["used"] - prev["used"]) / dt if dt > 30 else None
+
+
+def working_sessions():
+    """omp sessions herdr reports as working (at least 1: the caller)."""
+    try:
+        out = subprocess.run(["herdr", "agent", "list"], capture_output=True, text=True, timeout=10).stdout
+        agents = json.loads(out)["result"]["agents"]
+        return max(1, sum(a.get("agent") == "omp" and a.get("agent_status") == "working" for a in agents))
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        return 1
+
+
+def apply_budget(plan):
+    """Per-family subagent caps for Main (read via headroom.sh) plus the hard task.maxConcurrency."""
+    working = working_sessions()
+    helper_cap = max(HELPER_MIN, HELPER_TOTAL // working)
+    caps = {p: (helper_cap if spent else WIDE_CAP) for p, spent in plan.items()}
+    hard = max(caps.values(), default=WIDE_CAP)
+    budget = {
+        "updatedAt": int(now),
+        "workingSessions": working,
+        "perSession": {p: {"cap": c, "phase": "helpers" if plan[p] else "burn-yh"} for p, c in caps.items()},
+        "maxConcurrency": hard,
+    }
+    try:
+        with open(BUDGET) as f:
+            old = json.load(f)
+    except (OSError, ValueError):
+        old = {}
+    if {k: v for k, v in old.items() if k != "updatedAt"} != {k: v for k, v in budget.items() if k != "updatedAt"}:
+        log(f"budget: {working} working session(s), per-session caps {caps}, task.maxConcurrency {hard}")
+    if DRY:
+        return
+    with open(BUDGET, "w") as f:
+        json.dump(budget, f, indent=1)
+    if omp("config", "get", "task.maxConcurrency") != str(hard):
+        omp("config", "set", "task.maxConcurrency", str(hard))
 
 
 def run_once():
@@ -142,16 +222,16 @@ def run_once():
     global now
     now = time.time()
     try:
-        usage = json.loads(omp("usage", "--json"))
+        usage = fetch_usage()
     except (ValueError, subprocess.SubprocessError) as e:
         log(f"usage fetch failed, no changes: {e}")
         return MIN_INTERVAL_S
     state = load_state()
     keep = int(float(omp("config", "get", "codexResets.keepCredits") or 0))
     db = sqlite3.connect(DB, timeout=10)
-    plan = {}
-    hot = False
     samples = state.setdefault("samples", {})
+    interval = MAX_INTERVAL_S
+    plan = {}
 
     for provider, cfg in PROVIDERS.items():
         reports = {r["metadata"].get("email"): r for r in usage["reports"] if r.get("provider") == provider and r.get("metadata")}
@@ -161,76 +241,105 @@ def run_once():
         primary = reports.get(cfg["primary"])
         if primary is None or not cache.get(cfg["primary"]):
             log(f"{provider}: no usage for primary, skipped")
+            interval = min(interval, MIN_INTERVAL_S)
             continue
         p = cache[cfg["primary"]]
         prev = samples.get(provider, {})
         rates = {wid: rate(prev.get(wid), w) for wid, w in p.items()}
-        samples[provider] = {wid: {**w, "t": now} for wid, w in p.items()}
-        # Usage expected by the check after next, so helpers are on before the wall.
-        proj = {wid: w["used"] + rates[wid] * (MAX_INTERVAL_S + 60) for wid, w in p.items()}
-        limits = {"5h": PRIMARY_5H_LIMIT, "7d": PRIMARY_7D_LIMIT}
+        # Keep the older sample until 30 s have passed so short polls still yield a rate.
+        samples[provider] = {
+            wid: (prev[wid] if wid in prev and rates[wid] is None and prev[wid].get("resetsAt") == w["resetsAt"]
+                  and now - prev[wid]["t"] <= 30 else w)
+            for wid, w in p.items()
+        }
 
+        at_wall = any(w["used"] >= WALL for w in p.values())
         if provider == "openai-codex":
+            at_wall |= primary["metadata"].get("limitReached") is True
             credits = (primary.get("resetCredits") or {}).get("availableCount", 0)
-            at_wall = p["7d"]["used"] >= CODEX_WALL or primary["metadata"].get("limitReached") is True
             if at_wall:
                 state.setdefault("codexWallSince", now)
             else:
                 state.pop("codexWallSince", None)
-            if credits > keep:
-                # Let yh hit its wall so omp redeems a saved reset; no early helpers.
-                blocked = at_wall and now - state["codexWallSince"] > REDEEM_GRACE_S
-                hot |= p["7d"]["used"] + rates["7d"] * MAX_INTERVAL_S >= CODEX_WALL - HOT_MARGIN or at_wall
-            else:
-                blocked = proj["7d"] >= PRIMARY_7D_LIMIT
+            # With spare resets, hold yh alone at its wall so omp redeems one.
+            blocked = at_wall and (credits <= keep or now - state["codexWallSince"] > REDEEM_GRACE_S)
+            if at_wall and not blocked:
+                interval = min(interval, NEAR_POLL_S)
         else:
-            blocked = any(proj[wid] >= limits[wid] for wid in proj)
+            blocked = at_wall
 
+        # Next check: right before the earliest projected wall, never later than needed.
         for wid, w in p.items():
-            if w["used"] >= limits[wid] - HOT_MARGIN or rates[wid] * MAX_INTERVAL_S >= HOT_RATE:
-                hot = True
-        hot |= blocked
+            if w["used"] >= WALL:
+                interval = min(interval, MIN_INTERVAL_S)  # watch for the reset/recovery
+                continue
+            r = rates[wid]
+            if r is None:
+                if w["used"] >= WALL - NEAR_MARGIN:
+                    interval = min(interval, NEAR_POLL_S)
+                elif not prev.get(wid):
+                    interval = min(interval, UNKNOWN_RATE_POLL_S)
+                continue
+            if r > 0:
+                eta = (WALL - w["used"]) / r
+                interval = min(interval, max(NEAR_POLL_S, eta * 0.8))
+            if w["used"] >= WALL - NEAR_MARGIN:
+                interval = min(interval, MIN_INTERVAL_S)
+
+        # Helpers needed now or soon must have known windows; probe stale ones.
+        near = blocked or any(w["used"] >= WALL - NEAR_MARGIN for w in p.values())
+        need_probe = [(provider, e) for e in cfg["helpers"] if stale(cache.get(e, {})) and (near or not is_enabled(db, provider, e))]
+        if need_probe:
+            probe(db, need_probe, state)
 
         helpers = {}
         for email in cfg["helpers"]:
             win = current(cache.get(email, {}))
             helpers[email] = (blocked and healthy(win)) or burnable(win)
-        plan[provider] = (blocked, helpers)
+        if blocked and not any(helpers.values()):
+            # Every helper looks spent; enable them anyway rather than stall on a dead primary.
+            helpers = {e: True for e in helpers}
+        plan[provider] = blocked
 
-        changed = set_enabled(db, provider, cfg["primary"], True)
-        for email, on in helpers.items():
-            changed |= set_enabled(db, provider, email, on)
+        changed = False
+        if not DRY:
+            changed = set_enabled(db, provider, cfg["primary"], True)
+            for email, on in helpers.items():
+                changed |= set_enabled(db, provider, email, on)
         if changed or DRY:
-            log(f"{provider}: primary {'blocked' if blocked else 'ok'} {json.dumps(p)} projected {json.dumps(proj)}; helpers {helpers}")
+            log(f"{provider}: primary {'spent' if blocked else 'burning'} {json.dumps({k: v['used'] for k, v in p.items()})} "
+                f"rates/10min {json.dumps({k: (round(v * 600, 3) if v is not None else None) for k, v in rates.items()})}; helpers {helpers}")
 
     if not DRY:
         db.commit()
     db.close()
 
     if "anthropic" in plan:
-        blocked, _ = plan["anthropic"]
-        want = "none" if blocked else "priority"
+        want = "none" if plan["anthropic"] else "priority"
         if omp("config", "get", "tier.anthropic") != want:
             log(f"tier.anthropic -> {want}")
             if not DRY:
                 omp("config", "set", "tier.anthropic", want)
 
+    if plan:
+        apply_budget(plan)
+
     if not DRY:
         with open(STATE, "w") as f:
             json.dump(state, f, indent=1)
-    return MIN_INTERVAL_S if hot else MAX_INTERVAL_S
+    return int(interval)
 
 
 def main():
     if not LOOP:
-        log(f"next check in {run_once() // 60} min")
+        log(f"next check in {run_once()} s")
         return
     while True:
         try:
             interval = run_once()
         except Exception as e:  # keep the daemon alive; a bad pass retries soon
             log(f"pass failed: {e!r}")
-            interval = MIN_INTERVAL_S
+            interval = NEAR_POLL_S
         time.sleep(interval)
 
 

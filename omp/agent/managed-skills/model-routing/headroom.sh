@@ -24,3 +24,10 @@ omp usage --json -r 2>/dev/null | jq -r '
 echo
 echo "LOW primaries are still used; EXHAUSTED (<5%) → next primary, overflow (devin/commandcode) only when all primaries are exhausted."
 echo "UNMETERED = no percentage (commandcode credits): a 429 closes that account until its reset header."
+B=~/.omp/agent/rotate-budget.json
+if [[ -f $B ]]; then
+  echo
+  jq -r '"SUBAGENT BUDGET (rotate-accounts, \((now - .updatedAt) / 60 | floor) min old, \(.workingSessions) working omp session(s)) — obey per spawn wave:",
+    (.perSession | to_entries[] | "  \(.key): max \(.value.cap) concurrent subagents on this family (\(.value.phase))"),
+    "  hard cap task.maxConcurrency = \(.maxConcurrency)"' "$B"
+fi
