@@ -4,10 +4,11 @@ description: "Use before spawning subagents or picking a model: model agents, wo
 ---
 # Model routing
 
-The user runs many subscriptions in parallel: Claude ×3, ChatGPT ×2 (Pro + Pro Max), Antigravity ×2, Devin Pro, SuperGrok and CommandCode ×2. **Each subagent is a model.** Main chooses the model per task item through `agent` and the effort through `effort`, and gives the role in the packet (`skill://agent-orchestration`).
+The user runs many subscriptions in parallel: Claude ×3, ChatGPT ×2 (Pro + Pro Max), Antigravity ×2, Devin Pro and CommandCode ×2 (SuperGrok exists but Grok is disabled, §0). **Each subagent is a model.** Main chooses the model per task item through `agent` and the effort through `effort`, and gives the role in the packet (`skill://agent-orchestration`).
 
 ## 0. Current account policy (2026-10-06) — overrides older guidance below
 
+- **Grok is disabled (user, 2026-10-07).** The xAI OAuth credential (id 12) carries `disabled_cause`, the `grok` agent file was removed (`~/.omp/agent/agents/grok.md`), and Grok is out of every matrix row, review panel and cross-check. Cross-family checks now have three families: Anthropic (`opus`, `fable`), OpenAI (`astra`, `sol`, `luna`) and Google (`gemini`); `gemini` is the only third-family seat, so keep it on critical review panels and use it as the verifier when author and Main are Anthropic + OpenAI. Re-enable only when the user asks.
 - **Burn the `yh*` accounts (yh04060) hard until 90% used (user rule, 2026-10-06).** Both Claude `yh*` (`Claude 7 Day`) and Codex `yh*` (`7 days`) are spent at full speed until 90% used: route every slot that a yh model can take to `opus` or `astra`/`sol`, run waves wide and in parallel, and do not save yh quota for later. Only at 90% does the account table below enable the next accounts. Watch the `Claude 5 Hour` window only to pace waves, never as a reason to downgrade to cheap models.
 - **Use `astra` aggressively (user rule, 2026-10-06).** While Codex `yh*` is under 90% used, `astra` is the **first** candidate for every backend / logic / data slot at every criticality (critical, normal and fill-in), and takes review, verifier, advisor and planning seats whenever family independence (§5) allows (it cannot review GPT-authored work; under a GPT Main pick a non-GPT reviewer). The "avoid routine work" notes in §2 and §4 do not apply. Spawn it explicitly with `agent: "astra"`; omit `effort` (medium), `hi` (= xhigh) only for the hardest problems.
 - **Use `opus` (Claude Opus 5.5 on `yh*`) aggressively too (user rule, 2026-10-06).** While `yh*` is under 90% on `Claude 7 Day`, `opus` is the first pick for frontend / UI / copy at every criticality, the default second seat next to `astra` for backend critical/normal work, one of the two planners, and a standing review-panel and verifier seat for non-Anthropic-authored work. Prefer `opus` over `gemini`/`luna` for any slot that needs judgement; keep cheap searchers only for search/scans. The "do not route to your own family by habit" rule is suspended for `opus` while this holds — independence (§5) still applies: `opus` cannot review Opus/Anthropic-authored work, and under an Opus Main its review counts only alongside a non-Anthropic reviewer. Omit `effort` (medium); `hi` only for the hardest problems. Spread parallel Opus waves over time if `Claude 5 Hour` passes 70%.
@@ -52,18 +53,17 @@ sqlite3 ~/.omp/agent/agent.db "update auth_credentials set disabled_cause=NULL, 
 | `astra` | openai-codex/gpt-6-astra | medium | OpenAI |
 | `luna` | openai-codex/gpt-6-luna | high | OpenAI |
 | `gemini` | google-antigravity/gemini-3.8-flash | high | Google |
-| `grok` | xai-oauth/grok-4.7 | high | xAI |
 | `swe` | devin/swe-2 (Kimi K3-based) | high | Devin — **overflow only** |
 | `mimo` | commandcode/xiaomi/mimo-v2.6-pro | — | CommandCode credits |
 | `deepseek` | commandcode/deepseek/deepseek-v4.1-flash | high | CommandCode credits |
 | `muse` | commandcode/meta/muse-spark-1.3-contributor | high | CommandCode credits, **Contributor: prompts may be retained for training** |
 | `ci` `committer` `pr` `reporter` `naturalizer` | gemini-3.8-flash | fixed | Google |
 
-`effort` on a task item (`lo`/`med`/`hi`) overrides the default and maps to the model's lowest, middle or highest level, capped at `xhigh` (`task.maxEffort`). Observed 2026-10-02: `sol` lo = low, `grok` med = medium, `swe` hi = high (its `max` is above the cap, so it is clamped).
+`effort` on a task item (`lo`/`med`/`hi`) overrides the default and maps to the model's lowest, middle or highest level, capped at `xhigh` (`task.maxEffort`). Observed 2026-10-02: `sol` lo = low, `swe` hi = high (its `max` is above the cap, so it is clamped).
 
 ## 2. Matrix: work kind × criticality → candidates in order
 
-**Primary providers first (user rule, 2026-10-02).** Route every slot to a model on a primary provider: `openai-codex` (`sol`, `astra`, `luna`), `anthropic` (`opus`, `fable`), `google-antigravity` (`gemini`), `xai-oauth` (`grok`). Spend their subscription quota down to exhaustion. `devin` (`swe`, `devin/…` mirrors) and `commandcode` (`mimo`, `deepseek`, `muse`, `commandcode/…`) are **overflow only**: use them only when every primary candidate for that slot is out of quota (exhausted / limit error / reset pending). Never pick overflow because it is free or cheap. Within primaries the family preference holds: GPT for backend, logic, data and inductive reasoning; Opus for frontend and UI.
+**Primary providers first (user rule, 2026-10-02).** Route every slot to a model on a primary provider: `openai-codex` (`sol`, `astra`, `luna`), `anthropic` (`opus`, `fable`), `google-antigravity` (`gemini`). Spend their subscription quota down to exhaustion. `devin` (`swe`, `devin/…` mirrors) and `commandcode` (`mimo`, `deepseek`, `muse`, `commandcode/…`) are **overflow only**: use them only when every primary candidate for that slot is out of quota (exhausted / limit error / reset pending). Never pick overflow because it is free or cheap. Within primaries the family preference holds: GPT for backend, logic, data and inductive reasoning; Opus for frontend and UI.
 
 Overflow order, only after the primary candidates are exhausted: `swe` → `mimo` → `deepseek` → `muse` (contributor-safe repos only, see the data rule below). On Devin use **only the free `swe` (SWE-2)**; never route to Devin's mirrors of other models (`devin/gpt-6-1-sol`, `devin/claude-opus-5-5`, …) — they spend Devin quota and overage money.
 
@@ -71,21 +71,21 @@ Take the first candidate whose provider still has quota.
 
 | | **critical** | **normal** | **fill-in** |
 |---|---|---|---|
-| backend / logic / data | `astra` · `opus` · `sol` | `astra` · `opus` · `sol` · `luna` hi · `grok` | `astra` · `opus` · `luna` · `gemini` |
+| backend / logic / data | `astra` · `opus` · `sol` | `astra` · `opus` · `sol` · `luna` hi | `astra` · `opus` · `luna` · `gemini` |
 | frontend / UI / copy | `opus` · `sol` · `opus` hi only for the hardest | `opus` · `astra` · `gemini` | `opus` · `gemini` · `luna` |
-| planning | 2 plans: `astra` + `opus` (`fable` as 3rd) | `opus` or `astra` (by the ticket's kind) + `gemini` or `grok` | — |
+| planning | 2 plans: `astra` + `opus` (`fable` as 3rd) | `opus` or `astra` (by the ticket's kind) + `gemini` | — |
 | advisor | `astra` · `fable` | `astra` · `fable` · `sol` | — |
-| review panel | `grok` · `gemini` · `opus` · `fable` · `astra` · `sol`, every one with quota; for diffs, exclude the author's family | 2–3 primary families | — |
-| verifier | primary family different from author and Main, hi (`astra` when the author is non-GPT, `opus` when the author is non-Anthropic) | `astra` · `opus` · `luna` · `gemini` · `grok` (not the author's family) | — |
-| research / search / vision | fan out 2–4 searchers in parallel: `gemini` · `luna` · `grok` · `scout` (each a different slice of the question) | same, 1–2 searchers | — |
-| scans, cross-checks | `luna` · `gemini` · `grok` | | |
+| review panel | `gemini` · `opus` · `fable` · `astra` · `sol`, every one with quota; for diffs, exclude the author's family; `gemini` always on critical panels | 2–3 primary families | — |
+| verifier | primary family different from author and Main, hi (`astra` when the author is non-GPT, `opus` when the author is non-Anthropic, `gemini` when author and Main cover Anthropic + OpenAI) | `astra` · `opus` · `luna` · `gemini` (not the author's family) | — |
+| research / search / vision | fan out 2–4 searchers in parallel: `gemini` · `luna` · `scout` (each a different slice of the question) | same, 1–2 searchers | — |
+| scans, cross-checks | `luna` · `gemini` | | |
 | docs, commits, PRs, reports | `reporter`/`committer`/`pr`/`naturalizer` (Gemini) | | |
 
 \* **`muse` data rule.** The Contributor route may retain prompts for training. Use it only in open-source or personal repos the user has marked contributor-safe. **Never** use it for gpai-monorepo or any company or proprietary code, and never for credentials, customer data or personal data. When unsure, do not use it. Other CommandCode routes (`mimo`, `deepseek`) are not Contributor routes, but still never receive credentials or customer data.
 
 **Effort per family.** GPT-6.1 Sol only thinks properly at high effort: the `sol` agent defaults to high, so **omit `effort`**, and never pass `lo`/`med` for real work. GPT-6 Astra reasons well at medium: the `astra` agent defaults to medium, so omit `effort` for it too. Passing `hi` maps to their top level, which is clamped to **xhigh**; use it only for the hardest problems. `opus` and `fable` both default to medium; omit `effort` for normal critical work. `opus` `hi` (= xhigh) is reserved for the **hardest** problems: a subtle concurrency, consistency or security bug; an architecture choice that is costly to reverse; or a repair after a medium attempt failed. In the matrix, a bare agent name means "omit `effort`, use the agent default". Never use premium models or `hi` for searching, reading or summarising.
 
-**Search and research are always cheap.** Split the question into slices (by subsystem, by source type, or code vs web) and run 2–4 cheap primary searchers **in parallel** (`gemini`, `luna`, `grok`, or the bundled `scout`, which is overridden to Gemini Flash). Main merges the results. A premium model only reads the merged bundle when it has to make a decision from it. Main itself should delegate broad search instead of running long grep/web loops on its own premium model.
+**Search and research are always cheap.** Split the question into slices (by subsystem, by source type, or code vs web) and run 2–4 cheap primary searchers **in parallel** (`gemini`, `luna`, or the bundled `scout`, which is overridden to Gemini Flash). Main merges the results. A premium model only reads the merged bundle when it has to make a decision from it. Main itself should delegate broad search instead of running long grep/web loops on its own premium model.
 
 Criticality, decided by Main:
 - **critical**: decides structure; money, auth, data integrity, migrations, concurrency; cross-cutting; open-ended; or a repair after a failure.
@@ -116,7 +116,7 @@ One provider can hold several logins. omp's quota is **per account and per windo
 | `openai-codex` | 2 unique: `yh*` Pro Max (preferred, §0) and `zk*` Pro (stored twice) | 7 days | The two `zk*` rows share one `accountId`: one quota, the script dedupes it. Saved resets are redeemed only on user request; the user may arm a one-shot auto-redeem (see the §0 account table) — otherwise `codexResets.autoRedeem: "no"`. |
 | `google-antigravity` | 2 | Gemini (several model-group windows) · Claude & GPT (shared) | The Claude & GPT window serves only older Claude 4.x and gpt-oss here, not Opus 5.5. |
 | `devin` | 1 Pro seat + overage balance | Daily · Weekly | Hosts SWE-2 and mirrors of Opus, Fable, GPT-6.x, Grok, Gemini. Usage beyond quota draws on the overage balance (real money). |
-| `xai-oauth` | 1 | SuperGrok Weekly · Grok Build | |
+| `xai-oauth` | 1 (disabled 2026-10-07) | SuperGrok Weekly · Grok Build | Not routed (§0). |
 | `commandcode` | 2 | 5-hour · weekly credits · balance | No percentage in JSON (UNMETERED). Every request spends credits. |
 
 How accounts affect routing:
@@ -133,7 +133,7 @@ How accounts affect routing:
 - **LOW** (5–40%): still route to it — primary quota is meant to be spent. Prefer GREEN primaries for big parallel waves.
 - **EXHAUSTED** (< 5%, limit error, or reset pending): no new work. Move to the next primary candidate in the matrix; only when every primary candidate is exhausted, use the overflow order (`swe` → `mimo` → `deepseek`). For a critical slot with no primary left, tell the user: wait for the reset, use overflow, or redeem a Codex saved reset (user decision; `codexResets.autoRedeem` is `no` unless a one-shot redeem is armed in §0).
 - **Overflow** (`devin`, `commandcode`) spends free-promo or paid credits. Never the default; record the reason when used.
-- When the GPT family is exhausted, the backend preference temporarily yields: `opus` takes backend critical/normal slots, and the verifier must then be non-Anthropic (`grok`, `gemini`).
+- When the GPT family is exhausted, the backend preference temporarily yields: `opus` takes backend critical/normal slots, and the verifier must then be non-Anthropic (`gemini`).
 - Record it in the plan/todo: `slot → agent/effort (kind, criticality, quota state)`.
 
 omp also protects quota automatically (`~/.omp/agent/config.yml`): a healthy **account** of the same provider (`retry.usageAwareFallback`, reserve `retry.usageReservePct` = 2). Since 2026-10-02 frontier models (Opus, Fable, Sol, Astra, Luna, Gemini, Grok) have **no** `retry.fallbackChains` entry — neither Devin mirrors nor CommandCode copies — because the primary providers are the only intended route for them; when one is exhausted, Main re-routes the slot to another primary (matrix) or, only if all primaries are exhausted, to an overflow agent (`swe`, `mimo`, `deepseek`). Remaining chains: `devin/swe-2` → `openai-codex/gpt-6-luna` → `commandcode/xiaomi/mimo-v2.6-pro`, and the Chinese-model chains (kimi/deepseek). Background: with the old 20% reserve, Codex at 9% fell through `devin/gpt-6-1-sol` to `commandcode` (403 `MODEL_NOT_IN_PLAN`), killing two Sol coders.
@@ -148,10 +148,8 @@ omp also protects quota automatically (`~/.omp/agent/config.yml`): a healthy **a
 | GPT-6 Astra | 52.7 | 10/50 | 272K (codex) / 1M (devin) | Adversarial thinker; runs on Codex `priority` fast tier (§0) | first pick for backend/logic, review, verify, advise (§0); security, authz, concurrency, crash consistency, partial I/O | reviewing GPT-authored work |
 | GPT-6.1 Sol | 51.8 | 2/10 | 272K / 1M | Reliable, literal, precise with contracts; the cross-family alternative to Opus. Needs omp ≥ 18.4.4 | backend code, verifier under an Opus Main, Main alternative | verifying Sol-authored work |
 | GPT-6 Sol | 47.5 | 2/10 | 272K | Older Sol | — (use 6.1) | |
-| Grok 4.7 | 46.4 | 2/6 | 500K | Newest Grok. Tessel excluded it as untrusted on 2026-09-22 | an extra review opinion; verify every finding | implementation, sole evidence |
 | MiMo V2.6 Pro | 46.3 | 0.435/0.87 | 1M | Best index per dollar on CommandCode | easy implementation, localized repair, routine QA | |
 | GLM-5.3 | 44.8 | 1.40/4.40 | 1M | | unevaluated: trial first | |
-| Grok 4.6 | 44.3 | 2/6 | 500K | A different family | one extra opinion when Opus and Sol both conflict | implementation |
 | Kimi K3 | 43.6 | 3/15 | 1M | | unevaluated | |
 | GLM-5.3 Flash | 41.8 | 0.15/0.50 | 1M | Literal and cheap | closed-set mechanical edits | anything needing semantics |
 | Gemini 3.8 Flash | 40.9 | 1.50/7.50 | 1M | Fast, source-grounded prose, vision | docs, commits, PRs, reports, research sweeps, image reading | implementing, deciding |

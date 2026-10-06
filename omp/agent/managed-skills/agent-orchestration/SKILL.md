@@ -6,7 +6,7 @@ description: "Use when acting as Main orchestrating subagents or as a subagent g
 # Agent orchestration
 
 Agents are **models**, not roles. Main picks, per task item:
-- `agent`: which model (`opus`, `sol`, `astra`, `fable`, `luna`, `gemini`, `grok`, `swe`, `mimo`, `deepseek`, `muse`)
+- `agent`: which model (`opus`, `sol`, `astra`, `fable`, `luna`, `gemini`, `swe`, `mimo`, `deepseek`, `muse`). Grok is disabled (2026-10-07).
 - `effort`: `lo` | `med` | `hi`, mapped to the model's lowest/middle/highest effort (capped at xhigh)
 - a `Role:` line in the packet: `planner` | `researcher` | `advisor` | `coder` | `reviewer` | `verifier` | `blind-reader`
 
@@ -22,16 +22,16 @@ Model facts, quota and the routing tables are in `skill://model-routing`. Read t
    - **Criticality**:
      - **critical**: decides structure; touches money, auth, data integrity, migrations or concurrency; is cross-cutting; has an open-ended design; or follows a failed attempt. Use top intelligence and `hi` effort.
      - **normal**: real judgement inside a fixed contract. Use a high-intelligence model and `med` effort.
-     - **fill-in**: the plan fixed everything and the work is filling it in (wiring, mechanical edits, i18n propagation, boilerplate, a fix with a reproducer). Use a cheap primary model (`luna`, `gemini`, `grok`).
+     - **fill-in**: the plan fixed everything and the work is filling it in (wiring, mechanical edits, i18n propagation, boilerplate, a fix with a reproducer). Use a cheap primary model (`luna`, `gemini`).
 3. **Pick** from the matrix in `skill://model-routing` §2. Take the first primary candidate with quota; overflow (`devin`/`commandcode`: `swe`, `mimo`, `deepseek`, `muse`) only when every primary candidate is exhausted.
 4. **Independence**: reviewers and verifiers must not share a family with the author or Main.
 5. Write the routing decision into the todo or plan: `slot → agent/effort (reason, quota state)`.
 
 Defaults that encode the user's preference:
-- **Primary providers first.** `sol`/`astra`/`luna` (Codex), `opus`/`fable` (Anthropic), `gemini` (Antigravity), `grok` (xAI) take every slot while they have quota. `swe` (Devin) and `mimo`/`deepseek`/`muse` (CommandCode) are overflow only, used when the primaries are out of quota — never because they are free or cheap. `muse` stays contributor-safe repos only, never gpai or company code.
+- **Primary providers first.** `sol`/`astra`/`luna` (Codex), `opus`/`fable` (Anthropic), `gemini` (Antigravity) take every slot while they have quota. `swe` (Devin) and `mimo`/`deepseek`/`muse` (CommandCode) are overflow only, used when the primaries are out of quota — never because they are free or cheap. `muse` stays contributor-safe repos only, never gpai or company code.
 - Premium models only for critical slots and judgement: backend, logic and inductive reasoning → `sol` with no `effort` = high (`astra`, default medium, for security or concurrency; Sol needs high effort to reason well, and `hi` would clamp to xhigh); frontend → `opus` with no `effort` (= medium). `opus` hi (= xhigh) only for the hardest problems or after a medium attempt failed.
-- Search and research: always cheap primary models, fanned out in parallel (`gemini`, `luna`, `grok`, `scout`). Main delegates broad searching instead of doing it on its own premium model.
-- Planning a critical ticket: `sol` (high) + `opus` (medium) as two independent plans, both with `effort` omitted. For a normal ticket: one primary of the ticket's kind + `gemini` or `grok`.
+- Search and research: always cheap primary models, fanned out in parallel (`gemini`, `luna`, `scout`). Main delegates broad searching instead of doing it on its own premium model.
+- Planning a critical ticket: `sol` (high) + `opus` (medium) as two independent plans, both with `effort` omitted. For a normal ticket: one primary of the ticket's kind + `gemini`.
 - Escalate a slot only when it stops being fill-in/normal, or after one failure (§6).
 
 ## 2. Panels: planner, advisor, reviewer
@@ -39,7 +39,7 @@ Defaults that encode the user's preference:
 Judgement roles use as many **different providers** as quota allows. Disagreement between families is the point.
 - **Plan**: two independent plans from different families (§1 defaults). Main merges them, or picks one with reasons.
 - **Advisor**: one by default (`fable`, or `astra` for security/concurrency). For a material choice, ask two families in parallel with the identical packet.
-- **Review panel**: for a plan or for a critical diff, send the **identical packet** in one `task` batch to every primary family with quota: `grok`, `gemini`, `opus`, `fable`, `astra`, `sol`. Skip exhausted providers, and skip the author's family for diff reviews. Main dedupes the findings and weighs them: a blocker raised by two or more families is presumed real; a blocker from one family is checked by Main in the code before acting on it. Normal-criticality diffs get a smaller panel of 2–3 families.
+- **Review panel**: for a plan or for a critical diff, send the **identical packet** in one `task` batch to every primary family with quota: `gemini`, `opus`, `fable`, `astra`, `sol`. Skip exhausted providers, and skip the author's family for diff reviews. With Grok gone there are three families (Anthropic, OpenAI, Google), so `gemini` is the only third-family seat — keep it on every critical panel. Main dedupes the findings and weighs them: a blocker raised by two or more families is presumed real; a blocker from one family is checked by Main in the code before acting on it. Normal-criticality diffs get a smaller panel of 2–3 families.
 - **Verifier**: one, from a family different from both the author and Main, at `hi` for critical work.
 
 ## 3. Packet

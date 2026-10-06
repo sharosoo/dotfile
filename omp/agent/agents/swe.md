@@ -2,7 +2,7 @@
 name: swe
 description: >-
   Devin SWE-2 (Kimi K3-based) — OVERFLOW ONLY: use when the primary providers (Codex sol/luna/astra,
-  Anthropic opus/fable, Gemini, Grok) for the slot are out of quota. Normal and fill-in coding, research.
+  Anthropic opus/fable, Gemini) for the slot are out of quota. Normal and fill-in coding, research.
   Role via packet `Role:` line (skill://agent-orchestration); effort via task `effort` lo|med|hi.
 model: devin/swe-2
 thinking-level: high

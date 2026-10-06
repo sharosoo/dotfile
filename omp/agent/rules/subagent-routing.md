@@ -8,7 +8,7 @@ alwaysApply: true
 # Subagent routing
 
 - Before the first `task`/`agent()` spawn in a session, read `skill://agent-orchestration` and `skill://model-routing`, and run `~/.omp/agent/managed-skills/model-routing/headroom.sh`.
-- Always set `agent` explicitly to a model agent (`swe`, `gemini`, `luna`, `deepseek`, `mimo`, `sol`, `astra`, `opus`, `fable`, `grok`, `muse`) or to a fixed-purpose agent (`ci`, `committer`, `pr`, `reporter`, `naturalizer`). Omitting `agent` runs the generic `task` agent on SWE-2, which is not a routing decision.
+- Always set `agent` explicitly to a model agent (`swe`, `gemini`, `luna`, `deepseek`, `mimo`, `sol`, `astra`, `opus`, `fable`, `muse`) or to a fixed-purpose agent (`ci`, `committer`, `pr`, `reporter`, `naturalizer`). Omitting `agent` runs the generic `task` agent on SWE-2, which is not a routing decision. Grok is disabled (2026-10-07): no `grok` agent, no xAI routes.
 - **Do not route to your own family by habit.** An Opus or Fable Main spawns `opus`/`fable` only for a critical frontend/product slot, a hardest-tier problem, or a review panel seat. A GPT Main follows the same rule for `sol`/`astra`.
 - Research, search, exploration and summaries go to cheap models fanned out in parallel (`gemini`, `swe`, `luna`, `deepseek`). Never to `opus`, `fable`, `sol` or `astra`.
 - Normal and fill-in code goes to `swe` (free promo), with `luna`/`mimo`/`deepseek` as overflow.
@@ -36,6 +36,6 @@ Subagents do not load project rules by themselves; that packet line is how they 
 | `opus` | **omit `effort`** (= medium) | the hardest problem, or after a medium attempt failed → xhigh |
 | `fable` | **omit `effort`** (= medium) | the hardest architecture question → xhigh |
 | `swe` | `hi` for normal slots, `med` for fill-in | — |
-| `gemini`, `luna`, `deepseek`, `mimo`, `grok` | omit | — |
+| `gemini`, `luna`, `deepseek`, `mimo` | omit | — |
 
 Never use `hi` for search, reading or summaries.
