@@ -8,7 +8,7 @@ modelRoles:
   commit: google-antigravity/gemini-3.7-flash:auto
   web: openai-codex/gpt-5.6-luna
   image: openai/gpt-image-1
-  default: openai-codex/gpt-6-astra:high
+  default: anthropic/claude-opus-5-5:high
 symbolPreset: nerd
 composer:
   shape: band
@@ -67,7 +67,6 @@ retry:
       - google-antigravity/gemini-2.5-flash
       - openai-codex/gpt-5.6
       - openai-codex/gpt-5.5
-      - xai-oauth/grok-4.5
       - web/zai
       - web/ollama
     image:
@@ -76,7 +75,6 @@ retry:
       - xai/grok-imagine-image
       - openrouter/google/gemini-3-pro-image-preview
       - google/gemini-3-pro-image-preview
-      - xai-oauth/grok-imagine-image
       - deepinfra/black-forest-labs/FLUX-2-pro
 autolearn:
   enabled: true
@@ -203,7 +201,7 @@ task:
     task: "devin/swe-2, openai-codex/gpt-6-luna, commandcode/xiaomi/mimo-v2.6-pro"
     sonic: "devin/swe-2:medium, commandcode/deepseek/deepseek-v4.1-flash"
     scout: "google-antigravity/gemini-3.8-flash:medium, devin/swe-2:medium, openai-codex/gpt-6-luna:low"
-    reviewer: "devin/swe-2, xai-oauth/grok-4.7, google-antigravity/gemini-3.8-flash"
+    reviewer: "devin/swe-2, google-antigravity/gemini-3.8-flash"
     security-reviewer: "openai-codex/gpt-6-astra:high, devin/gpt-6-astra:high"
 tier:
   openai: priority

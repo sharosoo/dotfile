@@ -4,7 +4,7 @@
 ## 1. Who reads this
 
 - **Main**, when writing task packets for gpai-monorepo work: copy the relevant section's rules into the packet (or point the agent here).
-- **Subagents** when the packet points here: model agents (`opus`, `sol`, `astra`, `fable`, `luna`, `gemini`, `grok`, `swe`, `mimo`, `deepseek`) acting in the role their packet's `Role:` line names (`skill://agent-orchestration`), plus `ci`, `committer`, `pr`. Model choice per slot: `skill://model-routing` (backend → GPT family, `web/` → `opus`).
+- **Subagents** when the packet points here: model agents (`opus`, `sol`, `astra`, `fable`, `luna`, `gemini`, `swe`, `mimo`, `deepseek`) acting in the role their packet's `Role:` line names (`skill://agent-orchestration`), plus `ci`, `committer`, `pr`. Model choice per slot: `skill://model-routing` (backend → GPT family, `web/` → `opus`).
 
 Routing docs, read before editing or planning any concern:
 - `docs/agent-context/README.md` → recipes → concerns → failure-modes.

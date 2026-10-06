@@ -5,7 +5,7 @@ Repository: `git@github.com:sharosoo/tessel.git` (any worktree). This file repla
 ## 1. Authority
 
 - `docs/implementation/decisions/0004-sol-orchestrator-advisor-routing.md` (IMP-0004) is committed in the repo and governs **workflow controls**: one accountable Main per ticket, packet literals, editing-wave execution ban, evidence vocabulary, cross-model review identity, repair policy, and the prompt-feedback loop. Read it before dispatch.
-- Its **model table** (§ Cost, capability and quota evidence) dates from 2026-09-22 and is superseded by `skill://model-routing`: SWE-2 is the workhorse while its promotion lasts, and Grok 4.7 is allowed as a review opinion. If you change routing for Tessel, update IMP-0004 in the same ticket so the repo record stays true.
+- Its **model table** (§ Cost, capability and quota evidence) dates from 2026-09-22 and is superseded by `skill://model-routing`: SWE-2 is the workhorse while its promotion lasts, and Grok is disabled (2026-10-07), so no Grok review opinion. If you change routing for Tessel, update IMP-0004 in the same ticket so the repo record stays true.
 - Authoritative contracts are the repo's SPECs, `contracts/`, `contracts-v2/` and ADRs. When a contract and an owner API conflict, that is the only legitimate reason for a coder to stop.
 
 ## 2. Data classification
@@ -21,7 +21,7 @@ Tessel is **contributor-safe**: `muse` (Muse Spark 1.3 Contributor) may receive 
 | `tessel-sol-coder`, `tessel-opus-coder` | `sol` / `opus` with `Role: coder`, critical slots only. Never the same family as Main when that slot will need independent review |
 | `tessel-glm-mechanical`, `tessel-deepseek-mechanical` | `deepseek` (or `mimo`) with `Role: coder`, fill-in only |
 | `tessel-advisor-fable` / `-astra` | `fable` / `astra` with `Role: advisor` |
-| `tessel-reviewer`, `tessel-grok-reviewer`, `tessel-sol-verifier` | review panel / `verifier` per `skill://model-routing` §5 |
+| `tessel-reviewer`, `tessel-sol-verifier` | review panel / `verifier` per `skill://model-routing` §5. `tessel-grok-reviewer` is retired: Grok is disabled (2026-10-07); give its seat to `gemini`. |
 | `tessel-gemini-routine`, `tessel-mimo-routine` | `reporter` / `gemini` with `Role: researcher` (docs, summaries, QA evidence) |
 | `tessel-committer` | `committer` + §6 below |
 
