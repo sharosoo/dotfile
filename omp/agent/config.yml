@@ -42,6 +42,8 @@ retry:
       - commandcode/deepseek/deepseek-v4-pro
     kimi-code/k3:
       - commandcode/deepseek/deepseek-v4-pro
+    google-antigravity/gemini-3.8-flash:
+      - commandcode/google/gemini-3.8-flash
     web:
       - web/perplexity
       - google/gemini-2.5-flash
