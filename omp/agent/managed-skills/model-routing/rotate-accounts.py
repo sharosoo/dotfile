@@ -193,11 +193,15 @@ def omp_panes():
         return []
 
 
+GPT_SPLIT = ("GPT slots: astra only for the hardest high-intelligence work (critical logic, security/authz/concurrency, critical reviews), "
+             "everything else on sol with effort \"hi\" (= xhigh); about 1 astra to 2 sol.")
+
+
 def claude_steer(p, rates, blocked):
     """Which family running Mains should lean on, from Claude yh pacing."""
     w5, w7 = p.get("5h"), p.get("7d")
     if blocked:
-        return "claude-helpers", "Claude yh is spent; admin-developers/global carry Claude now (rotation handles it). Keep using opus normally; split GPT slots between astra and sol about 2:1."
+        return "claude-helpers", f"Claude yh is spent; admin-developers/global carry Claude now (rotation handles it). Keep using opus normally. {GPT_SPLIT}"
     if w5 and w5.get("resetsAt"):
         left_s = w5["resetsAt"] - now
         r5 = rates.get("5h")
@@ -209,15 +213,15 @@ def claude_steer(p, rates, blocked):
             return f"mix-opus-{n}", (
                 f"Claude yh 5-hour window is on pace to hit its limit before it resets ({w5['used']:.0%} used, resets in {left_s / 3600:.1f}h); "
                 f"it can sustain about {share:.0%} of the current Claude burn. Mix, do not move everything to GPT: until the reset keep about "
-                f"{n} in 10 spawns that could run on opus (any slot kind, backend included) on opus and send the rest to GPT — astra and sol about 2:1 "
-                "(Codex yh has saved resets, spend it freely). Pure-backend sessions split backend slots the same way. Do not downgrade to cheap models.")
+                f"{n} in 10 spawns that could run on opus (any slot kind, backend included) on opus and send the rest to GPT. {GPT_SPLIT} "
+                "Pure-backend sessions split backend slots the same way. Do not downgrade to cheap models.")
     if w7 and w7.get("resetsAt"):
         left_h = (w7["resetsAt"] - now) / 3600
         if 1 - w7["used"] >= BURN_MIN_LEFT + 0.05 and left_h < 30:
             return "burn-opus", (
                 f"Claude yh 7-day window has {1 - w7['used']:.0%} left that expires in {left_h:.0f}h. Burn it: put opus on every slot it fits "
-                "and run wide parallel waves; in backend-heavy sessions split backend slots about half opus, half GPT (astra and sol about 2:1).")
-    return "normal", "Claude yh pacing is normal: follow model-routing §0 (opus and GPT aggressively; GPT slots astra and sol about 2:1)."
+                f"and run wide parallel waves; in backend-heavy sessions split backend slots about half opus, half GPT. {GPT_SPLIT}")
+    return "normal", f"Claude yh pacing is normal: follow model-routing §0 (opus and GPT aggressively). {GPT_SPLIT}"
 
 
 def broadcast(state, steer, text):
