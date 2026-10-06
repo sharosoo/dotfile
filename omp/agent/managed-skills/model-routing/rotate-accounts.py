@@ -54,13 +54,14 @@ MIN_AVG_ELAPSED_S = 2 * 3600  # a younger weekly window gives too noisy an avera
 SPRINT_START_S = 35 * 60  # a helper's 5-hour window this close to reset may take a sprint
 SPRINT_END_S = 60  # hand back to the primary this long before the helper's reset
 SPRINT_MAX_USED = 0.70  # sprint only on a helper with at least 30% of its 5-hour window unused
-SPRINT_MIN_7D_LEFT = 0.15
+SPRINT_MIN_7D_LEFT = 0.03  # weekly room left below the account's cap (shared caps are enforced separately)
 SPRINT_PRIMARY_5H = 0.75  # only worth it while the primary's own 5-hour window is tight
 
 PROVIDERS = {
     "anthropic": {
         "primary": "yh04060@gmail.com",
-        "helpers": ["admin-developers@teamturing.com", "global@teamturing.com"],
+        # Preference order when the primary is spent: global first (up to its shared cap), then admin-developers.
+        "helpers": ["global@teamturing.com", "admin-developers@teamturing.com"],
         "windows": {"Claude 5 Hour": "5h", "Claude 7 Day": "7d"},
     },
     "openai-codex": {
@@ -69,6 +70,10 @@ PROVIDERS = {
         "windows": {"7 days": "7d"},
     },
 }
+# Accounts shared with other people: never push past these fractions, and refresh their usage
+# often because others spend them while they are disabled here.
+SHARED_CAPS = {"global@teamturing.com": {"7d": 0.90}}
+SHARED_MAX_AGE_S = 15 * 60
 
 DRY = "--dry-run" in sys.argv
 LOOP = "--loop" in sys.argv and not DRY
@@ -113,23 +118,33 @@ def current(win):
     }
 
 
-def stale(win):
+def cap(email, wid):
+    return SHARED_CAPS.get(email, {}).get(wid, 1.0)
+
+
+def stale(win, email):
     """No usable data for a disabled helper: never seen, or old and not known to have reset."""
     if not win:
         return True
-    return all(now - w.get("t", 0) > PROBE_MAX_AGE_S and not (w.get("resetsAt") and w["resetsAt"] < now) for w in win.values())
+    max_age = SHARED_MAX_AGE_S if email in SHARED_CAPS else PROBE_MAX_AGE_S
+    return all(now - w.get("t", 0) > max_age and not (w.get("resetsAt") and w["resetsAt"] < now) for w in win.values())
 
 
-def burnable(win):
+def left7(win, email):
+    w7 = win.get("7d")
+    return cap(email, "7d") - w7["used"] if w7 else 0.0
+
+
+def burnable(win, email):
     w7 = win.get("7d")
     if not w7 or not w7.get("resetsAt"):
         return False
     soon = w7["resetsAt"] - now < BURN_HOURS * 3600
-    return soon and 1 - w7["used"] >= BURN_MIN_LEFT and win.get("5h", {"used": 0})["used"] < HELPER_LIMIT
+    return soon and left7(win, email) >= BURN_MIN_LEFT and healthy(win, email)
 
 
-def healthy(win):
-    return all(w["used"] < HELPER_LIMIT for w in win.values())
+def healthy(win, email):
+    return all(w["used"] < min(HELPER_LIMIT, cap(email, wid)) for wid, w in win.items())
 
 
 def rows(db, provider, email):
@@ -204,11 +219,18 @@ GPT_SPLIT = ("GPT slots: astra only for the hardest high-intelligence work (crit
              "everything else on sol with effort \"hi\" (= xhigh); about 1 astra to 2 sol.")
 
 
-def claude_steer(p, rates, blocked):
+def claude_steer(p, rates, blocked, helpers_on):
     """Which family running Mains should lean on, from Claude yh pacing."""
     w5, w7 = p.get("5h"), p.get("7d")
+    if blocked and not helpers_on:
+        resets = [w["resetsAt"] for w in p.values() if w["used"] >= WALL and w.get("resetsAt")]
+        back = f" until about {time.strftime('%H:%M', time.localtime(max(resets)))}" if resets else ""
+        return "codex-mode", (
+            f"Codex mode: Claude has no usable account{back} (yh spent, global at its 90% shared weekly cap or walled, "
+            "admin-developers walled). Route every opus-eligible slot to GPT on Codex; use opus only where an Anthropic seat is "
+            f"mandatory and expect it to wait. {GPT_SPLIT} When Claude yh comes back you will get a new directive to burn it.")
     if blocked:
-        return "claude-helpers", f"Claude yh is spent; admin-developers/global carry Claude now (rotation handles it). Keep using opus normally. {GPT_SPLIT}"
+        return "claude-helpers", f"Claude yh is spent; helper accounts carry Claude now (rotation handles it). Keep using opus normally. {GPT_SPLIT}"
     if w5 and w5.get("resetsAt"):
         left_s = w5["resetsAt"] - now
         r5 = rates.get("5h")
@@ -236,7 +258,7 @@ def broadcast(state, steer, text):
     last = state.get("steer", {})
     if last.get("key") == steer:
         return
-    urgent = bool({"claude-helpers", "claude-sprint"} & {steer, last.get("key")})
+    urgent = bool({"claude-helpers", "claude-sprint", "codex-mode"} & {steer, last.get("key")})
     if not urgent and now - last.get("at", 0) < STEER_MIN_GAP_S:
         return
     targets = [pid for pid, status in omp_panes() if status == "working"]
@@ -304,7 +326,7 @@ def pick_sprint(cache, cfg, p):
             wake = min(wake, left - SPRINT_START_S + 5)
         elif left > SPRINT_END_S:
             wake = min(wake, left - SPRINT_END_S + 5)
-            ok = tight and w5["used"] <= SPRINT_MAX_USED and 1 - w7["used"] >= SPRINT_MIN_7D_LEFT
+            ok = tight and w5["used"] <= SPRINT_MAX_USED and left7(win, email) >= SPRINT_MIN_7D_LEFT and healthy(win, email)
             if ok and (best is None or w5["used"] < best[1]):
                 best = (email, w5["used"])
     return (best[0] if best else None), max(30, wake)
@@ -388,7 +410,9 @@ def run_once():
 
         # Helpers needed now or soon must have known windows; probe stale ones.
         near = blocked or any(w["used"] >= WALL - NEAR_MARGIN for w in p.values())
-        need_probe = [(provider, e) for e in cfg["helpers"] if stale(cache.get(e, {})) and (near or not is_enabled(db, provider, e))]
+        # Shared accounts are probed only when they may be needed: a probe briefly exposes them to our traffic.
+        need_probe = [(provider, e) for e in cfg["helpers"]
+                      if stale(cache.get(e, {}), e) and (near or (e not in SHARED_CAPS and not is_enabled(db, provider, e)))]
         if need_probe:
             probe(db, need_probe, state)
 
@@ -401,17 +425,21 @@ def run_once():
                 wall_eta_h = (WALL - w7["used"]) / (w7["used"] / elapsed) / 3600
 
         helpers = {}
+        backup_taken = False
         for email in cfg["helpers"]:
             win = current(cache.get(email, {}))
             # A helper that resets before the primary walls would never be reached: burn it alongside.
             hw7 = win.get("7d")
             expires_unused = (
-                wall_eta_h is not None and hw7 and hw7.get("resetsAt") and 1 - hw7["used"] >= BURN_MIN_LEFT
-                and (hw7["resetsAt"] - now) / 3600 < wall_eta_h and healthy(win)
+                wall_eta_h is not None and hw7 and hw7.get("resetsAt") and left7(win, email) >= BURN_MIN_LEFT
+                and (hw7["resetsAt"] - now) / 3600 < wall_eta_h and healthy(win, email)
             )
-            helpers[email] = (blocked and healthy(win)) or burnable(win) or bool(expires_unused)
-        if blocked and not any(helpers.values()):
-            # Every helper looks spent; enable them anyway rather than stall on a dead primary.
+            # A spent primary gets the first healthy helper in preference order.
+            backup = blocked and not backup_taken and healthy(win, email)
+            backup_taken |= backup
+            helpers[email] = backup or burnable(win, email) or bool(expires_unused)
+        if provider == "openai-codex" and blocked and not any(helpers.values()):
+            # zk looks spent; enable it anyway rather than stall Codex on a dead primary.
             helpers = {e: True for e in helpers}
         sprint = None
         if provider == "anthropic":
@@ -419,9 +447,12 @@ def run_once():
             interval = min(interval, sprint_wake)
             if sprint:
                 helpers = {e: e == sprint for e in helpers}
+        for email, on in helpers.items():
+            if on and email in SHARED_CAPS and left7(current(cache.get(email, {})), email) < 0.08:
+                interval = min(interval, NEAR_POLL_S)  # close to the shared cap: watch it closely
         plan[provider] = blocked
         if provider == "anthropic":
-            steer = claude_steer(p, rates, blocked)
+            steer = claude_steer(p, rates, blocked, any(helpers.values()))
             if sprint:
                 w5 = cache[sprint]["5h"]
                 steer = ("claude-sprint", (
