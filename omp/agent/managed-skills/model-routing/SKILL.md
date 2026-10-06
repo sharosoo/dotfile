@@ -19,18 +19,20 @@ The user runs many subscriptions in parallel: Claude ×3, ChatGPT ×2 (Pro + Pro
 
 ### Account rotation — automatic (user rule, 2026-10-07)
 
-A systemd user timer rotates Claude and Codex accounts every 2 minutes; Main does not flip accounts by hand any more. No `auth.accountPolicies` in config.
+A systemd user service rotates Claude and Codex accounts on an adaptive 5–10 minute cadence; Main does not flip accounts by hand any more. No `auth.accountPolicies` in config.
 
-- Script: `~/.omp/agent/managed-skills/model-routing/rotate-accounts.py` (`--dry-run` prints decisions without changing anything). Units: `systemd/omp-account-rotate.{service,timer}` in the same directory, linked into `~/.config/systemd/user/`. Cached window data: `~/.omp/agent/rotate-accounts.state.json` (omp stops reporting usage for disabled accounts, so the script remembers their last windows and treats a passed `resetsAt` as empty).
-- Logs: `journalctl --user -u omp-account-rotate.service -n 30 -o cat` (prints only when something changes). Pause: `systemctl --user stop omp-account-rotate.timer`; resume with `start`.
+- Script: `~/.omp/agent/managed-skills/model-routing/rotate-accounts.py` — `--loop` (the service), `--once`, `--dry-run` (one pass, no changes, prints decisions and the next interval). Unit: `systemd/omp-account-rotate.service` in the same directory (`Type=simple`, `Restart=always`), linked into `~/.config/systemd/user/`. State: `~/.omp/agent/rotate-accounts.state.json` (last windows of disabled accounts — omp stops reporting them — with a passed `resetsAt` treated as empty; per-window usage samples of the primaries for burn rates).
+- **Cadence**: 5 min when any primary window is within 15 points of its limit, burning ≥ 5 points per 10 min, blocked, or a Codex wall/redeem is pending; otherwise 10 min. A failed pass retries in 5 min.
+- **No stall between checks**: helpers are enabled when the primary is at its limit **or projected to reach it before the check after next** (current usage + measured burn rate × 11 min), so they are already on when yh hits the wall.
+- Logs: `journalctl --user -u omp-account-rotate.service -n 30 -o cat` (prints only when something changes). Pause: `systemctl --user stop omp-account-rotate.service`; resume with `start`.
 - **Primary `yh*` (yh04060) is always enabled** on both providers and is spent first.
 - **Claude helpers `ad*` (admin-developers), `gl*` (global)** are enabled while yh is blocked — `Claude 5 Hour` ≥ 95% or `Claude 7 Day` ≥ 90% — if their own windows are < 95% used, and disabled again when yh recovers. `tier.anthropic` goes to `none` while yh is blocked, `priority` otherwise.
 - **Burn rule** (both providers): a helper whose weekly window resets within 24 h with ≥ 10% left is enabled anyway so the quota is not wasted.
-- **Codex**: omp redeems yh's saved resets itself (`codexResets.autoRedeem: yes`, `keepCredits: 1` = always keep one spare). While yh has more saved resets than `keepCredits`, the script burns yh to 100% and holds it alone at the wall; if the wall lasts > 10 min (redeem did not happen), `zk*` (zkwmak08) is enabled. Once only the spare is left, `zk*` is enabled at yh 90% used.
+- **Codex**: omp redeems yh's saved resets itself (`codexResets.autoRedeem: yes`, `keepCredits: 1` = always keep one spare). While yh has more saved resets than `keepCredits`, the script lets yh hit 100% (no early helpers, so omp redeems instead of routing away) and checks every 5 min; a wall still there on the next check (> 4 min, redeem did not happen) enables `zk*` (zkwmak08). Once only the spare is left, `zk*` is enabled when yh is at or projected to reach 90%.
 - The script only toggles rows whose `disabled_cause` is NULL or starts with `manual:` / `temporarily disabled by user`; rows omp disabled for OAuth failures or user deletes are left alone (those need a user re-login). It sets `disabled_cause = 'manual: account rotation (model-routing skill)'`. `omp usage` labels such rows "re-login to restore" — ignore that; the script re-enables them.
-- Thresholds live at the top of the script (`PRIMARY_5H_LIMIT`, `PRIMARY_7D_LIMIT`, `HELPER_LIMIT`, `BURN_HOURS`, `BURN_MIN_LEFT`, `REDEEM_GRACE_S`); change them there, not in this text alone.
-- New machine: after `sync.sh restore`, run `systemctl --user link ~/.omp/agent/managed-skills/model-routing/systemd/omp-account-rotate.service && systemctl --user enable --now ~/.omp/agent/managed-skills/model-routing/systemd/omp-account-rotate.timer`.
-- Manual one-off override (user request only; pause the timer first or it will undo the change within 2 min): `sqlite3 ~/.omp/agent/agent.db "update auth_credentials set disabled_cause=NULL where provider='anthropic' and identity_key like 'email:global%'"`.
+- Thresholds live at the top of the script (`PRIMARY_5H_LIMIT`, `PRIMARY_7D_LIMIT`, `HELPER_LIMIT`, `BURN_HOURS`, `BURN_MIN_LEFT`, `REDEEM_GRACE_S`, `MIN_INTERVAL_S`, `MAX_INTERVAL_S`, `HOT_MARGIN`, `HOT_RATE`); change them there, not in this text alone. Restart the service after editing.
+- New machine: after `sync.sh restore`, run `systemctl --user enable --now ~/.omp/agent/managed-skills/model-routing/systemd/omp-account-rotate.service`.
+- Manual one-off override (user request only; stop the service first or it will undo the change on its next pass): `sqlite3 ~/.omp/agent/agent.db "update auth_credentials set disabled_cause=NULL where provider='anthropic' and identity_key like 'email:global%'"`.
 - Backup taken before the first manual change: `~/.omp/agent/agent.db.bak-20261006`.
 
 
