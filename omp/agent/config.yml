@@ -191,7 +191,8 @@ skills:
     - tuning-incremental-sync-config
     - working-with-skills
 codexResets:
-  autoRedeem: "no"
+  autoRedeem: "yes"
+  keepCredits: 1
 task:
   enableEffort: true
   maxEffort: xhigh
