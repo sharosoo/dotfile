@@ -21,17 +21,6 @@ dev:
 defaultThinkingLevel: auto
 advisor:
   enabled: false
-auth:
-  accountPolicies:
-    - provider: anthropic
-      account:
-        accountId: a059419b-f0ba-4021-9f38-e2b234d028fa
-      priority: 100
-      reservePct: 20
-    - provider: openai-codex
-      account:
-        accountId: 7e958aea-06e7-4540-9552-9a6baf2c89f7
-      priority: 100
 retry:
   modelFallback: true
   usageAwareFallback: true
@@ -217,3 +206,4 @@ task:
     security-reviewer: "openai-codex/gpt-6-astra:high, devin/gpt-6-astra:high"
 tier:
   openai: priority
+  anthropic: priority
