@@ -49,6 +49,8 @@ HELPER_MIN = 2
 STEER_5H_USED = 0.75  # no burn rate yet: treat the 5-hour window as tight from here
 STEER_MIN_LEFT_S = 45 * 60  # a 5-hour wall this close to its reset is not worth steering away from
 STEER_MIN_GAP_S = 20 * 60  # minimum gap between non-urgent steering broadcasts
+WEEK_S = 7 * 86400
+MIN_AVG_ELAPSED_S = 2 * 3600  # a younger weekly window gives too noisy an average burn
 
 PROVIDERS = {
     "anthropic": {
@@ -283,6 +285,7 @@ def run_once():
         return MIN_INTERVAL_S
     state = load_state()
     keep = int(float(omp("config", "get", "codexResets.keepCredits") or 0))
+    auto_redeem = omp("config", "get", "codexResets.autoRedeem") == "yes"
     db = sqlite3.connect(DB, timeout=10)
     samples = state.setdefault("samples", {})
     interval = MAX_INTERVAL_S
@@ -317,8 +320,9 @@ def run_once():
                 state.setdefault("codexWallSince", now)
             else:
                 state.pop("codexWallSince", None)
-            # With spare resets, hold yh alone at its wall so omp redeems one.
-            blocked = at_wall and (credits <= keep or now - state["codexWallSince"] > REDEEM_GRACE_S)
+            # With a redeemable reset, hold yh alone at its wall so omp redeems one.
+            redeemable = auto_redeem and credits > keep
+            blocked = at_wall and (not redeemable or now - state["codexWallSince"] > REDEEM_GRACE_S)
             if at_wall and not blocked:
                 interval = min(interval, NEAR_POLL_S)
         else:
@@ -348,10 +352,24 @@ def run_once():
         if need_probe:
             probe(db, need_probe, state)
 
+        # Hours until the primary's weekly window walls at its average burn since the window opened.
+        wall_eta_h = None
+        w7 = p.get("7d")
+        if provider == "openai-codex" and w7 and w7.get("resetsAt"):
+            elapsed = WEEK_S - (w7["resetsAt"] - now)
+            if elapsed >= MIN_AVG_ELAPSED_S and w7["used"] > 0:
+                wall_eta_h = (WALL - w7["used"]) / (w7["used"] / elapsed) / 3600
+
         helpers = {}
         for email in cfg["helpers"]:
             win = current(cache.get(email, {}))
-            helpers[email] = (blocked and healthy(win)) or burnable(win)
+            # A helper that resets before the primary walls would never be reached: burn it alongside.
+            hw7 = win.get("7d")
+            expires_unused = (
+                wall_eta_h is not None and hw7 and hw7.get("resetsAt") and 1 - hw7["used"] >= BURN_MIN_LEFT
+                and (hw7["resetsAt"] - now) / 3600 < wall_eta_h and healthy(win)
+            )
+            helpers[email] = (blocked and healthy(win)) or burnable(win) or bool(expires_unused)
         if blocked and not any(helpers.values()):
             # Every helper looks spent; enable them anyway rather than stall on a dead primary.
             helpers = {e: True for e in helpers}
