@@ -235,6 +235,33 @@ def claude_steer(blocked, helpers_on):
     return SOL_FIRST
 
 
+def pane_busy_input(pid):
+    """Why typing into the pane now would go astray, or None when its editor is empty.
+
+    `herdr agent prompt` types into the editor and presses Enter: a half-typed user draft gets the directive
+    appended (2026-10-07 it became part of a `/btw` side question the main loop never saw), and an open side
+    panel takes the keys as its own shortcuts. Those passes defer; the next one retries.
+    """
+    try:
+        lines = subprocess.run(["herdr", "agent", "read", pid], capture_output=True, text=True, timeout=10).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return "unreadable"
+    tail = lines[-60:]
+    bottom = max((i for i, l in enumerate(tail) if l.startswith("╰─")), default=None)
+    status = max((i for i, l in enumerate(tail[:bottom]) if l.startswith("\ue0b6")), default=None) if bottom else None
+    if bottom is None or status is None:
+        return "editor not found"
+    # The side panel's key hints sit just above the status line; transcript text further up may quote them.
+    if any("to follow up" in l for l in tail[max(0, status - 6):status]):
+        return "side panel open"
+    # A one-line draft renders on the `╰─` row itself; longer drafts add rows above it. The bottom row also
+    # carries right-aligned hints such as "← to see 4 running agents".
+    draft = [l.strip(" │") for l in tail[status + 1:bottom]] + [tail[bottom][2:].split("  ")[0].strip()]
+    if any(draft):
+        return "user draft in editor"
+    return None
+
+
 def broadcast(state, steer, text):
     """Tell working omp sessions about a steering change (config edits do not reach live sessions).
 
@@ -259,6 +286,10 @@ def broadcast(state, steer, text):
     if DRY:
         return
     for pid in targets:
+        busy = pane_busy_input(pid)
+        if busy:
+            log(f"steer {pid}: deferred ({busy})")
+            continue
         subprocess.run(["herdr", "agent", "prompt", pid, msg], capture_output=True, timeout=10)
         sent[pid] = steer
     if changed:
