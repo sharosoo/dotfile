@@ -262,15 +262,27 @@ def claude_steer(p, rates, blocked, helpers_on, room):
 
 
 def broadcast(state, steer, text):
-    """Tell working omp sessions about a steering change (config edits do not reach live sessions)."""
+    """Tell working omp sessions about a steering change (config edits do not reach live sessions).
+
+    Panes that were idle when a directive went out still act on the older one once they resume,
+    so every working pane whose last received key differs from the current one is caught up.
+    """
     last = state.get("steer", {})
-    if last.get("key") == steer:
+    sent = state.setdefault("steerSent", {})
+    changed = last.get("key") != steer
+    if changed:
+        urgent = any(k and k.startswith(("claude-helpers", "claude-sprint", "codex-mode")) for k in (steer, last.get("key")))
+        if not urgent and now - last.get("at", 0) < STEER_MIN_GAP_S:
+            return
+    panes = omp_panes()
+    live = {pid for pid, _ in panes}
+    for pid in list(sent):
+        if pid not in live:
+            del sent[pid]
+    targets = [pid for pid, status in panes if status == "working" and sent.get(pid) != steer]
+    if not targets and not changed:
         return
-    urgent = any(k and k.startswith(("claude-helpers", "claude-sprint", "codex-mode")) for k in (steer, last.get("key")))
-    if not urgent and now - last.get("at", 0) < STEER_MIN_GAP_S:
-        return
-    targets = [pid for pid, status in omp_panes() if status == "working"]
-    msg = (f"[Routing directive from the account-rotation service ({steer}); live sessions do not reload config, so apply by hand. "
+    msg = (f"[Routing directive from the account-rotation service ({steer}); it replaces every earlier routing directive. "
            f"Do not stop current work.] {text} Before each spawn wave run ~/.omp/agent/managed-skills/model-routing/headroom.sh "
            "and stay within its SUBAGENT BUDGET lines.")
     log(f"steer -> {steer}; directing {targets}")
@@ -278,7 +290,9 @@ def broadcast(state, steer, text):
         return
     for pid in targets:
         subprocess.run(["herdr", "agent", "prompt", pid, msg], capture_output=True, timeout=10)
-    state["steer"] = {"key": steer, "text": text, "at": now}
+        sent[pid] = steer
+    if changed:
+        state["steer"] = {"key": steer, "text": text, "at": now}
 
 
 def apply_budget(plan, steer_text):
