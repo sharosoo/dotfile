@@ -46,9 +46,6 @@ BUDGET = f"{HOME}/.omp/agent/rotate-budget.json"
 WIDE_CAP = 32  # primary has quota: run wide to spend it
 HELPER_TOTAL = 12  # concurrent subagents across all working sessions while on helper accounts
 HELPER_MIN = 2
-STEER_5H_USED = 0.75  # no burn rate yet: treat the 5-hour window as tight from here
-STEER_MIN_LEFT_S = 45 * 60  # a 5-hour wall this close to its reset is not worth steering away from
-STEER_MIN_GAP_S = 20 * 60  # minimum gap between non-urgent steering broadcasts
 WEEK_S = 7 * 86400
 MIN_AVG_ELAPSED_S = 2 * 3600  # a younger weekly window gives too noisy an average burn
 SPRINT_START_S = 35 * 60  # a helper's 5-hour window this close to reset may take a sprint
@@ -56,7 +53,6 @@ SPRINT_END_S = 60  # hand back to the primary this long before the helper's rese
 SPRINT_MAX_USED = 0.70  # sprint only on a helper with at least 30% of its 5-hour window unused
 SPRINT_MIN_7D_LEFT = 0.03  # weekly room left below the account's cap (shared caps are enforced separately)
 SPRINT_PRIMARY_5H = 0.75  # only worth it while the primary's own 5-hour window is tight
-HELPER_ROOM_TIGHT = 0.10  # helpers with less usable Claude quota than this: cut opus to 1 in 10
 
 PROVIDERS = {
     "anthropic": {
@@ -219,46 +215,24 @@ def omp_panes():
         return []
 
 
-GPT_SPLIT = ("GPT slots: astra only for the hardest high-intelligence work (critical logic, security/authz/concurrency, critical reviews), "
-             "everything else on sol with effort \"hi\" (= xhigh); about 1 astra to 2 sol.")
+# Standing routing policy (user, 2026-10-07 evening): Claude yh and opus quota are spent for this
+# cycle, so GPT-6.1 Sol carries the load and opus/astra are reserved for work that needs them.
+SOL_FIRST = (
+    "sol-first",
+    "Sol-first routing: put every normal slot (implementation, tests, contracts, migrations, verification, second opinions, "
+    "planning drafts) on agent \"sol\" with effort \"hi\" (= xhigh), and run waves wide on it. Use astra or opus only when a slot "
+    "truly needs top intelligence: astra for the hardest logic, security/authz/concurrency/crash-consistency and critical "
+    "reviews; opus for critical frontend/UI/copy judgement or a mandatory Anthropic review seat. Aim for at most about 1 in 10 "
+    "spawns on astra or opus combined. Keep cheap models (gemini, luna) for search/scans only.")
 
 
-def claude_steer(p, rates, blocked, helpers_on, room):
-    """Which family running Mains should lean on, from Claude yh pacing and helper headroom."""
-    w5, w7 = p.get("5h"), p.get("7d")
-    walls = [w["resetsAt"] for w in p.values() if w["used"] >= WALL and w.get("resetsAt")]
-    back = f" until about {time.strftime('%H:%M', time.localtime(max(walls)))}" if walls else ""
+def claude_steer(blocked, helpers_on):
+    """Routing directive for running Mains; Claude availability only matters when it is gone entirely."""
     if blocked and not helpers_on:
         return "codex-mode", (
-            f"Codex mode: Claude has no usable account{back} (yh spent, global at its 90% shared weekly cap or walled, "
-            "admin-developers walled). Route every opus-eligible slot to GPT on Codex; use opus only where an Anthropic seat is "
-            f"mandatory and expect it to wait. {GPT_SPLIT} When Claude yh comes back you will get a new directive to burn it.")
-    if blocked:
-        n = 1 if room < HELPER_ROOM_TIGHT else 3
-        return f"claude-helpers-{n}", (
-            f"Claude yh is spent{back}; helper accounts carry Claude with only about {room:.0%} usable quota left. Cut opus: "
-            f"about {n} in 10 opus-eligible spawns stay on opus (frontend/UI/copy and mandatory Anthropic seats first), the rest go "
-            f"to GPT on Codex. {GPT_SPLIT}")
-    if w5 and w5.get("resetsAt"):
-        left_s = w5["resetsAt"] - now
-        r5 = rates.get("5h")
-        on_pace_to_wall = (w5["used"] + r5 * left_s >= WALL) if r5 is not None else w5["used"] >= STEER_5H_USED
-        if on_pace_to_wall and left_s > STEER_MIN_LEFT_S:
-            # Share of the current Claude burn the window can sustain until its reset.
-            share = (WALL - w5["used"]) / left_s / r5 if r5 else 0.5
-            n = min(8, max(2, round(share * 10)))
-            return f"mix-opus-{n}", (
-                f"Claude yh 5-hour window is on pace to hit its limit before it resets ({w5['used']:.0%} used, resets in {left_s / 3600:.1f}h); "
-                f"it can sustain about {share:.0%} of the current Claude burn. Mix, do not move everything to GPT: until the reset keep about "
-                f"{n} in 10 spawns that could run on opus (any slot kind, backend included) on opus and send the rest to GPT. {GPT_SPLIT} "
-                "Pure-backend sessions split backend slots the same way. Do not downgrade to cheap models.")
-    if w7 and w7.get("resetsAt"):
-        left_h = (w7["resetsAt"] - now) / 3600
-        if 1 - w7["used"] >= BURN_MIN_LEFT + 0.05 and left_h < 30:
-            return "burn-opus", (
-                f"Claude yh 7-day window has {1 - w7['used']:.0%} left that expires in {left_h:.0f}h. Burn it: put opus on every slot it fits "
-                f"and run wide parallel waves; in backend-heavy sessions split backend slots about half opus, half GPT. {GPT_SPLIT}")
-    return "normal", f"Claude yh pacing is normal: follow model-routing §0 (opus and GPT aggressively). {GPT_SPLIT}"
+            "Claude has no usable account right now: do not spawn opus at all, use astra for the rare top-intelligence slot. "
+            + SOL_FIRST[1])
+    return SOL_FIRST
 
 
 def broadcast(state, steer, text):
@@ -270,10 +244,6 @@ def broadcast(state, steer, text):
     last = state.get("steer", {})
     sent = state.setdefault("steerSent", {})
     changed = last.get("key") != steer
-    if changed:
-        urgent = any(k and k.startswith(("claude-helpers", "claude-sprint", "codex-mode")) for k in (steer, last.get("key")))
-        if not urgent and now - last.get("at", 0) < STEER_MIN_GAP_S:
-            return
     panes = omp_panes()
     live = {pid for pid, _ in panes}
     for pid in list(sent):
@@ -474,14 +444,7 @@ def run_once():
                 interval = min(interval, NEAR_POLL_S)  # close to the shared cap: watch it closely
         plan[provider] = blocked
         if provider == "anthropic":
-            enabled = [(e, current(cache.get(e, {}))) for e, on in helpers.items() if on]
-            room = max((min(left7(w, e), HELPER_LIMIT - w.get("5h", {"used": 0})["used"]) for e, w in enabled), default=0.0)
-            steer = claude_steer(p, rates, blocked, any(helpers.values()), room)
-            if sprint:
-                w5 = cache[sprint]["5h"]
-                steer = ("claude-sprint", (
-                    f"Claude yh is resting while {sprint.split('@')[0]}'s 5-hour window ({1 - w5['used']:.0%} unused) runs out in "
-                    f"{(w5['resetsAt'] - now) / 60:.0f} min: opus is free capacity right now, use it generously until then. {GPT_SPLIT}"))
+            steer = claude_steer(blocked, any(helpers.values()))
 
         changed = False
         if not DRY:
@@ -497,9 +460,9 @@ def run_once():
     db.close()
 
     if plan:
-        if steer:
-            broadcast(state, *steer)
-        apply_budget(plan, steer[1] if steer else None)
+        steer = steer or SOL_FIRST  # the anthropic pass is skipped while the user holds yh off
+        broadcast(state, *steer)
+        apply_budget(plan, steer[1])
 
     if not DRY:
         with open(STATE, "w") as f:
