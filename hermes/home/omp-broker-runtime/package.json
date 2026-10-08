@@ -1,0 +1,9 @@
+{
+  "name": "hermes-omp-broker-runtime",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@oh-my-pi/pi-ai": "18.8.4",
+    "@oh-my-pi/pi-catalog": "18.8.4"
+  }
+}

@@ -11,8 +11,8 @@
     "kind": "absolute",
     "target": "/usr/share/omarchy/default/agents/skills/omarchy"
   },
-  "omp-auth-gateway": {
+  "omp-auth-broker": {
     "kind": "home",
-    "target": ".omp/agent/managed-skills/omp-auth-gateway"
+    "target": ".omp/agent/managed-skills/omp-auth-broker"
   }
 }

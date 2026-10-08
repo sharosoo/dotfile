@@ -1,5 +1,5 @@
 [Unit]
-Description=omp auth-broker: credential vault over ~/.omp/agent/agent.db (omp-auth-gateway skill)
+Description=omp auth-broker: shared credential vault for direct native clients
 After=network-online.target
 Wants=network-online.target
 
