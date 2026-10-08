@@ -1,7 +1,8 @@
 model:
-  default: z-ai/glm-5.3-flashx
-  provider: commandcode
-  base_url: https://api.commandcode.ai/provider/v1
+  default: anthropic/claude-haiku-5-5
+  provider: omp
+  base_url: http://127.0.0.1:4000/v1
+  api_mode: chat_completions
 agent:
   max_turns: 150
   service_tier: fast
@@ -47,8 +48,8 @@ prompt_caching:
   cache_ttl: 5m
 auxiliary:
   vision:
-    provider: openai-codex
-    model: gpt-5.6-luna
+    provider: omp
+    model: openai-codex/gpt-5.6-luna
 display:
   compact: false
   busy_input_mode: interrupt
@@ -84,24 +85,24 @@ moa:
   presets:
     default:
       reference_models:
-        - provider: openai-codex
-          model: gpt-5.6-sol
+        - provider: omp
+          model: openai-codex/gpt-5.6-sol
           enabled: true
-        - provider: opencode-go
-          model: deepseek-v4-flash
+        - provider: omp
+          model: google-antigravity/gemini-3.8-flash
           enabled: true
       degraded_reference_policy: loud
       fanout: user_turn
   reference_models:
-    - provider: openai-codex
-      model: gpt-5.6-sol
+    - provider: omp
+      model: openai-codex/gpt-5.6-sol
       enabled: true
-    - provider: opencode-go
-      model: deepseek-v4-flash
+    - provider: omp
+      model: google-antigravity/gemini-3.8-flash
       enabled: true
   aggregator:
-    provider: openrouter
-    model: anthropic/claude-opus-4.8
+    provider: omp
+    model: anthropic/claude-opus-4-8
   degraded_reference_policy: loud
   max_tokens: 4096
   fanout: user_turn
@@ -116,11 +117,13 @@ command_allowlist:
 plugins:
   enabled:
     - herdr-agent-state
-    - image_gen/openai-codex
+    - homeassistant
+    - image_gen/omp
     - orca-status
     - platforms/discord
     - web/exa
   disabled:
+    - claude-subscription-directsdk-experimental
     - browser/browser_use
     - browser/browserbase
     - browser/firecrawl
@@ -136,6 +139,7 @@ plugins:
     - image_gen/krea
     - image_gen/meta-ai
     - image_gen/openai
+    - image_gen/openai-codex
     - image_gen/openrouter
     - image_gen/xai
     - observability/langfuse
@@ -189,7 +193,7 @@ updates:
   pre_update_backup: quick
   backup_keep: 5
   non_interactive_local_changes: stash
-_config_version: 49
+_config_version: 50
 session_reset:
   mode: none
   idle_minutes: 1440
@@ -231,12 +235,17 @@ platform_toolsets:
   yuanbao:
     - hermes-yuanbao
 image_gen:
-  provider: openai-codex
+  provider: omp
   use_gateway: false
-  model: gpt-image-2-medium
+  model: google-antigravity/gemini-3.1-flash-image
 known_plugin_toolsets:
   cli:
+    - homeassistant
     - spotify
+  acp:
+    - homeassistant
+  webhook:
+    - homeassistant
 mcp_servers:
   arthub:
     url: https://artifact.sharosoo.com/mcp
@@ -247,3 +256,8 @@ telemetry:
   shared_metrics:
     enabled: false
     send: false
+    offer_version: 2
+_left_core_scoped:
+  - homeassistant
+_left_core_installed:
+  - homeassistant

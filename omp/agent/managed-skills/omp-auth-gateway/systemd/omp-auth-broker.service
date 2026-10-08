@@ -1,0 +1,13 @@
+[Unit]
+Description=omp auth-broker: credential vault over ~/.omp/agent/agent.db (omp-auth-gateway skill)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/mise/installs/github-can1357-oh-my-pi/latest/omp auth-broker serve --bind=127.0.0.1:8765
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

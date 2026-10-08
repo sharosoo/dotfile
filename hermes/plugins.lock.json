@@ -1,0 +1,10 @@
+{
+  "claude-subscription-directsdk-experimental": {
+    "revision": "4bc79c78031d1a042b5d8a7314ceea283db5c5e2",
+    "source": "https://github.com/NousResearch/hermes-plugin-claude-subscription-directsdk"
+  },
+  "homeassistant": {
+    "revision": "ba30cb0cf86c52bdb5cde98974bc062e97966529",
+    "source": "https://github.com/NousResearch/hermes-homeassistant"
+  }
+}

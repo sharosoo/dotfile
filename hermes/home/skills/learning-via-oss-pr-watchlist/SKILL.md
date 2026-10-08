@@ -70,6 +70,8 @@ Once the user recognizes a repository's test and review conventions, select a na
 
 When the user worries that outsiders cannot merge PRs, verify with a bounded GitHub sample instead of empty reassurance: query merged PRs by repo and window, inspect `author_association`, and distinguish `MEMBER`/`COLLABORATOR` from `CONTRIBUTOR`. **Never present the share of merged PRs from `CONTRIBUTOR` accounts as a first-time contributor success rate** — it excludes rejected submissions and can include repeat external contributors, bots, or affiliated regulars. Explain that review or closure is not a judgment of the person's ability; scope, duplication, and project priorities matter. Give one small, reproducible first step rather than a generic pep talk.
 
+When the user frames OSS contribution as mandatory ("무조건 기여해야?"), correct the frame before planning work: in serving/inference job postings OSS contribution appears as a *preferred* qualifier, not a required one — the required axis is production serving experience + engine internals understanding. Position OSS as one of several evidence channels (alongside reproducible local benchmarks on the user's own hardware, well-formed issues with reproducers, and before/after engineering blog posts) that fill the gaps a work history doesn't cover; vendor-controlled repos (TensorRT-LLM) accept little from outsiders, so there the benchmark-comparison path beats contribution. Then ground the recommendation in one concrete candidate the user already has materials for.
+
 ## Drop-in GitHub API scraper (no auth needed)
 
 ```python
@@ -165,6 +167,18 @@ For the full prompt template the user calibrated (the one behind the LLM-serving
 ## Multi-repo first-contribution handoffs
 
 When asked for a handoff or cron revision covering a watchlist, keep **every tracked repo** in the durable full note rather than narrowing it to the top pick. Give each repo its URL, candidate issue URLs (or explicitly none), current ownership/competing PRs, intake gate, and next investigation step. Rank *next actions*, not PR ownership; distinguish actionable, maintainer-alignment, reproduction/measurement, watch-only, and excluded. The chat summary may be selective, but the file must preserve the whole comparison. A 24-hour issue window is insufficient for ongoing candidates: carry forward older tracked issues and allow new ones to supersede them, with fetch failures distinct from an empty window.
+
+### Expanding the watchlist to a new domain (e.g. agent repos → serving repos)
+
+When the user asks to survey contribution opportunities in a *new ecosystem adjacent to the existing watchlist* (e.g. serving engines after agent runtimes), extend the existing workspace rather than starting a new one: the conventions (handoffs/, notes/, contribution-policy verification, comment-first gate) already live there and carry over.
+
+Procedure:
+1. Clone the new-domain repos shallow into the same workspace (`git clone --depth 1`; for huge repos like TensorRT-LLM use `--filter=blob:none` with `GIT_LFS_SKIP_SMUDGE=1`). Reuse an existing clone instead of re-cloning.
+2. Read the referenced fetcher script and the most recent handoff doc BEFORE writing the new brief — the brief must follow the established structure (목적·상태 / 권장 순서 / 중단 조건), not a new format.
+3. Rank PR-contribution candidates with the same gates: open + unassigned + no competing PR + maintainer alignment required before PR. Copy over the profile mapping (user's existing expertise → repo subsystem) so candidates are ranked by fit, not generic "good first issue".
+4. External-write ban is absolute in surveys: no issue comments, no PRs, no pushes. The survey produces local handoff docs; the user (or a later session) decides external action.
+
+This survey can be delegated to a standing omp agent in herdr (see the herdr-agent-delegation skill) — write the brief to a scratch file and hand the agent a one-line pointer.
 
 ## First-PR intake gates (verify live before recommending)
 
