@@ -1,6 +1,0 @@
-name: omp
-version: 1.0.0
-description: Gemini image generation through the local omp auth gateway.
-kind: backend
-requires_env:
-  - OMP_GATEWAY_API_KEY

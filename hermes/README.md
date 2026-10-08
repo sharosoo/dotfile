@@ -1,6 +1,7 @@
 # Hermes Agent
 
-This directory manages the hand-written parts of `~/.hermes`. Hermes itself,
+This directory manages the hand-written parts of `~/.hermes`, including a patch
+against Hermes core for native omp broker authentication. Upstream Hermes itself,
 provider credentials, conversation history and generated runtime state are not
 vendored. Configuration is copied because Hermes rewrites it in place; shared
 skill directories remain symlinks.
@@ -13,7 +14,10 @@ skill directories remain symlinks.
 | `home/SOUL.md` | `~/.hermes/SOUL.md` | Agent persona |
 | `home/cron/jobs.json` | `~/.hermes/cron/jobs.json` | Scheduled job definitions |
 | `home/scripts/` | `~/.hermes/scripts/` | Authored helper scripts, without dependencies or runtime output |
-| `home/plugins/` | `~/.hermes/plugins/` | Locally authored plugin sources, including `model-providers/omp`, `image_gen/omp`, `herdr-agent-state` and `orca-status` |
+| `home/plugins/` | `~/.hermes/plugins/` | Authored functional plugins such as `herdr-agent-state` and `orca-status`; no custom model integration plugins |
+| `home/omp-broker-runtime/` | `~/.hermes/omp-broker-runtime/` | Request-scoped native SDK host, regression tests and pinned Bun dependencies; no vendored `node_modules` |
+| `core-patches/omp-broker.patch` | Hermes source checkout | Native broker client, provider registration, recent-model visibility and regression coverage |
+| `apply-core-patches.sh` | Run during restore or after Hermes updates | Idempotent patch application and frozen Bun dependency installation |
 | `plugins.lock.json` | Sources recorded in `~/.hermes/plugins/.install-metadata.json` | Credential-free third-party Git URLs and exact commit revisions; third-party source trees are not copied |
 | `home/skills/` | `~/.hermes/skills/` | Authored skill sources and retained historical bundled/official optional/hub snapshots |
 | `skill-links.json` | Symlinks under `~/.hermes/skills/` | Shared skill targets, without copying their contents |
@@ -42,21 +46,28 @@ targeted commits.
 
 ## Local omp integration
 
-The `model-providers/omp` plugin sends provider-qualified models through the local
-omp gateway at `http://127.0.0.1:4000/v1`. The gateway obtains provider credentials
-from the broker at `http://127.0.0.1:8765`; Hermes uses `OMP_GATEWAY_API_KEY` from
-its private environment. The default model is
-`anthropic/claude-haiku-5-5`. The `image_gen/omp` plugin uses Gemini image
-generation through the same gateway.
+Hermes registers `anthropic`, `openai-codex`, `google-antigravity`, `devin` and
+`commandcode` separately. Its core adapter launches a request-scoped Bun host
+using the pinned native omp SDK. The host obtains credentials from the local
+broker at `http://127.0.0.1:8765`, then calls the selected upstream directly.
+There is no inference gateway, port 4000 listener, provider named `omp`, or custom
+model provider/image plugin.
 
-This snapshot does **not** contain the broker/gateway tokens or their account
-vault. In particular, `~/.omp/auth-broker.token` and
-`~/.omp/auth-gateway.token` must stay local. Configure the private
-`~/.hermes/.env` and restore the omp setup separately before starting Hermes.
-The gateway's ordering drop-in is captured here; the broker/gateway units are
-managed with the omp `omp-auth-gateway` skill, not duplicated here.
+The default is provider `anthropic`, model `claude-haiku-5-5`. Images use core
+provider `google-antigravity`, model `gemini-3.1-flash-image`. The
+`model_visibility` policy shows releases within four calendar months and hides
+unknown/future dates across cached lists, pickers and image catalogs. Explicit
+inference and saved defaults remain usable: the older configured image model is
+hidden from selectable lists, not silently replaced.
 
-Shared `model-routing` and `omp-auth-gateway` skills are persisted as link
+This snapshot does not contain broker tokens or the account vault.
+`~/.omp/auth-broker.token`, the real `.env`, and provider credentials stay local.
+Restore the broker and its private authentication before starting Hermes.
+The broker unit lives in the managed `omp-auth-broker` skill; the captured Hermes
+ordering drop-in depends on it. `hermes-gateway.service` is the messaging/cron
+service and remains enabled; it is not an inference intermediary.
+
+Shared `model-routing` and `omp-auth-broker` skills are persisted as link
 metadata. Targets inside the capturing user's home are stored relative to
 `HOME`, then expanded against the restoring user's home. System targets such as
 `/usr/share/omarchy/default/agents/skills/omarchy` remain absolute. Restore the
@@ -95,6 +106,7 @@ paths=(
   hermes/sync.sh hermes/README.md hermes/home/config.yaml hermes/home/SOUL.md
   hermes/home/cron/jobs.json hermes/home/scripts hermes/home/plugins hermes/home/skills
   hermes/systemd hermes/plugins.lock.json hermes/skill-links.json
+  hermes/home/omp-broker-runtime hermes/core-patches hermes/apply-core-patches.sh
 )
 git -C "$repo" add -- "${paths[@]}"
 git -C "$repo" diff --cached -- "${paths[@]}"
@@ -123,14 +135,14 @@ above.
 ## Restore
 
 Requirements: Bash, `rsync`, Python 3.9+ and PyYAML for capture; a working Hermes
-installation and a systemd user session for restore. `HERMES_SYNC_PYTHON` can
+Git checkout, Bun and a systemd user session for restore. `HERMES_SYNC_PYTHON` can
 select a Python interpreter with PyYAML. `HERMES_HOME` can override the default
 live directory.
 
 1. Install Hermes using its official installer.
-2. Restore the omp gateway/broker and shared skill sources separately. Recreate
-   private credentials manually, or authenticate using Hermes where appropriate.
-   Do not put `.env`, auth files or token files in this repository.
+2. Restore the omp auth broker and shared skill sources separately. Restore its
+   private vault/token locally; do not authenticate providers separately in
+   Hermes or put `.env`, auth files or token files in this repository.
 3. Inspect the snapshot, then restore:
 
    ```bash
@@ -161,8 +173,8 @@ live directory.
    directories are left alone; the lock file does not automatically change their
    installed revision.
 
-5. Resolve missing shared skill targets and confirm private credentials and the
-   local omp gateway are ready before enabling the service:
+5. Resolve missing shared skill targets, confirm the core patch applied, and
+   confirm the local omp auth broker is ready before enabling the service:
 
    ```bash
    systemctl --user enable --now hermes-gateway
@@ -172,6 +184,25 @@ live directory.
 gateway. For the desktop app, keep the existing project convention: build with
 `hermes desktop --build-only` rather than installing Omarchy's `hermes-desktop`
 package; see `omarchy/NEW-PC.md`.
+
+### Maintaining the core patch
+
+`core-patches/base-revision` records the inspected upstream base. Restore runs
+`apply-core-patches.sh`: an already-applied patch is accepted, a clean applicable
+patch is applied, and a conflict stops without resetting or stashing user work.
+The native SDK is installed with `bun install --frozen-lockfile`.
+
+After a Hermes update, run `hermes/apply-core-patches.sh` again. If the upstream
+change conflicts, port the patch explicitly and rerun the real chat/tool/image
+smokes before updating the snapshot. Capture does not regenerate the core patch:
+include both tracked changes and new core/test files when regenerating it.
+
+When migrating an existing gateway-based installation, archive the old
+`model-providers/omp`, `image_gen/omp` and experimental Claude subscription plugin,
+remove their activation/install records, migrate session and cron provider/model
+overrides, remove `OMP_GATEWAY_API_KEY` and the obsolete `omp` auth-pool row, and
+disable the model-only `omp-auth-gateway.service`. Restore intentionally does not
+delete private authentication or unrelated live plugins on another machine.
 
 ## Excluded state
 

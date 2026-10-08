@@ -268,7 +268,7 @@ capture() (
   local f d s stage backup
   stage="$(mktemp -d)"
   trap 'rm -rf "$stage"' EXIT
-  mkdir -p "$stage/home/plugins" "$stage/home/skills" "$stage/home/scripts" "$stage/systemd"
+  mkdir -p "$stage/home/plugins" "$stage/home/skills" "$stage/home/scripts" "$stage/home/omp-broker-runtime" "$stage/systemd"
   metadata capture "$LIVE" "$stage"
   for f in "${FILES[@]}"; do
     if [[ -L $LIVE/$f ]]; then
@@ -279,6 +279,7 @@ capture() (
     cp "$LIVE/$f" "$stage/home/$f"
   done
   [[ ! -d $LIVE/scripts ]] || source_copy "$LIVE/scripts" "$stage/home/scripts"
+  [[ ! -d $LIVE/omp-broker-runtime ]] || source_copy "$LIVE/omp-broker-runtime" "$stage/home/omp-broker-runtime"
   while IFS= read -r -d '' d; do
     source_copy "$LIVE/plugins/$d" "$stage/home/plugins/$d"
   done < "$stage/custom-plugins.list"
@@ -295,7 +296,7 @@ capture() (
     mkdir -p "$REPO/home/$(dirname "$f")" "$backup/home/$(dirname "$f")"
     rsync -a --checksum --backup --backup-dir="$backup/home/$(dirname "$f")" "$stage/home/$f" "$REPO/home/$f"
   done
-  for d in scripts plugins; do
+  for d in scripts plugins omp-broker-runtime; do
     mkdir -p "$REPO/home/$d" "$backup/home/$d"
     rsync -a --checksum --delete --backup --backup-dir="$backup/home/$d" "$stage/home/$d/" "$REPO/home/$d/"
   done
@@ -325,6 +326,9 @@ restore() (
     mv "$LIVE/skins/omarchy.yaml" "$backup/home/skins/omarchy.yaml"
   fi
   ln -s "$HOME/.local/state/omarchy/current/theme/hermes.yaml" "$LIVE/skins/omarchy.yaml"
+  if [[ -f $REPO/core-patches/omp-broker.patch ]]; then
+    "$REPO/apply-core-patches.sh"
+  fi
   systemctl --user daemon-reload
   echo "restored managed local files into $LIVE; previous files, if changed: $backup"
   metadata plugins "$LIVE" "$REPO"

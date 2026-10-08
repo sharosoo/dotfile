@@ -1,8 +1,14 @@
 model:
-  default: anthropic/claude-haiku-5-5
-  provider: omp
-  base_url: http://127.0.0.1:4000/v1
-  api_mode: chat_completions
+  default: claude-haiku-5-5
+  provider: anthropic
+omp_broker:
+  enabled: true
+  url: http://127.0.0.1:8765
+  token_file: ~/.omp/auth-broker.token
+  providers: [anthropic, openai-codex, google-antigravity, devin, commandcode]
+model_visibility:
+  max_age_months: 4
+  hide_unknown: true
 agent:
   max_turns: 150
   service_tier: fast
@@ -48,8 +54,8 @@ prompt_caching:
   cache_ttl: 5m
 auxiliary:
   vision:
-    provider: omp
-    model: openai-codex/gpt-5.6-luna
+    provider: openai-codex
+    model: gpt-5.6-luna
 display:
   compact: false
   busy_input_mode: interrupt
@@ -85,24 +91,24 @@ moa:
   presets:
     default:
       reference_models:
-        - provider: omp
-          model: openai-codex/gpt-5.6-sol
+        - provider: openai-codex
+          model: gpt-5.6-sol
           enabled: true
-        - provider: omp
-          model: google-antigravity/gemini-3.8-flash
+        - provider: google-antigravity
+          model: gemini-3.8-flash
           enabled: true
       degraded_reference_policy: loud
       fanout: user_turn
   reference_models:
-    - provider: omp
-      model: openai-codex/gpt-5.6-sol
+    - provider: openai-codex
+      model: gpt-5.6-sol
       enabled: true
-    - provider: omp
-      model: google-antigravity/gemini-3.8-flash
+    - provider: google-antigravity
+      model: gemini-3.8-flash
       enabled: true
   aggregator:
-    provider: omp
-    model: anthropic/claude-opus-4-8
+    provider: anthropic
+    model: claude-opus-4-8
   degraded_reference_policy: loud
   max_tokens: 4096
   fanout: user_turn
@@ -118,12 +124,10 @@ plugins:
   enabled:
     - herdr-agent-state
     - homeassistant
-    - image_gen/omp
     - orca-status
     - platforms/discord
     - web/exa
   disabled:
-    - claude-subscription-directsdk-experimental
     - browser/browser_use
     - browser/browserbase
     - browser/firecrawl
@@ -235,9 +239,9 @@ platform_toolsets:
   yuanbao:
     - hermes-yuanbao
 image_gen:
-  provider: omp
+  provider: google-antigravity
   use_gateway: false
-  model: google-antigravity/gemini-3.1-flash-image
+  model: gemini-3.1-flash-image
 known_plugin_toolsets:
   cli:
     - homeassistant

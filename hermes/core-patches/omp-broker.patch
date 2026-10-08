@@ -1,0 +1,2366 @@
+diff --git c/acp_adapter/model_catalog.py i/acp_adapter/model_catalog.py
+index b2b036f51f..8cff00f563 100644
+--- c/acp_adapter/model_catalog.py
++++ i/acp_adapter/model_catalog.py
+@@ -36,6 +36,10 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
+ 
+     try:
+         cfg = load_config()
++        from hermes_cli.model_visibility import configured_broker_provider_ids
++
++        if configured_broker_provider_ids(config=cfg) is not None:
++            return []
+         entries = get_compatible_custom_providers(cfg)
+     except Exception:
+         logger.debug("Could not load named custom providers", exc_info=True)
+@@ -88,6 +92,9 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
+             elif live is not None:
+                 model_ids = declared + [m for m in live if m not in declared]
+ 
++        from hermes_cli.model_visibility import visible_models
++
++        model_ids = visible_models(slug, model_ids, config=cfg)
+         if not model_ids and not isinstance(live, _NativePickerModelList):
+             return None
+         return slug, name, [(mid, "") for mid in model_ids]
+@@ -295,7 +302,10 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
+     if current_is_empty:
+         available_models = [m for m in available_models if " • current" not in str(m.description or "")]
+     current_model_id = "" if current_is_empty else encode_model_choice(cat.current_choice_provider, model)
+-    if current_model_id and current_model_id not in {item.model_id for item in available_models}:
++    from hermes_cli.model_visibility import visible_models
++
++    current_is_visible = bool(visible_models(normalized_provider, [model]))
++    if current_is_visible and current_model_id and current_model_id not in {item.model_id for item in available_models}:
+         provider_name = provider_label(normalized_provider)
+         available_models.insert(0, ModelInfo(
+             model_id=current_model_id, name=f"{provider_name} · {model}",
+@@ -309,4 +319,9 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
+             available_models=available_models,
+             current_model_id=current_model_id if current_model_id or current_is_empty else available_models[0].model_id,
+         )
++    from hermes_cli.model_visibility import ModelVisibility
++    from hermes_cli.config import load_config_readonly
++
++    if ModelVisibility.from_config(load_config_readonly()).max_age_months:
++        return SessionModelState(available_models=[], current_model_id=current_model_id)
+     return None
+diff --git c/acp_adapter/server.py i/acp_adapter/server.py
+index 2ba7d0e8ff..6d729c3f5b 100644
+--- c/acp_adapter/server.py
++++ i/acp_adapter/server.py
+@@ -309,6 +309,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
+ 
+         if not model:
+             return None
++        from hermes_cli.model_visibility import configured_broker_provider_ids, visible_models
++
++        broker_ids = configured_broker_provider_ids()
++        if (broker_ids is not None and provider not in broker_ids) or not visible_models(provider, [model]):
++            return SessionModelState(available_models=[], current_model_id=encode_model_choice(provider, model))
+         choice = encode_model_choice(provider, model)
+         return SessionModelState(available_models=[ModelInfo(model_id=choice, name=model)], current_model_id=choice)
+ 
+diff --git c/agent/agent_init.py i/agent/agent_init.py
+index 35b7b086d2..1432d35bc8 100644
+--- c/agent/agent_init.py
++++ i/agent/agent_init.py
+@@ -387,6 +387,11 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
+     from hermes_cli.providers import is_actual_route
+     from agent.transports import registered_api_modes
+     host, url = agent._base_url_hostname, agent._base_url_lower
++    from hermes_cli.omp_broker import require_broker_provider
++    if require_broker_provider(agent.provider):
++        agent.api_mode = "chat_completions"
++        agent.base_url = f"broker://{agent.provider}"
++        return
+     if is_actual_route(agent.provider, base_url):
+         agent.api_mode = "chat_completions"
+     elif api_mode in _EXPLICIT_API_MODES or (api_mode and api_mode in registered_api_modes()):
+@@ -435,6 +440,10 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
+ 
+ def _finalize_routing(agent, api_mode, credential_pool):
+     from hermes_cli.providers import is_actual_route
++    from hermes_cli.omp_broker import is_broker_provider
++    if is_broker_provider(agent.provider):
++        agent._credential_pool = None
++        credential_pool = None
+     # Credential-pool validation runs AFTER provider auto-detection so a pool scoped to
+     # "anthropic" isn't rejected for provider=None + anthropic.com URL.
+     # Regression from #63048 which placed this check before the URL-based auto-detection block above (fixed
+@@ -496,7 +505,7 @@ def _finalize_routing(agent, api_mode, credential_pool):
+         api_mode is None
+         and agent.api_mode == "chat_completions"
+         and not is_actual_route(agent.provider, agent.base_url)
+-        and not _base_lower.startswith(("acp://", "acp+tcp://"))
++        and not _base_lower.startswith(("acp://", "acp+tcp://", "broker://"))
+         and not _is_external_process_provider(agent.provider)
+         and not agent._is_azure_openai_url()
+         and (
+@@ -1030,6 +1039,12 @@ def _build_client(agent, api_key, base_url, fallback_model):
+     agent._anthropic_client = None
+     agent._is_anthropic_oauth = False
+     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
++    from hermes_cli.omp_broker import broker_runtime, require_broker_provider
++    if require_broker_provider(agent.provider):
++        runtime = broker_runtime(agent.provider)
++        agent.api_mode = runtime["api_mode"]
++        _init_openai_client(agent, runtime["api_key"], runtime["base_url"], fallback_model, _provider_timeout)
++        return
+     if agent.api_mode == "anthropic_messages":
+         _init_anthropic_client(agent, api_key, base_url, _provider_timeout)
+     elif agent.provider == "moa":
+diff --git c/agent/agent_runtime_helpers.py i/agent/agent_runtime_helpers.py
+index db35f62ee3..e88899302a 100644
+--- c/agent/agent_runtime_helpers.py
++++ i/agent/agent_runtime_helpers.py
+@@ -1978,6 +1978,10 @@ def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: s
+ 
+ 
+ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
++    from hermes_cli.omp_broker import require_broker_provider
++    if require_broker_provider(agent.provider):
++        from agent.omp_broker_client import OmpBrokerClient
++        return OmpBrokerClient(agent.provider, session_id=getattr(agent, "session_id", None))
+     from agent.auxiliary_client import (
+         _to_openai_base_url,
+         _validate_base_url,
+@@ -2155,6 +2159,9 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
+     from hermes_cli.providers import determine_api_mode, is_actual_route
+     from agent.native_compaction import resolve_native_compaction_capabilities
+     from hermes_cli.models import opencode_provider_family
++    from hermes_cli.omp_broker import require_broker_provider
++    if require_broker_provider(new_provider):
++        api_mode, base_url = "chat_completions", f"broker://{new_provider}"
+     # Pass model so dual-wire providers (Nous Portal anthropic/* -> Messages) resolve correctly.
+     if not api_mode:
+         api_mode = determine_api_mode(new_provider, base_url, model=new_model)
+@@ -2290,9 +2297,13 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
+     reset_codex_reasoning_replay(agent)
+     if api_key:
+         agent.api_key = api_key
++    from hermes_cli.omp_broker import is_broker_provider
++    if is_broker_provider(new_provider):
++        agent._credential_pool = None
++        agent._credential_pool_entry_id = None
+     # Reload the credential pool on provider change: a pool with a mismatched provider makes
+     # recover_with_credential_pool short-circuit. Reload failure is non-fatal.
+-    if old_norm != new_norm or getattr(agent, "_credential_pool", None) is None:
++    if not is_broker_provider(new_provider) and (old_norm != new_norm or getattr(agent, "_credential_pool", None) is None):
+         # A pool bound to the old provider is worse than none: the recovery guard rejects it.
+         agent._credential_pool = None
+         agent._credential_pool_entry_id = None
+diff --git c/agent/auxiliary_client.py i/agent/auxiliary_client.py
+index 7404bccb1d..4052200ae6 100644
+--- c/agent/auxiliary_client.py
++++ i/agent/auxiliary_client.py
+@@ -3896,6 +3896,9 @@ _CREDENTIAL_REFRESHERS: Dict[str, Callable[..., bool]] = {
+ def _refresh_provider_credentials(provider: str, *, failed_api_key: str = "") -> bool:
+     """Refresh short-lived credentials for OAuth-backed auxiliary providers."""
+     normalized = _normalize_aux_provider(provider)
++    from hermes_cli.omp_broker import is_broker_provider
++    if is_broker_provider(normalized):
++        return False
+     refresher = _CREDENTIAL_REFRESHERS.get(normalized)
+     if refresher is None:
+         return False
+@@ -4715,6 +4718,9 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
+ def _to_async_client(sync_client, model: str, is_vision: bool = False):
+     """Sync client → async counterpart, preserving Codex routing (``is_vision`` adds the Copilot vision header)."""
+     from openai import AsyncOpenAI
++    from agent.omp_broker_client import OmpBrokerClient, AsyncOmpBrokerClient
++    if isinstance(sync_client, OmpBrokerClient):
++        return AsyncOmpBrokerClient(sync_client), model
+     if isinstance(sync_client, _AuxProbeClientStub):
+         return sync_client, model
+     if isinstance(sync_client, CodexAuxiliaryClient):
+@@ -5438,6 +5444,14 @@ def resolve_provider_client(
+     original_provider = (provider or "").strip().lower()
+     provider = _normalize_aux_provider(provider)
+     api_mode = _canonical_api_mode(str(api_mode or "")).lower() or None
++    from hermes_cli.omp_broker import broker_config, require_broker_provider
++    if provider == "auto" and broker_config():
++        provider = _normalize_aux_provider(_normalize_main_runtime(main_runtime).get("provider") or _read_main_provider())
++    if require_broker_provider(provider):
++        from agent.omp_broker_client import OmpBrokerClient, AsyncOmpBrokerClient
++        final_model = model or _normalize_main_runtime(main_runtime).get("model") or _read_main_model_for_aux()
++        client = OmpBrokerClient(provider)
++        return (AsyncOmpBrokerClient(client) if async_mode else client), final_model
+     # MoA chokepoint: "moa" is not an HTTP provider; resolve to the aggregator so direct callers don't
+     # dead-end in unknown-provider. Unresolvable preset → leave untouched for the normal diagnostic.
+     if provider == "moa":
+@@ -5701,6 +5715,13 @@ def resolve_vision_provider_client(
+     )
+     # The raw name keeps a llama.cpp alias distinguishable from bare ``custom`` for the last resolve.
+     raw_requested, requested = requested, _normalize_vision_provider(requested)
++    from hermes_cli.omp_broker import broker_config
++    if broker_config():
++        client, final_model = resolve_provider_client(
++            requested, model=resolved_model, async_mode=async_mode,
++            main_runtime=runtime, is_vision=True,
++        )
++        return client.provider, client, final_model
+     if resolved_base_url:
+         provider_for_base_override = requested if requested and requested not in {"", "auto"} else "custom"
+         client, final_model = resolve_provider_client(
+@@ -6026,6 +6047,13 @@ def _get_cached_client(
+     previously occurred in long-running gateways where recycled worker threads created unbounded entries
+     (#10200).
+     """
++    from hermes_cli.omp_broker import broker_config
++    if broker_config():
++        return resolve_provider_client(
++            provider, model, async_mode, explicit_base_url=base_url,
++            explicit_api_key=api_key, api_mode=api_mode, main_runtime=main_runtime,
++            is_vision=is_vision, task=task,
++        )
+     # A bare llama.cpp alias keys on the live local endpoint: a restarted server (new port/key)
+     # must not be served the old client, and a stopped one resolves to nothing, not a cloud client.
+     from agent.auxiliary_local_runtime import bare_llamacpp_endpoint
+@@ -7945,6 +7973,10 @@ def _aux_recovery_ladder(
+     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
+     Each rung returns a response, narrows ``first_err`` and falls through, or re-raises.
+     Raises the narrowed ``first_err`` when exhausted (after evicting a connection-poisoned client)."""
++    from hermes_cli.omp_broker import broker_config
++    if broker_config():
++        # Native AuthStorage owns account rotation; legacy ladders must not turn broker failure into local auth.
++        raise first_err
+     tag = " (async)" if async_mode else ""
+     route = _LadderRoute(
+         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
+diff --git c/agent/client_lifecycle.py i/agent/client_lifecycle.py
+index 4ce4e539d0..d07c89c5de 100644
+--- c/agent/client_lifecycle.py
++++ i/agent/client_lifecycle.py
+@@ -756,6 +756,9 @@ class ClientLifecycleMixin:
+         latter resolve to ``provider="custom"`` with no registry entry, so they are matched through the
+         runtime provider's config lookup instead.
+         """
++        from hermes_cli.omp_broker import is_broker_provider
++        if is_broker_provider(self.provider):
++            return False
+         if self.api_mode != "chat_completions" or getattr(self, "_fallback_activated", False):
+             return False
+         resolved = self._resolve_env_credentials()
+diff --git c/agent/credential_pool.py i/agent/credential_pool.py
+index 9686776beb..ed9f256ec4 100644
+--- c/agent/credential_pool.py
++++ i/agent/credential_pool.py
+@@ -3065,6 +3065,9 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
+ 
+ def load_pool(provider: str) -> CredentialPool:
+     provider = (provider or "").strip().lower()
++    from hermes_cli.omp_broker import is_broker_provider
++    if is_broker_provider(provider):
++        return CredentialPool(provider, [])
+     if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS:
+         # One-time heal for installs that forked this grant across profiles
+         # before the clone-strip / root write-through existed (#100339).
+diff --git c/agent/omp_broker_client.py i/agent/omp_broker_client.py
+new file mode 100644
+index 0000000000..76c253c32b
+--- /dev/null
++++ i/agent/omp_broker_client.py
+@@ -0,0 +1,222 @@
++"""OpenAI-shaped Python facade; the Bun SDK sends native upstream requests."""
++
++from __future__ import annotations
++
++import asyncio
++import base64
++import json
++import threading
++from types import SimpleNamespace
++
++from openai.types.chat import ChatCompletion, ChatCompletionChunk
++
++from hermes_cli.omp_broker import BROKER_API_KEY, start_bridge, stop_bridge
++
++
++def _provider_error(error: dict) -> Exception:
++    import httpx
++    from openai import APIStatusError
++
++    status = int(error.get("status") or 500)
++    response = httpx.Response(status, request=httpx.Request("POST", "http://omp-native.invalid"))
++    return APIStatusError(error.get("message") or "Native omp inference failed", response=response, body=error)
++
++def _native_vision_messages(messages: list[dict]) -> list[dict]:
++    updated_messages = None
++    for message_index, message in enumerate(messages):
++        content = message.get("content")
++        if not isinstance(content, list):
++            continue
++        updated_content = None
++        for content_index, part in enumerate(content):
++            if not isinstance(part, dict) or part.get("type") != "image_url":
++                continue
++            image_url = part.get("image_url")
++            source = image_url.get("url") if isinstance(image_url, dict) else image_url
++            if not isinstance(source, str) or not source.lower().startswith(("http://", "https://")):
++                continue
++            from model_tools import _run_async
++            from tools.image_source import ResolveContext, resolve_image_source
++
++            scheme, rest = source.split(":", 1)
++            # Public URLs still work, but only the shared resolver may access the network or follow redirects.
++            resolved = _run_async(resolve_image_source(f"{scheme.lower()}:{rest}", ResolveContext()))
++            data_url = f"data:{resolved.mime};base64,{base64.b64encode(resolved.data).decode('ascii')}"
++            if updated_content is None:
++                updated_content = list(content)
++            updated_content[content_index] = {
++                **part, "image_url": {**image_url, "url": data_url} if isinstance(image_url, dict) else data_url,
++            }
++        if updated_content is not None:
++            if updated_messages is None:
++                updated_messages = list(messages)
++            updated_messages[message_index] = {**message, "content": updated_content}
++    return updated_messages if updated_messages is not None else messages
++
++
++
++class BrokerStream:
++    def __init__(self, provider: str, request: dict):
++        self._process = start_bridge(provider, "chat", request)
++        self._closed = False
++
++    def __iter__(self):
++        return self
++
++    def __next__(self):
++        if self._closed:
++            raise StopIteration
++        line = self._process.stdout.readline()
++        if not line:
++            code = self._process.wait()
++            self.close()
++            if code:
++                raise RuntimeError(f"Native omp inference host exited ({code})")
++            raise StopIteration
++        payload = json.loads(line)
++        if "error" in payload:
++            self.close()
++            raise _provider_error(payload["error"])
++        chunk = payload.get("chunk")
++        if chunk is None:
++            self.close()
++            raise RuntimeError("Native omp host returned an invalid stream frame")
++        return ChatCompletionChunk.model_validate({"id": "omp-native", "object": "chat.completion.chunk", "created": 0, **chunk})
++
++    def close(self):
++        if not self._closed:
++            self._closed = True
++            stop_bridge(self._process)
++
++    def __enter__(self):
++        return self
++
++    def __exit__(self, *_):
++        self.close()
++
++
++class OmpBrokerClient:
++    def __init__(self, provider: str, *, session_id: str | None = None):
++        self.provider = provider
++        self.api_key = BROKER_API_KEY
++        self.base_url = f"broker://{provider}"
++        self._hermes_aux_effective_provider = provider
++        self._session_id = session_id
++        self._streams: set[BrokerStream] = set()
++        self._processes = set()
++        self._closed = False
++        self._lock = threading.Lock()
++        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
++
++    def create(self, **kwargs):
++        with self._lock:
++            if self._closed:
++                raise RuntimeError("Native omp client is closed")
++        request = {**kwargs, "session_id": kwargs.get("session_id") or self._session_id}
++        # OpenAI's timeout/retry wrappers never own the SDK host's native transport.
++        request.pop("timeout", None)
++        request.pop("extra_headers", None)
++        request.pop("extra_query", None)
++        request.pop("stream_options", None)
++        if "messages" in request:
++            request["messages"] = _native_vision_messages(request["messages"])
++        if kwargs.get("stream"):
++            stream = BrokerStream(self.provider, request)
++            with self._lock:
++                if self._closed:
++                    stream.close()
++                    raise RuntimeError("Native omp client is closed")
++                self._streams = {s for s in self._streams if not s._closed}
++                self._streams.add(stream)
++            return stream
++        process = start_bridge(self.provider, "chat", request)
++        with self._lock:
++            if self._closed:
++                stop_bridge(process)
++                raise RuntimeError("Native omp client is closed")
++            self._processes.add(process)
++        try:
++            for line in process.stdout:
++                payload = json.loads(line)
++                if "error" in payload:
++                    raise _provider_error(payload["error"])
++                if "result" in payload:
++                    return ChatCompletion.model_validate({"created": 0, **payload["result"]})
++            raise RuntimeError(f"Native omp host exited without a response ({process.wait()})")
++        finally:
++            stop_bridge(process)
++            with self._lock:
++                self._processes.discard(process)
++
++    def close(self):
++        with self._lock:
++            self._closed = True
++            processes, self._processes = self._processes, set()
++            streams, self._streams = self._streams, set()
++        for stream in streams:
++            stream.close()
++        for process in processes:
++            stop_bridge(process)
++
++    def with_options(self, **_):
++        return self
++
++
++class AsyncOmpBrokerClient:
++    def __init__(self, client: OmpBrokerClient):
++        self._client = client
++        self._active_clients: set[OmpBrokerClient] = set()
++        self._closed = False
++        self.provider, self.api_key, self.base_url = client.provider, client.api_key, client.base_url
++        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
++
++    async def _close_call(self, client: OmpBrokerClient):
++        try:
++            await asyncio.to_thread(client.close)
++        finally:
++            self._active_clients.discard(client)
++
++    async def create(self, **kwargs):
++        if self._closed:
++            raise RuntimeError("Native omp client is closed")
++        call_client = OmpBrokerClient(self.provider, session_id=self._client._session_id)
++        self._active_clients.add(call_client)
++        response = None
++        try:
++            response = await asyncio.to_thread(call_client.create, **kwargs)
++            if self._closed:
++                raise RuntimeError("Native omp client is closed")
++            return AsyncBrokerStream(response, self, call_client) if isinstance(response, BrokerStream) else response
++        finally:
++            if not isinstance(response, BrokerStream) or self._closed:
++                await self._close_call(call_client)
++
++    async def close(self):
++        self._closed = True
++        await asyncio.gather(
++            *(self._close_call(client) for client in list(self._active_clients)),
++            asyncio.to_thread(self._client.close),
++        )
++
++
++class AsyncBrokerStream:
++    def __init__(self, stream: BrokerStream, owner: AsyncOmpBrokerClient, client: OmpBrokerClient):
++        self._stream, self._owner, self._client = stream, owner, client
++
++    def __aiter__(self):
++        return self
++
++    async def __anext__(self):
++        sentinel = object()
++        try:
++            chunk = await asyncio.to_thread(next, self._stream, sentinel)
++        except BaseException:
++            await self.close()
++            raise
++        if chunk is sentinel:
++            await self.close()
++            raise StopAsyncIteration
++        return chunk
++
++    async def close(self):
++        await self._owner._close_call(self._client)
+diff --git c/agent/transports/chat_completions.py i/agent/transports/chat_completions.py
+index c838a06005..93406d670c 100644
+--- c/agent/transports/chat_completions.py
++++ i/agent/transports/chat_completions.py
+@@ -477,6 +477,18 @@ class ChatCompletionsTransport(ProviderTransport):
+         With ``provider_profile`` every quirk comes from the profile; the legacy flag
+         path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.
+         """
++        if str(params.get("base_url") or "").startswith("broker://"):
++            api_kwargs = _base_kwargs(model, messages, tools, params)
++            budget = params.get("ephemeral_max_output_tokens") or params.get("max_tokens")
++            if budget is not None:
++                api_kwargs["max_tokens"] = budget
++            if params.get("temperature") is not None:
++                api_kwargs["temperature"] = params["temperature"]
++            if params.get("reasoning_config"):
++                api_kwargs["extra_body"] = {"reasoning": params["reasoning_config"]}
++            api_kwargs["session_id"] = params.get("session_id")
++            api_kwargs.update(params.get("request_overrides") or {})
++            return api_kwargs
+         _profile = params.get("provider_profile")
+         sanitized = self.convert_messages(messages, model=model, base_url=params.get("base_url"), provider_profile=_profile)
+         if _profile:
+diff --git c/hermes_cli/auth.py i/hermes_cli/auth.py
+index 21ec72d97b..3d44bfc970 100644
+--- c/hermes_cli/auth.py
++++ i/hermes_cli/auth.py
+@@ -178,6 +178,9 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
+         inference_base_url=DEFAULT_NOUS_INFERENCE_URL, client_id=DEFAULT_NOUS_CLIENT_ID,
+         scope=DEFAULT_NOUS_SCOPE),
+     ProviderConfig("openai-codex", "OpenAI Codex", "oauth_external", inference_base_url=DEFAULT_CODEX_BASE_URL),
++    ProviderConfig("google-antigravity", "Google Antigravity", "omp_broker", inference_base_url="broker://google-antigravity"),
++    ProviderConfig("devin", "Devin", "omp_broker", inference_base_url="broker://devin"),
++    ProviderConfig("commandcode", "CommandCode", "omp_broker", inference_base_url="broker://commandcode"),
+     ("openai-api", "OpenAI API", "https://api.openai.com/v1", ("OPENAI_API_KEY",), "OPENAI_BASE_URL"),
+     ProviderConfig(
+         "xai-oauth", "xAI Grok OAuth (SuperGrok / Premium+)", "oauth_external",
+@@ -2187,6 +2190,9 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
+     external-process ACP backend) gets a real status. Builders are looked up by NAME at call time so
+     tests that patch ``hermes_cli.auth.get_*_auth_status`` still apply."""
+     target = (provider_id or get_active_provider() or "").strip().lower()
++    from hermes_cli.omp_broker import is_broker_provider, broker_auth_status
++    if is_broker_provider(target):
++        return broker_auth_status(target)
+     if not target:
+         return {"logged_in": False}
+     status_fn_name = _BESPOKE_STATUS_FUNCTIONS.get(target)
+diff --git c/hermes_cli/auth_commands.py i/hermes_cli/auth_commands.py
+index 71c61ccb85..2f5e544f01 100644
+--- c/hermes_cli/auth_commands.py
++++ i/hermes_cli/auth_commands.py
+@@ -520,6 +520,14 @@ def auth_list_command(args) -> None:
+             *(e["provider_key"] for e in _get_custom_provider_entries() if e["provider_key"]),
+             *(credential_pool.keys() if isinstance(credential_pool, dict) else ())})
+     for provider in providers:
++        from hermes_cli.omp_broker import is_broker_provider, broker_auth_status
++        if is_broker_provider(provider):
++            status = broker_auth_status(provider)
++            label = "available" if status.get("logged_in") else status.get("error") or "no active credentials"
++            print(f"{provider}: omp auth-broker ({label})")
++            print("  Credentials and refresh are managed by omp; no Hermes credential pool.")
++            print()
++            continue
+         pool = load_pool(provider)
+         entries = pool.entries()
+         if not entries:
+@@ -669,6 +677,12 @@ def auth_status_command(args) -> None:
+     provider = _normalize_provider(getattr(args, "provider", "") or "")
+     if not provider:
+         raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
++    from hermes_cli.omp_broker import is_broker_provider, broker_auth_status
++    if is_broker_provider(provider):
++        status = broker_auth_status(provider)
++        label = "available" if status.get("logged_in") else status.get("error") or "no active credentials"
++        print(f"{provider}: omp auth-broker ({label})")
++        return
+     if dispatch_plugin_auth("status", args, provider):
+         return
+     if provider in auth_mod.SINGLE_USE_REFRESH_POOL_PROVIDERS:
+diff --git c/hermes_cli/auth_model_picker.py i/hermes_cli/auth_model_picker.py
+index 18ccc96b49..aae2de0ae4 100644
+--- c/hermes_cli/auth_model_picker.py
++++ i/hermes_cli/auth_model_picker.py
+@@ -163,7 +163,10 @@ def _prompt_model_selection(
+     *unavailable_models* render grayed out and unselectable with an upgrade link to *portal_url*.
+     """
+     from hermes_cli.cli_output import line_input
+-    _unavailable = unavailable_models or []
++    from hermes_cli.model_visibility import visible_models
++
++    model_ids = visible_models(confirm_provider, model_ids)
++    _unavailable = visible_models(confirm_provider, unavailable_models or [])
+     # Sale chrome is Nous Portal-only, even if pricing.original is present for another provider.
+     sale_chrome = (confirm_provider or "").strip().lower() == "nous"
+ 
+diff --git c/hermes_cli/config_defaults.py i/hermes_cli/config_defaults.py
+index afa89f42ae..8b8ddda27e 100644
+--- c/hermes_cli/config_defaults.py
++++ i/hermes_cli/config_defaults.py
+@@ -33,6 +33,12 @@ def _aux(timeout, *, reasoning_effort=True, **extra):
+ DEFAULT_CONFIG = {
+     "model": "",
+     "providers": {},
++    "omp_broker": {
++        "enabled": False,
++        "url": "http://127.0.0.1:8765",
++        "token_file": "~/.omp/auth-broker.token",
++        "providers": ["anthropic", "openai-codex", "google-antigravity", "devin", "commandcode"],
++    },
+     "fallback_providers": [],
+     # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset
+     # sooner than this many seconds, stay on it (the retry backoff rides out the window) instead
+@@ -2034,6 +2040,8 @@ DEFAULT_CONFIG = {
+         "max_size_mb": 5,      # max size per log file before rotation
+         "backup_count": 3,     # rotated backups to keep
+     },
++    # Zero leaves catalogs unchanged; positive values hide old/unknown releases only in pickers.
++    "model_visibility": {"max_age_months": 0, "hide_unknown": True},
+     # Remote model-catalog manifest: curated OpenRouter / Nous Portal model lists fetched from this
+     # URL (falls back to the in-repo snapshot on network failure), so picker lists update without a
+     # release. Default URL is served by the docs-site GitHub Pages deploy.
+diff --git c/hermes_cli/inventory.py i/hermes_cli/inventory.py
+index 2175b781e8..9387c6b6c7 100644
+--- c/hermes_cli/inventory.py
++++ i/hermes_cli/inventory.py
+@@ -23,6 +23,7 @@ class ConfigContext:
+     user_providers: dict
+     custom_providers: list
+     excluded_providers: list = None
++    config_snapshot: Optional[dict] = None
+ 
+     def with_overrides(
+         self, *, current_provider: Optional[str] = None, current_model: Optional[str] = None,
+@@ -57,6 +58,7 @@ def load_picker_context() -> ConfigContext:
+         user_providers=stringify_provider_map(cfg.get("providers")),
+         custom_providers=get_compatible_custom_providers(cfg),
+         excluded_providers=excluded if isinstance(excluded, list) else [],
++        config_snapshot=cfg,
+     )
+ 
+ 
+@@ -145,11 +147,9 @@ def build_models_payload(
+         rows = _reorder_canonical(rows)
+     if pricing:
+         _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier, cached_only=pricing_cache_only)
+-    # Both metadata decorators consult ``model_overrides``.  Snapshot the
+-    # read-only config once for this payload rather than letting each model
+-    # lookup reopen config.yaml through models_dev._cfg_get().
+-    metadata_config = None
+-    if capabilities or featured:
++    # Reuse the picker snapshot so metadata and visibility see the same profile settings.
++    metadata_config = ctx.config_snapshot
++    if metadata_config is None and (capabilities or featured):
+         try:
+             from hermes_cli.config import load_config_readonly
+ 
+@@ -164,6 +164,9 @@ def build_models_payload(
+     from hermes_cli.models_validate import drop_unofferable_model_ids
+ 
+     drop_unofferable_model_ids(rows)
++    from hermes_cli.model_visibility import visible_provider_rows
++
++    rows = visible_provider_rows(rows, config=metadata_config)
+ 
+     return {"providers": rows, "model": ctx.current_model, "provider": ctx.current_provider}
+ 
+@@ -694,6 +697,10 @@ def _append_unconfigured_rows(
+     GUI pickers don't silently snap to another provider."""
+     from hermes_cli.models import _PROVIDER_ALIASES, _model_requires_account_discovery
+     from hermes_cli.models_catalog_static import listed_canonical_providers
++    from hermes_cli.model_visibility import configured_broker_provider_ids
++
++    if configured_broker_provider_ids(config=ctx.config_snapshot) is not None:
++        return []
+ 
+     seen = {r["slug"].lower() for r in rows}
+     cur = (ctx.current_provider or "").lower()
+@@ -776,7 +783,7 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
+         # machine-scoped dir); there is deliberately no config credential, so without the source clause
+         # the row would only survive on the profile where Use was last clicked.
+         if (row.get("is_user_defined") or (current_slug and slug == current_slug)
+-                or row.get("source") == "local-runtime"):
++                or row.get("source") in {"local-runtime", "omp-auth-broker"}):
+             return True
+         if slug == "moa":
+             # Virtual routing mode, not a configured provider: hide unless current (above) or the user
+diff --git c/hermes_cli/main.py i/hermes_cli/main.py
+index 67adbfe5ee..c5b4c391d4 100644
+--- c/hermes_cli/main.py
++++ i/hermes_cli/main.py
+@@ -2081,7 +2081,14 @@ def select_provider_and_model(args=None):
+     # hermes_cli.main keep intercepting.
+     from hermes_cli.observability.shared_metrics_setup import cli_provider_setup
+     with cli_provider_setup(selected_provider):
+-        flow = _PROVIDER_MODEL_FLOWS.get(selected_provider)
++        from hermes_cli.omp_broker import is_broker_provider
++
++        if is_broker_provider(selected_provider):
++            from hermes_cli.main_provider_setup import _model_flow_broker
++
++            flow = lambda c, m, a: _model_flow_broker(c, selected_provider, m)
++        else:
++            flow = _PROVIDER_MODEL_FLOWS.get(selected_provider)
+         if flow is None and _is_profile_plugin_flow_provider(selected_provider):
+             # Registered plugin profile with no bespoke flow: the generic one, keyed by its auth_type.
+             flow = lambda c, m, a: _model_flow_plugin_provider(c, selected_provider, m)  # noqa: E731
+diff --git c/hermes_cli/main_provider_setup.py i/hermes_cli/main_provider_setup.py
+index e7e0304afa..63ce81a088 100644
+--- c/hermes_cli/main_provider_setup.py
++++ i/hermes_cli/main_provider_setup.py
+@@ -28,6 +28,24 @@ _GENERIC_API_KEY_PROVIDERS = frozenset({
+     "nvidia", "ollama-cloud", "tencent-tokenhub", "tencent-tokenplan", "lmstudio"})
+ 
+ 
++def _model_flow_broker(config: dict, provider: str, current_model: str) -> None:
++    from hermes_cli.model_setup_flows_common import _pick_model_or_prompt, _finish_model
++    from hermes_cli.models import provider_model_ids
++    from hermes_cli.runtime_provider import resolve_runtime_provider
++
++    try:
++        models = provider_model_ids(provider)
++        selected = _pick_model_or_prompt(models, "Model name: ", current_model=current_model,
++                                         confirm_provider=provider)
++        if selected:
++            resolve_runtime_provider(requested=provider, target_model=selected)
++    except Exception:
++        print("Could not obtain this provider's model catalog or credentials from the omp auth broker. No change.")
++        return
++    _finish_model(selected, provider, f"Default model set to: {selected} (via omp auth broker)",
++                  drop_base_url=True, drop_api_mode=True)
++
++
+ def _short_url(url: str) -> str:
+     """``https://host/path/`` -> ``host/path`` for menu labels."""
+     return url.replace("https://", "").replace("http://", "").rstrip("/")
+@@ -290,7 +308,10 @@ def _aux_select_for_task(task: str) -> None:
+     entries.extend(format_aux_picker_entries(providers, current_provider=current_provider,
+                                              current_base_url=current_base_url))
+     custom_marker = "  ← current" if current_base_url else ""
+-    entries.append(("__custom__", f"Custom endpoint (direct URL){custom_marker}", []))
++    from hermes_cli.model_visibility import configured_broker_provider_ids
++
++    if configured_broker_provider_ids(config=cfg) is None:
++        entries.append(("__custom__", f"Custom endpoint (direct URL){custom_marker}", []))
+     entries.append(("__back__", "Back", []))
+ 
+     _say("", f"  Configure {display_name} — current: {_format_aux_current(_aux_task_cfg_for_display(cfg, task))}", "")
+@@ -900,6 +921,23 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
+     fold into display groups (PROVIDER_GROUPS): a group row's ``members`` drive a sub-picker, leaf
+     rows have ``members == []``; saved custom providers and trailing actions stay flat. Honors
+     ``model_catalog.excluded_providers`` (slug or alias, case-insensitive) like the gateway/TUI."""
++    from hermes_cli.model_visibility import configured_broker_provider_ids
++
++    broker_ids = configured_broker_provider_ids(config=config)
++    if broker_ids is not None:
++        excluded = {str(pid).strip().lower() for pid in (config.get("model_catalog") or {}).get("excluded_providers", [])}
++        rows = [
++            (provider, provider_labels.get(provider, provider) + ("  ← currently active" if provider == active else ""), [])
++            for provider in broker_ids if provider not in excluded
++        ]
++        default_idx = next((i for i, row in enumerate(rows) if row[0] == active), 0)
++        rows.extend([
++            ("reasoning", "Reasoning effort for the current model...", []),
++            ("aux-config", "Configure auxiliary models...", []),
++            ("cancel", "Leave unchanged", []),
++        ])
++        return rows, default_idx
++
+     from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_ALIASES
+     from hermes_cli.models_catalog_static import group_providers, listed_canonical_providers, provider_group_for_slug
+     canonical_descs = {p.slug: p.tui_desc for p in CANONICAL_PROVIDERS}
+diff --git c/hermes_cli/model_switch_providers.py i/hermes_cli/model_switch_providers.py
+index 270b98cdda..efd8ad49fb 100644
+--- c/hermes_cli/model_switch_providers.py
++++ i/hermes_cli/model_switch_providers.py
+@@ -754,6 +754,9 @@ class _PickerBuild:
+     def add_builtin_row(
+         self, slug: str, name: str, is_current: bool, model_ids: list, source: str, *, uncapped_ok: bool = True,
+     ) -> None:
++        from hermes_cli.model_visibility import visible_models
++
++        model_ids = visible_models(slug, model_ids)
+         row = {
+             "slug": slug, "name": name, "is_current": is_current, "is_user_defined": False,
+             "models": _cap_models(model_ids, self.max_models, slug if uncapped_ok else ""),
+@@ -771,6 +774,11 @@ class _PickerBuild:
+         self, slug: str, name: str, api_url: str, models: list, is_current: bool, native_catalog_empty: bool,
+         *, source: str = "user-config", shown: list | None = None) -> None:
+         """Append a user-defined endpoint row (sections 3, 3b, 4)."""
++        from hermes_cli.model_visibility import visible_models
++
++        models = visible_models(slug, models)
++        if shown is not None:
++            shown = visible_models(slug, shown)
+         self.results.append({
+             "slug": slug, "name": name, "is_current": is_current, "is_user_defined": True,
+             "models": models if shown is None else shown, "total_models": len(models), "source": source,
+@@ -1246,6 +1254,27 @@ def list_authenticated_providers(
+ 
+     from agent.models_dev import fetch_models_dev
+     from hermes_cli.config import coerce_provider_id, stringify_provider_map
++    from hermes_cli.model_visibility import configured_broker_provider_ids, visible_models
++
++    broker_ids = configured_broker_provider_ids()
++    if broker_ids is not None:
++        from hermes_cli.models import provider_label
++        from hermes_cli.omp_broker import broker_model_catalog
++
++        excluded = {str(pid).strip().lower() for pid in (excluded_providers or [])}
++        rows = []
++        for provider in broker_ids:
++            if provider in excluded:
++                continue
++            catalog = visible_models(provider, broker_model_catalog(provider))
++            models = [row["id"] for row in catalog]
++            rows.append({
++                "slug": provider, "name": provider_label(provider), "is_current": provider == current_provider,
++                "is_user_defined": False, "models": _cap_models(models, max_models),
++                "model_metadata": catalog, "total_models": len(models), "source": "omp-auth-broker",
++                "authenticated": True,
++            })
++        return _finalize_picker_rows(rows, user_providers, current_model)
+ 
+     non_blocking_catalogs = bool(non_blocking_catalogs)
+ 
+@@ -1339,6 +1368,9 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) ->
+                 row["models"] = [current_model, *models]
+                 row["total_models"] = row.get("total_models", len(models)) + 1
+             break
++    from hermes_cli.model_visibility import visible_provider_rows
++
++    results = visible_provider_rows(results)
+ 
+     # Current provider first, then by model count descending
+     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
+@@ -1402,4 +1434,6 @@ def list_picker_providers(
+     from hermes_cli.models_validate import drop_unofferable_model_ids
+ 
+     drop_unofferable_model_ids(filtered)
+-    return filtered
++    from hermes_cli.model_visibility import visible_provider_rows
++
++    return visible_provider_rows(filtered)
+diff --git c/hermes_cli/model_visibility.py i/hermes_cli/model_visibility.py
+new file mode 100644
+index 0000000000..ca389aa172
+--- /dev/null
++++ i/hermes_cli/model_visibility.py
+@@ -0,0 +1,214 @@
++"""Opt-in model-list visibility; explicit inference and stored defaults are unchanged."""
++
++from __future__ import annotations
++
++from calendar import monthrange
++from dataclasses import dataclass
++from datetime import date, datetime, timezone
++from typing import Any
++
++
++# These providers expose the same vendor models through a different authentication route.
++_CATALOG_PROVIDERS = {
++    "google-antigravity": "google", "gemini": "google", "z-ai": "zai", "zai-org": "zai",
++    "minimaxai": "minimax", "qwen": "alibaba", "mimo": "xiaomi", "glm": "zai", "kimi": "moonshotai",
++}
++_MODEL_ALIASES = {
++    ("anthropic", "claude-fable-5.1"): "claude-fable-5-1",
++    # The vendor catalog calls this wire model DeepSeek V4.1 Flash under the deepseek-flash key.
++    ("deepseek", "deepseek-v4.1-flash"): "deepseek-flash",
++}
++_VENDOR_RELEASES = {
++    ("devin", "swe-2"): ("2026-09-10", "https://cognition.com/blog/swe-2"),
++    ("devin", "swe-1-7"): ("2026-07-08", "https://cognition.com/blog/swe-1-7"),
++    ("devin", "swe-1-7-lightning"): ("2026-07-08", "https://cognition.com/blog/swe-1-7"),
++}
++
++
++def _config() -> dict:
++    from hermes_cli.config import load_config_readonly
++
++    return load_config_readonly()
++
++
++def configured_broker_provider_ids(*, config: dict | None = None) -> list[str] | None:
++    """None means native listing; an enabled broker owns the entire provider picker."""
++    cfg = _config() if config is None else config
++    block = cfg.get("omp_broker") or {}
++    if not isinstance(block, dict) or block.get("enabled") is not True:
++        return None
++    from hermes_cli.omp_broker import broker_provider_ids
++
++    return broker_provider_ids()
++
++
++def _release_date(value: Any) -> date | None:
++    if isinstance(value, datetime):
++        return value.date()
++    if isinstance(value, date):
++        return value
++    if not isinstance(value, str):
++        return None
++    try:
++        return date.fromisoformat(value)
++    except ValueError:
++        try:
++            return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
++        except ValueError:
++            return None
++
++
++@dataclass(frozen=True)
++class ModelVisibility:
++    max_age_months: int = 0
++    hide_unknown: bool = True
++
++    @classmethod
++    def from_config(cls, config: dict) -> "ModelVisibility":
++        block = config.get("model_visibility") or {}
++        if not isinstance(block, dict):
++            raise ValueError("model_visibility must be a mapping")
++        months = block.get("max_age_months", 0)
++        if isinstance(months, bool) or not isinstance(months, int) or months < 0:
++            raise ValueError("model_visibility.max_age_months must be a non-negative integer")
++        hide_unknown = block.get("hide_unknown", True)
++        if not isinstance(hide_unknown, bool):
++            raise ValueError("model_visibility.hide_unknown must be a boolean")
++        return cls(months, hide_unknown)
++
++    def cutoff(self, today: date) -> date:
++        month_index = today.year * 12 + today.month - 1 - self.max_age_months
++        year, month = divmod(month_index, 12)
++        month += 1
++        return date(year, month, min(today.day, monthrange(year, month)[1]))
++
++    def allows(self, released: date | None, *, today: date | None = None) -> bool:
++        if not self.max_age_months:
++            return True
++        if released is None:
++            return not self.hide_unknown
++        today = today or date.today()
++        return self.cutoff(today) <= released <= today
++
++
++def _model_id(item: Any) -> str:
++    if isinstance(item, dict):
++        return str(item.get("id") or "")
++    if isinstance(item, tuple):
++        return str(item[0]) if item else ""
++    return str(item or "")
++
++
++def model_release_metadata(
++    provider: str, model_id: str, *, metadata: dict | None = None, config: dict | None = None,
++) -> tuple[date | None, str]:
++    """Only release metadata is trusted: never cache age, name dates or generic API creation times."""
++    metadata = metadata or {}
++    for key in ("release_date", "releaseDate"):
++        if metadata.get(key):
++            return _release_date(metadata[key]), str(metadata.get("release_date_source") or "provider catalog")
++    # A catalog adapter must validate this field's meaning against its vendor documentation first.
++    if metadata.get("created_at_is_release_date") is True and metadata.get("release_date_source"):
++        raw = metadata.get("created_at")
++        try:
++            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
++                released = datetime.fromtimestamp(raw, timezone.utc).date()
++            else:
++                released = datetime.fromisoformat(str(raw).replace("Z", "+00:00")).date()
++        except (OverflowError, OSError, TypeError, ValueError):
++            released = None
++        return released, str(metadata["release_date_source"])
++
++    provider = str(provider or "").strip().lower()
++    model_id = str(model_id or "").strip()
++    vendor_date = _VENDOR_RELEASES.get((provider, model_id))
++    if vendor_date is not None:
++        return _release_date(vendor_date[0]), vendor_date[1]
++
++    from agent.models_dev import get_model_info
++
++    catalog_provider = _CATALOG_PROVIDERS.get(provider, provider)
++    identity = metadata.get("identity") or {}
++    if provider in {"commandcode", "google-antigravity", "devin"} and isinstance(identity, dict):
++        vendor = str(identity.get("class") or "").lower()
++        if vendor and vendor != "unknown":
++            catalog_provider = _CATALOG_PROVIDERS.get(vendor, vendor)
++    if provider == "openai-codex":
++        from agent.model_metadata import strip_codex_context_variant_suffix
++
++        model_id = strip_codex_context_variant_suffix(model_id)
++    # A reseller's qualified id identifies the original lab, not a new release of its own.
++    if "/" in model_id:
++        vendor, bare_id = model_id.split("/", 1)
++        if provider in {"commandcode", "google-antigravity", "devin", "anthropic", "openai-codex"}:
++            catalog_provider = _CATALOG_PROVIDERS.get(vendor.lower(), vendor.lower())
++            model_id = bare_id
++    model_id = _MODEL_ALIASES.get((catalog_provider, model_id.lower()), model_id)
++    info = get_model_info(catalog_provider, model_id, allow_network=False, config=config)
++    if info is None or not info.release_date:
++        return None, ""
++    return _release_date(info.release_date), f"https://models.dev/api.json#{info.provider_id}/{info.id}"
++
++
++def visible_models(
++    provider: str, models: Any, *, catalog: list[dict] | None = None, config: dict | None = None,
++    today: date | None = None,
++):
++    """Filter string, tuple or metadata-row lists without losing catalog list subclasses."""
++    if models is None:
++        return None
++    cfg = _config() if config is None else config
++    policy = ModelVisibility.from_config(cfg)
++    if not policy.max_age_months:
++        return models
++    if catalog is None and any(not isinstance(item, dict) for item in models):
++        broker_ids = configured_broker_provider_ids(config=cfg)
++        if broker_ids is not None and provider in broker_ids:
++            from hermes_cli.omp_broker import broker_model_catalog
++
++            catalog = broker_model_catalog(provider)
++    metadata_by_id = {_model_id(row): row for row in (catalog or [])}
++    kept = []
++    for item in models:
++        model_id = _model_id(item)
++        metadata = metadata_by_id.get(model_id)
++        if isinstance(item, dict):
++            metadata = {**(metadata or {}), **item}
++        released, _source = model_release_metadata(provider, model_id, metadata=metadata, config=cfg)
++        if policy.allows(released, today=today):
++            kept.append(item)
++    return type(models)(kept)
++
++
++def visible_model_catalog(provider: str, catalog: dict, *, config: dict | None = None) -> dict:
++    rows = [{**metadata, "id": model_id} for model_id, metadata in catalog.items()]
++    visible = visible_models(provider, rows, config=config)
++    return {row["id"]: catalog[row["id"]] for row in visible}
++
++
++def visible_provider_rows(rows: list[dict], *, config: dict | None = None) -> list[dict]:
++    """Apply after current-model/skeleton injections so those cannot bypass visibility."""
++    cfg = _config() if config is None else config
++    broker_ids = configured_broker_provider_ids(config=cfg)
++    policy = ModelVisibility.from_config(cfg)
++    if broker_ids is not None:
++        rows = [row for row in rows if row.get("slug") in broker_ids]
++    if not policy.max_age_months:
++        return rows
++    result = []
++    for row in rows:
++        provider = str(row.get("slug") or "")
++        models = row.get("models") or []
++        filtered = visible_models(provider, models, catalog=row.get("model_metadata"), config=cfg)
++        updated = {**row, "models": filtered}
++        updated["total_models"] = max(0, row.get("total_models", len(models)) - (len(models) - len(filtered)))
++        for field in ("featured_models", "unavailable_models"):
++            if isinstance(row.get(field), list):
++                updated[field] = visible_models(provider, row[field], catalog=row.get("model_metadata"), config=cfg)
++        for field in ("pricing", "model_pricing", "capabilities", "aliases"):
++            if isinstance(row.get(field), dict):
++                updated[field] = {mid: value for mid, value in row[field].items() if mid in filtered}
++        if isinstance(row.get("model_metadata"), list):
++            updated["model_metadata"] = visible_models(provider, row["model_metadata"], config=cfg)
++        result.append(updated)
++    return result
+diff --git c/hermes_cli/models.py i/hermes_cli/models.py
+index 704e060c7b..8362234475 100644
+--- c/hermes_cli/models.py
++++ i/hermes_cli/models.py
+@@ -662,11 +662,16 @@ def fetch_openrouter_models(
+     # The curated list is filtered from this profile's manifest (``model_catalog.*`` config, its
+     # ``<home>/cache`` copy), so a routed profile keeps its own slot instead of the module one.
+     from hermes_cli.models_profile_cache import profile_slot_get, profile_slot_set
++    from hermes_cli.model_visibility import visible_models
++
++    def _visible(rows):
++        return visible_models("openrouter", list(rows))
++
+     _me = sys.modules[__name__]
+     cached = profile_slot_get(_me, "_openrouter_catalog_cache")
+ 
+     if cached is not None and not force_refresh:
+-        return list(cached)
++        return _visible(cached)
+ 
+     # Cold process: serve from the persisted disk cache when fresh so the
+     # picker doesn't re-download the full ~686KB catalog on every open.
+@@ -675,9 +680,9 @@ def fetch_openrouter_models(
+         if disk:
+             if not cache_only:  # a stale copy is served, never memoized as fresh
+                 profile_slot_set(_me, "_openrouter_catalog_cache", disk)
+-            return list(disk)
++            return _visible(disk)
+     if cache_only:
+-        return list(OPENROUTER_MODELS)
++        return _visible(OPENROUTER_MODELS)
+ 
+     # Remote catalog manifest first, in-repo snapshot when unreachable; the live /v1/models filter
+     # (tool support, free pricing) is applied on top either way.
+@@ -690,7 +695,7 @@ def fetch_openrouter_models(
+ 
+     live = _fetch_live_catalog_index(_OPENROUTER_CATALOG_URL, timeout, _urlopen_model_catalog_request)
+     if live is None:
+-        return list(cached or fallback)
++        return _visible(cached or fallback)
+     live_items, live_by_id = live
+ 
+     # Free warm-up for the reasoning-capability cache: same payload the caps fetch would pull.
+@@ -716,12 +721,12 @@ def fetch_openrouter_models(
+         curated.append((preferred_id, desc))
+ 
+     if not curated:
+-        return list(cached or fallback)
++        return _visible(cached or fallback)
+     if not curated[0][1]:
+         curated[0] = (curated[0][0], "recommended")
+     profile_slot_set(_me, "_openrouter_catalog_cache", curated)
+     _write_openrouter_catalog_disk(curated)
+-    return list(curated)
++    return _visible(curated)
+ 
+ 
+ def model_ids(*, force_refresh: bool = False) -> list[str]:
+@@ -737,7 +742,9 @@ def get_curated_nous_model_ids() -> list[str]:
+         remote = get_curated_nous_models()
+     except Exception:
+         remote = None
+-    return list(remote or _PROVIDER_MODELS.get("nous", []))
++    from hermes_cli.model_visibility import visible_models
++
++    return visible_models("nous", list(remote or _PROVIDER_MODELS.get("nous", [])))
+ 
+ 
+ def _ai_gateway_model_is_free(pricing: Any) -> bool:
+@@ -748,23 +755,28 @@ def fetch_ai_gateway_models(
+     timeout: float = 8.0, *, force_refresh: bool = False) -> list[tuple[str, str]]:
+     """Return the curated AI Gateway picker list, refreshed from the live catalog when possible."""
+     global _ai_gateway_catalog_cache
++    from hermes_cli.model_visibility import visible_models
++
++    def _visible(rows):
++        return visible_models("ai-gateway", list(rows))
++
+ 
+     if _ai_gateway_catalog_cache is not None and not force_refresh:
+-        return list(_ai_gateway_catalog_cache)
++        return _visible(_ai_gateway_catalog_cache)
+ 
+     from hermes_constants import AI_GATEWAY_BASE_URL
+ 
+     fallback = list(VERCEL_AI_GATEWAY_MODELS)
+     live = _fetch_live_catalog_index(f"{AI_GATEWAY_BASE_URL.rstrip('/')}/models", timeout, _urlopen_model_catalog_request)
+     if live is None:
+-        return list(_ai_gateway_catalog_cache or fallback)
++        return _visible(_ai_gateway_catalog_cache or fallback)
+     _, live_by_id = live
+ 
+     curated = [
+         (pid, "free" if _ai_gateway_model_is_free(live_by_id[pid].get("pricing")) else "")
+         for pid, _ in fallback if pid in live_by_id]
+     if not curated:
+-        return list(_ai_gateway_catalog_cache or fallback)
++        return _visible(_ai_gateway_catalog_cache or fallback)
+ 
+     # A free Moonshot model in the live catalog is auto-promoted to #1 as "recommended".
+     free_moonshot = next(
+@@ -776,7 +788,7 @@ def fetch_ai_gateway_models(
+     else:
+         curated[0] = (curated[0][0], "recommended")
+     _ai_gateway_catalog_cache = curated
+-    return list(curated)
++    return _visible(curated)
+ 
+ 
+ def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
+@@ -834,6 +846,10 @@ def _provider_has_credentials(pid: str) -> bool:
+ def list_available_providers() -> list[dict[str, str]]:
+     """``{id, label, aliases, authenticated}`` per listed provider (shared with ``hermes model`` / ``/model``)."""
+     from hermes_cli.models_catalog_static import listed_canonical_providers
++    from hermes_cli.model_visibility import configured_broker_provider_ids
++
++    broker_ids = configured_broker_provider_ids()
++    provider_ids = broker_ids if broker_ids is not None else [p.slug for p in listed_canonical_providers()] + ["custom"]
+     aliases_for: dict[str, list[str]] = {}
+     for alias, canonical in _PROVIDER_ALIASES.items():
+         aliases_for.setdefault(canonical, []).append(alias)
+@@ -843,7 +859,7 @@ def list_available_providers() -> list[dict[str, str]]:
+             "label": _PROVIDER_LABELS.get(pid, pid),
+             "aliases": aliases_for.get(pid, []),
+             "authenticated": _provider_has_credentials(pid)}
+-        for pid in [p.slug for p in listed_canonical_providers()] + ["custom"]]
++        for pid in provider_ids]
+ 
+ 
+ def parse_model_input(
+@@ -857,7 +873,8 @@ def parse_model_input(
+     if colon > 0:
+         provider_part = stripped[:colon].strip().lower()
+         model_part = stripped[colon + 1:].strip()
+-        if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
++        from hermes_cli.omp_broker import is_broker_provider
++        if provider_part and model_part and (provider_part in _KNOWN_PROVIDER_NAMES or is_broker_provider(provider_part)):
+             if provider_part == "custom":
+                 configured = _configured_custom_provider_ids() if custom_ids is None else custom_ids
+                 # Longest configured ``custom:<name>`` id that prefixes the input wins.
+@@ -962,14 +979,17 @@ def curated_models_for_provider(
+ 
+     # Try live API first (Codex, Nous, etc. all support /models)
+     live = provider_model_ids(normalized)
+-    if live:
++    from hermes_cli.omp_broker import is_broker_provider
++    if live or is_broker_provider(normalized):
+         # StepFun's Step Plan /models merge now lives in its provider fetcher
+         # (``_stepfun_catalog``) so every picker surface sees the same list.
+         return [(m, "") for m in live]
+ 
+     # Fallback to static catalog
+     models = _PROVIDER_MODELS.get(normalized, [])
+-    return [(m, "") for m in models]
++    from hermes_cli.model_visibility import visible_models
++
++    return [(m, "") for m in visible_models(normalized, models)]
+ 
+ 
+ def _provider_keys(provider: str) -> set[str]:
+@@ -1823,12 +1843,25 @@ def _static_catalog(normalized: str, fetcher: Any) -> list[str]:
+     return _chat_catalog_rows(_xai_finalize_catalog(merged) if normalized in {"xai", "xai-oauth"} else merged)
+ 
+ 
+-def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
++def provider_model_ids(
++    provider: Optional[str], *, force_refresh: bool = False, include_hidden: bool = False,
++) -> list[str]:
+     """Best known model catalog for a provider: per-provider live fetchers, then the generic profile
+     fetch, then the static list (merged with models.dev for ``_MODELS_DEV_PREFERRED`` providers)."""
++    from hermes_cli.model_visibility import visible_models
++    from hermes_cli.omp_broker import broker_model_catalog, is_broker_provider
++
++    if is_broker_provider(str(provider or "")):
++        catalog = broker_model_catalog(str(provider))
++        rows = _chat_catalog_rows([row["id"] for row in catalog])
++        return rows if include_hidden else visible_models(str(provider), rows, catalog=catalog)
++
++    def _visible(rows):
++        return rows if include_hidden else visible_models(str(provider or ""), rows)
++
+     requested = str(provider or "").strip().lower()
+     if requested == "ollama":
+-        return _ollama_local_catalog(force_refresh)
++        return _visible(_ollama_local_catalog(force_refresh))
+ 
+     normalized = normalize_provider(provider)
+     # A configured `model.base_url` relay is TERMINAL for live catalog egress: the picker must
+@@ -1840,21 +1873,21 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False)
+     if relay and normalized not in _RELAY_AWARE_CATALOG_FETCHERS:
+         relayed = _relay_model_catalog(normalized, relay)
+         if relayed:
+-            return _chat_catalog_rows(relayed)
+-        return _static_catalog(normalized, _PROVIDER_CATALOG_FETCHERS.get(normalized))
++            return _visible(_chat_catalog_rows(relayed))
++        return _visible(_static_catalog(normalized, _PROVIDER_CATALOG_FETCHERS.get(normalized)))
+     fetcher = _PROVIDER_CATALOG_FETCHERS.get(normalized)
+     if fetcher is not None:
+         models = fetcher(normalized, force_refresh)
+         if models is not None:
+-            return _chat_catalog_rows(models)
++            return _visible(_chat_catalog_rows(models))
+     try:
+         models = _profile_live_catalog(normalized)
+     except Exception:
+         models = None
+     if models is not None:
+-        return _chat_catalog_rows(models)
++        return _visible(_chat_catalog_rows(models))
+ 
+-    return _static_catalog(normalized, fetcher)
++    return _visible(_static_catalog(normalized, fetcher))
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -1920,7 +1953,7 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
+         _swr_refresh_inflight.add(inflight_key)
+ 
+     def _default_refresh():
+-        live = provider_model_ids(cache_key, force_refresh=True)
++        live = provider_model_ids(cache_key, force_refresh=True, include_hidden=True)
+         if live or (cache_key == "ollama" and _ollama_native_probe_reachable()):
+             fp = _credential_fingerprint(cache_key)
+             return _live_result_entry(fp, live or [], _load_provider_models_cache().get(cache_key))
+@@ -2112,6 +2145,16 @@ def cached_provider_model_ids(
+     A same-credentials row of any age is served as-is and a daemon thread warms the next open; a
+     cold/mismatched row returns ``[]`` so the caller keeps its curated list. One degraded provider
+     (hanging or timing-out ``/v1/models``) therefore delays nothing but itself (#114215)."""
++    from hermes_cli.model_visibility import visible_models
++    from hermes_cli.omp_broker import is_broker_provider
++
++    if is_broker_provider(str(provider or "")):
++        # Broker catalogs must never reuse native credential-fingerprinted caches.
++        return provider_model_ids(provider, force_refresh=force_refresh)
++
++    def _visible(rows):
++        return visible_models(str(provider or ""), _chat_catalog_rows(rows))
++
+     normalized = _normalized_cache_slug(provider)
+     if not normalized:
+         return []
+@@ -2127,7 +2170,7 @@ def cached_provider_model_ids(
+         if tier is not None:
+             if tier == "stale":
+                 _spawn_swr_refresh(normalized)
+-            return _chat_catalog_rows(list(entry["models"]))
++            return _visible(list(entry["models"]))
+ 
+     if non_blocking and not force_refresh:
+         # Read path: never touch the network in the caller's thread. A same-credentials row past the
+@@ -2135,19 +2178,19 @@ def cached_provider_model_ids(
+         # warms the next open; a cold row returns [] and the caller falls back to its curated list.
+         _spawn_swr_refresh(normalized)
+         if _cache_entry_valid(entry, fp, allow_empty=is_ollama):
+-            return _chat_catalog_rows([
++            return _visible([
+                 model for model in entry["models"]
+                 if not _model_requires_account_discovery(normalized, model)])
+         return []
+ 
+-    live = provider_model_ids(normalized, force_refresh=force_refresh)
++    live = provider_model_ids(normalized, force_refresh=force_refresh, include_hidden=True)
+     if live:
+         fresh = _live_result_entry(fp, live, entry, now)
+         if fresh is None:
+             # The live fetch degraded to the curated list; the account's real catalog is on disk.
+-            return _chat_catalog_rows([model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)])
++            return _visible([model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)])
+         _store_cache_entry(normalized, fresh, cache)
+-        return _chat_catalog_rows(list(live))
++        return _visible(list(live))
+ 
+     if is_ollama:
+         if _ollama_native_probe_reachable():
+@@ -2158,13 +2201,13 @@ def cached_provider_model_ids(
+         # the picker during a transient outage.
+         same_creds = isinstance(entry, dict) and entry.get("fp") == fp
+         if same_creds and isinstance(entry.get("models"), list) and entry["models"]:
+-            return _chat_catalog_rows(list(entry["models"]))
++            return _visible(list(entry["models"]))
+         return []
+     # Live returned nothing: a stale same-fingerprint entry beats an empty result — minus account-gated
+     # models, which only a successful discovery may advertise (the entry itself is untouched, so the
+     # next successful fetch restores them).
+     if _cache_entry_valid(entry, fp):
+-        return _chat_catalog_rows([model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)])
++        return _visible([model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)])
+     return []
+ 
+ 
+@@ -2944,10 +2987,11 @@ def cached_fetch_api_models(
+     collapsing to the config-declared subset. ``fetch_models`` supplies native-aware discovery
+     without minting a command token before cache admission."""
+     from hermes_cli.model_switch_providers import _NativePickerModelList
++    from hermes_cli.model_visibility import visible_models
+ 
+     def _catalog(entry):
+         rows = (_NativePickerModelList if entry.get("native_catalog") else list)(entry["models"])
+-        return _chat_catalog_rows(rows)
++        return visible_models("custom", _chat_catalog_rows(rows))
+ 
+     def _entry(live, at=None):
+         return {**_cache_entry(fp, live, at), "native_catalog": isinstance(live, _NativePickerModelList)}
+@@ -2960,7 +3004,7 @@ def cached_fetch_api_models(
+ 
+     normalized_url = str(base_url or "").strip().rstrip("/").lower()
+     if not normalized_url:  # nothing to key the cache on
+-        return None if cache_only else _chat_catalog_rows(_live())
++        return None if cache_only else visible_models("custom", _chat_catalog_rows(_live()))
+ 
+     # Key on URL AND credential fingerprint: N ``custom_providers`` rows can share one proxy URL
+     # with distinct keys (#106184). A URL-only key let the last probe overwrite its siblings'
+@@ -3005,4 +3049,4 @@ def cached_fetch_api_models(
+     # (non-empty only: an empty native row is not worth resurrecting over the generic fallback).
+     if _cache_entry_valid(entry, fp):
+         return _catalog(entry)
+-    return _chat_catalog_rows(live)
++    return visible_models("custom", _chat_catalog_rows(live))
+diff --git c/hermes_cli/models_validate.py i/hermes_cli/models_validate.py
+index 6dbcf4a424..9c6b4c86cd 100644
+--- c/hermes_cli/models_validate.py
++++ i/hermes_cli/models_validate.py
+@@ -397,7 +397,7 @@ def _static_catalog(normalized: str) -> list[str]:
+     from hermes_cli import models as _m
+ 
+     try:
+-        return _m.provider_model_ids(normalized)
++        return _m.provider_model_ids(normalized, include_hidden=True)
+     except Exception:
+         return []
+ 
+@@ -802,6 +802,19 @@ def validate_requested_model(
+ 
+     if not requested:
+         return _reject("Model name cannot be empty.")
++    from hermes_cli.omp_broker import broker_model_catalog, is_broker_provider
++
++    if is_broker_provider(normalized):
++        try:
++            catalog = broker_model_catalog(normalized)
++        except (OSError, RuntimeError, ValueError):
++            return _reject("Could not obtain the model catalog from the omp auth broker. No fallback credentials were used.")
++        if requested in {row["id"] for row in catalog}:
++            return _accept()
++        return _soft_accept(
++            f"`{requested}` is not in this provider's broker catalog. It was accepted without verification; "
++            "the native provider will validate the explicit ID when inference is sent."
++        )
+     req = _Request(requested, lookup, provider, normalized, api_key, base_url, api_mode, headers)
+     for gate, branch in _LADDER:
+         if gate(req):
+diff --git c/hermes_cli/omp_broker.py i/hermes_cli/omp_broker.py
+new file mode 100644
+index 0000000000..531ed870f2
+--- /dev/null
++++ i/hermes_cli/omp_broker.py
+@@ -0,0 +1,167 @@
++"""Profile-scoped access to the direct omp native SDK host."""
++
++from __future__ import annotations
++
++import json
++import os
++import subprocess
++from pathlib import Path
++from typing import Any
++import threading
++import time
++import selectors
++import tempfile
++from urllib.parse import urlparse
++
++from hermes_constants import get_default_hermes_root, get_hermes_home
++
++BROKER_PROVIDERS = ("anthropic", "openai-codex", "google-antigravity", "devin", "commandcode")
++BROKER_API_KEY = "omp-broker-managed"
++IMAGE_TIMEOUT_SECONDS = 240.0
++
++_catalog_lock = threading.Lock()
++_catalog_cache: dict[tuple, tuple[float, list[dict]]] = {}
++
++def broker_config() -> dict[str, Any]:
++    from hermes_cli.config_effective import load_user_config_effective
++
++    raw = load_user_config_effective().get("omp_broker", {})
++    if not isinstance(raw, dict) or raw.get("enabled") is not True:
++        return {}
++    url = str(raw.get("url") or "http://127.0.0.1:8765").rstrip("/")
++    parsed = urlparse(url)
++    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
++        raise ValueError("omp_broker.url must be an HTTP(S) broker URL without embedded credentials")
++    providers = raw.get("providers", list(BROKER_PROVIDERS))
++    if not isinstance(providers, list) or any(p not in BROKER_PROVIDERS for p in providers):
++        raise ValueError("omp_broker.providers contains an unsupported native provider")
++    return {"url": url, "token_file": str(Path(raw.get("token_file") or "~/.omp/auth-broker.token").expanduser()), "providers": list(dict.fromkeys(providers))}
++
++
++def broker_provider_ids() -> list[str]:
++    return broker_config().get("providers", [])
++
++
++def is_broker_provider(provider: str) -> bool:
++    return provider.strip().lower() in broker_provider_ids()
++
++
++def require_broker_provider(provider: str) -> bool:
++    config = broker_config()
++    if not config:
++        return False
++    if str(provider or "").strip().lower() not in config["providers"]:
++        raise RuntimeError(
++            f"omp_broker is enabled; provider '{provider}' is not registered. "
++            f"Select one of: {', '.join(config['providers'])}"
++        )
++    return True
++
++
++def start_bridge(provider: str, action: str, request: dict | None = None) -> subprocess.Popen:
++    from hermes_platform.resolver import locate_command
++    from tools.environments.local import served_profile_child_env
++
++    config = broker_config()
++    if provider not in config.get("providers", []):
++        raise RuntimeError(f"omp broker is not enabled for {provider}")
++    bridge = get_default_hermes_root(home=get_hermes_home()) / "omp-broker-runtime" / "bridge.ts"
++    if not bridge.is_file():
++        raise RuntimeError(f"Native omp runtime is missing: {bridge}")
++    bun = locate_command("bun")
++    if not bun.found:
++        raise RuntimeError("Bun is required by the native omp runtime")
++    profile_env = served_profile_child_env(target_home=get_hermes_home(), inherit_credentials=False)
++    # The SDK auth cascade has env fallbacks; this host receives no provider credentials from the shell.
++    allowed_env = {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "HERMES_HOME"}
++    env = {k: v for k, v in profile_env.items() if k in allowed_env}
++    timeout_ms = int(IMAGE_TIMEOUT_SECONDS * 1000) if action == "image" else 0
++    # An anonymous request file avoids pipe backpressure before the parent can start reading replies.
++    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as input_file:
++        json.dump({"provider": provider, "action": action, "broker": config, "request": request or {}}, input_file)
++        input_file.flush()
++        input_file.seek(0)
++        return subprocess.Popen(
++            [*bun.command, str(bridge), str(os.getpid()), str(timeout_ms)],
++            stdin=input_file, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
++            text=True, encoding="utf-8", env=env,
++        )
++
++
++def stop_bridge(process: subprocess.Popen) -> None:
++    if process.poll() is None:
++        process.terminate()
++        try:
++            process.wait(timeout=2)
++        except subprocess.TimeoutExpired:
++            process.kill()
++            process.wait()
++    if process.stdout:
++        process.stdout.close()
++
++
++def bridge_result(provider: str, action: str, request: dict | None = None) -> Any:
++    deadline = time.monotonic() + IMAGE_TIMEOUT_SECONDS if action == "image" else None
++    process = start_bridge(provider, action, request)
++    buffer = bytearray()
++    try:
++        with selectors.DefaultSelector() as selector:
++            selector.register(process.stdout, selectors.EVENT_READ)
++            while True:
++                if action == "image":
++                    from tools.interrupt import is_interrupted
++                    if is_interrupted():
++                        raise RuntimeError("Image generation interrupted")
++                if deadline is not None and time.monotonic() >= deadline:
++                    raise TimeoutError(f"Native image generation timed out ({IMAGE_TIMEOUT_SECONDS:g}s)")
++                if not selector.select(timeout=0.25):
++                    continue
++                # TextIO.readline can block beyond the deadline on an incomplete large JSON frame.
++                chunk = os.read(process.stdout.fileno(), 64 * 1024)
++                if chunk:
++                    newline = chunk.find(b"\n")
++                    if newline < 0:
++                        buffer.extend(chunk)
++                        continue
++                    buffer.extend(chunk[:newline])
++                elif not buffer:
++                    raise RuntimeError(f"Native omp host exited without a result ({process.wait()})")
++                payload = json.loads(buffer)
++                if "error" in payload:
++                    error = payload["error"]
++                    if error.get("status") == 504:
++                        raise TimeoutError(error["message"])
++                    raise RuntimeError(error["message"])
++                if "result" in payload:
++                    return payload["result"]
++                raise RuntimeError("Native omp host returned an invalid result frame")
++    finally:
++        stop_bridge(process)
++
++
++def broker_model_catalog(provider: str) -> list[dict]:
++    config = broker_config()
++    if provider not in config.get("providers", []):
++        return []
++    key = (str(get_hermes_home()), provider, config["url"], config["token_file"])
++    with _catalog_lock:
++        cached = _catalog_cache.get(key)
++        if cached is not None and time.monotonic() - cached[0] < 30:
++            return [dict(row) for row in cached[1]]
++    rows = bridge_result(provider, "catalog")
++    with _catalog_lock:
++        _catalog_cache[key] = (time.monotonic(), rows)
++    return [dict(row) for row in rows]
++
++
++def broker_auth_status(provider: str) -> dict:
++    try:
++        return bridge_result(provider, "status")
++    except (OSError, RuntimeError) as error:
++        return {"logged_in": False, "auth_type": "omp_broker", "source": "omp-auth-broker", "error": str(error)}
++
++
++def broker_runtime(provider: str, requested_provider: str | None = None) -> dict:
++    return {"provider": provider, "requested_provider": requested_provider or provider,
++            "api_mode": "chat_completions", "base_url": f"broker://{provider}",
++            "api_key": BROKER_API_KEY, "source": "omp-auth-broker"}
+diff --git c/hermes_cli/providers.py i/hermes_cli/providers.py
+index 04ae7d4fb5..3921e76420 100644
+--- c/hermes_cli/providers.py
++++ i/hermes_cli/providers.py
+@@ -89,6 +89,9 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
+     # would treat a Vertex MoA slot as an unknown custom endpoint, losing the identity
+     # _refresh_provider_credentials() needs to re-mint an expired token on 401.
+     "vertex": HermesOverlay(auth_type="vertex"),
++    "google-antigravity": HermesOverlay(auth_type="omp_broker", base_url_override="broker://google-antigravity"),
++    "devin": HermesOverlay(auth_type="omp_broker", base_url_override="broker://devin"),
++    "commandcode": HermesOverlay(auth_type="omp_broker", base_url_override="broker://commandcode"),
+ }
+ 
+ 
+@@ -195,6 +198,11 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
+     """Look up a built-in provider by id or alias: models.dev catalog merged with the Hermes overlay;
+     Hermes-only overlay (nous, openai-codex, …); plugin provider profiles with a concrete endpoint."""
+     canonical = normalize_provider(name)
++    from hermes_cli.omp_broker import is_broker_provider
++    if is_broker_provider(canonical):
++        return ProviderDef(id=canonical, name=_LABEL_OVERRIDES.get(canonical, canonical),
++                           transport="openai_chat", api_key_env_vars=(), base_url=f"broker://{canonical}",
++                           auth_type="omp_broker", source="omp-auth-broker")
+     mdev_info = _models_dev_info(canonical, allow_network)
+     overlay = HERMES_OVERLAYS.get(canonical)
+     if mdev_info is not None:
+@@ -372,6 +380,9 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
+     """API mode (wire protocol) for a provider/endpoint: host-mandated mode, then Nous dual-wire
+     (model-derived — the overlay alone says openai_chat and would pin Claude on the wrong wire),
+     then the known provider's transport, then bedrock, else ``chat_completions``."""
++    from hermes_cli.omp_broker import is_broker_provider
++    if is_broker_provider(provider):
++        return "chat_completions"
+     if is_actual_route(provider, base_url):
+         return "chat_completions"
+     mandated = host_mandated_api_mode(base_url)
+diff --git c/hermes_cli/runtime_provider.py i/hermes_cli/runtime_provider.py
+index 74ba470939..d73e16131c 100644
+--- c/hermes_cli/runtime_provider.py
++++ i/hermes_cli/runtime_provider.py
+@@ -1011,6 +1011,12 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
+     OpenCode Zen/Go where different models route through different API surfaces)."""
+     requested_provider = resolve_requested_provider(requested)
+     _raise_if_provider_disabled(requested_provider)
++    from hermes_cli.omp_broker import broker_runtime, require_broker_provider
++    if require_broker_provider(requested_provider):
++        return broker_runtime(requested_provider)
++    if requested_provider in {"google-antigravity", "devin", "commandcode"}:
++        raise AuthError(f"omp_broker is not enabled for '{requested_provider}'.",
++                        provider=requested_provider, code="missing_api_key")
+     # Same alias expansion the auxiliary client applies, so ``provider: openai`` means one thing on
+     # every path (background review, curator, MoA slots, delegation) instead of "Unknown provider".
+     # The pre-expansion name is what the codex_app_server overlay judges: ``openai`` is eligible,
+diff --git c/hermes_cli/status_auth.py i/hermes_cli/status_auth.py
+index 204af45878..88af4c5a85 100644
+--- c/hermes_cli/status_auth.py
++++ i/hermes_cli/status_auth.py
+@@ -38,6 +38,9 @@ def _oauth_block(name: str, status: dict, hint: str, rows) -> None:
+     truthy and ``gate`` is None or equals the logged-in state (False = only while logged out).
+     """
+     logged_in = bool(status.get("logged_in"))
++    if status.get("auth_type") == "omp_broker":
++        _status._row(name, logged_in, "omp auth-broker" if logged_in else status.get("error") or "no active broker credentials")
++        return
+     _status._row(name, logged_in, "logged in" if logged_in else f"not logged in (run: {hint})")
+     for label, key, fmt, gate in rows:
+         raw = status.get(key)
+@@ -91,8 +94,12 @@ _FEATURE_STATES = (
+ def _render_api_keys(ctx):
+     _status._section("API Keys")
+     from hermes_cli.auth import get_anthropic_key
++    from hermes_cli.omp_broker import is_broker_provider
+     # Anthropic uses the dedicated lookup (it also resolves OAuth tokens).
+     for name, env_ref in (*_API_KEYS.items(), ("Anthropic", get_anthropic_key)):
++        if name == "Anthropic" and is_broker_provider("anthropic"):
++            _status._row(name, True, "omp auth-broker (no local credential)")
++            continue
+         value = env_ref() if callable(env_ref) else _status._first_env_value(env_ref)
+         _status._row(name, bool(value), config.redact_key(value))
+ 
+@@ -100,11 +107,21 @@ def _render_api_keys(ctx):
+ def _render_auth_providers(ctx):
+     _status._section("Auth Providers")
+     import hermes_cli.auth as auth
++    from hermes_cli.omp_broker import broker_provider_ids, broker_auth_status
++    broker_ids = broker_provider_ids()
++    broker_statuses = {provider: broker_auth_status(provider) for provider in broker_ids}
++    for provider, status in broker_statuses.items():
++        if provider != "openai-codex":
++            _status._row(provider, bool(status.get("logged_in")), "omp auth-broker" if status.get("logged_in")
++                         else status.get("error") or "no active broker credentials")
+     try:
+         # Read-only display: the refresh-free snapshot, so `hermes status` never performs an OAuth
+         # refresh or burns a single-use refresh token.
+         nous_status = auth.get_nous_auth_status_local()
+-        statuses = {getter: getattr(auth, getter)() for _, getter, _, _ in _OAUTH_BLOCKS[:3]}
++        statuses = {getter: getattr(auth, getter)() for _, getter, _, _ in _OAUTH_BLOCKS[:3]
++                    if getter != "get_codex_auth_status" or "openai-codex" not in broker_ids}
++        if "openai-codex" in broker_statuses:
++            statuses["get_codex_auth_status"] = broker_statuses["openai-codex"]
+     except Exception:
+         nous_status, statuses = {}, {}
+     # xAI OAuth is guarded separately so an import failure there cannot disrupt the other rows.
+diff --git c/hermes_cli/tools_config_providers.py i/hermes_cli/tools_config_providers.py
+index 6bd4a182bb..cba20959e9 100644
+--- c/hermes_cli/tools_config_providers.py
++++ i/hermes_cli/tools_config_providers.py
+@@ -605,6 +605,11 @@ def _pick_model_from_catalog(
+     default never indexes the catalog. Safe when stdin is not a TTY — curses_radiolist keeps the current
+     selection."""
+     from hermes_cli.tools_config import _cfg_section, _prompt_choice
++    if cfg_key == "image_gen":
++        from hermes_cli.model_visibility import visible_model_catalog
++
++        provider = str((config.get("image_gen") or {}).get("provider") or display)
++        catalog = visible_model_catalog(provider, catalog, config=config)
+ 
+     if not catalog:
+         return
+diff --git c/hermes_cli/web_routers/tools.py i/hermes_cli/web_routers/tools.py
+index 845cbff966..5e72476e3c 100644
+--- c/hermes_cli/web_routers/tools.py
++++ i/hermes_cli/web_routers/tools.py
+@@ -448,6 +448,11 @@ async def get_toolset_models(
+                 return None
+ 
+             catalog, default_model = _toolset_model_catalog(name, plugin, config)
++            if name == "image_gen":
++                from hermes_cli.model_visibility import visible_model_catalog
++
++                catalog = visible_model_catalog(plugin, catalog, config=config)
++                default_model = default_model if default_model in catalog else None
+             section_cfg = config.get(section)
+             current = None
+             if isinstance(section_cfg, dict):
+diff --git c/tests/agent/test_omp_broker_client.py i/tests/agent/test_omp_broker_client.py
+new file mode 100644
+index 0000000000..0085fb40a6
+--- /dev/null
++++ i/tests/agent/test_omp_broker_client.py
+@@ -0,0 +1,197 @@
++"""Native vision uses Hermes's network boundary; async clients own real request hosts."""
++
++import asyncio
++import base64
++import json
++import subprocess
++import sys
++
++import httpx
++import pytest
++
++from agent import omp_broker_client as broker
++from tools.image_source import SourceUnsafe
++
++
++PNG = base64.b64decode(
++    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
++)
++
++
++def _vision_messages(url):
++    return [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url, "detail": "high"}}]}]
++
++
++def _http_transport(monkeypatch, handler):
++    monkeypatch.setattr("tools.website_policy.check_website_access", lambda _: None)
++    monkeypatch.setattr("tools.vision_tools.check_website_access", lambda _: None)
++    monkeypatch.setattr(
++        "tools.url_safety.create_ssrf_safe_async_client",
++        lambda **kwargs: httpx.AsyncClient(transport=httpx.MockTransport(handler), **kwargs),
++    )
++
++
++@pytest.mark.parametrize("url", [
++    "http://127.0.0.1/image.png", "http://10.0.0.1/image.png",
++    "http://169.254.169.254/image.png", "http://[::1]/image.png",
++])
++def test_private_vision_url_is_rejected_before_native_host(monkeypatch, url):
++    def unexpected_host(*_):
++        pytest.fail("A rejected image must not launch a native host")
++
++    monkeypatch.setattr(broker, "start_bridge", unexpected_host)
++    with pytest.raises(SourceUnsafe, match="unsafe or private"):
++        broker.OmpBrokerClient("google-antigravity").chat.completions.create(
++            model="vision-test", messages=_vision_messages(url), stream=True,
++        )
++
++
++def test_public_vision_redirect_resolves_to_data_without_mutating_history(monkeypatch):
++    requests = []
++
++    def handler(request):
++        requests.append(str(request.url))
++        if request.url.host == "8.8.8.8":
++            return httpx.Response(302, headers={"location": "https://8.8.4.4/image.png"})
++        return httpx.Response(200, content=PNG, headers={"content-type": "image/png"})
++
++    _http_transport(monkeypatch, handler)
++    original = _vision_messages("https://8.8.8.8/source")
++    resolved = broker._native_vision_messages(original)
++    result = resolved[0]["content"][0]["image_url"]
++    assert result["url"] == "data:image/png;base64," + base64.b64encode(PNG).decode("ascii")
++    assert result["detail"] == "high"
++    assert original[0]["content"][0]["image_url"]["url"] == "https://8.8.8.8/source"
++    assert requests == ["https://8.8.8.8/source", "https://8.8.4.4/image.png"]
++
++
++def test_vision_redirect_to_private_address_is_not_fetched(monkeypatch):
++    requests = []
++
++    def handler(request):
++        requests.append(str(request.url))
++        return httpx.Response(302, headers={"location": "http://127.0.0.1/private.png"})
++
++    _http_transport(monkeypatch, handler)
++    with pytest.raises(ValueError, match="Blocked redirect"):
++        broker._native_vision_messages(_vision_messages("https://8.8.8.8/source"))
++    assert requests == ["https://8.8.8.8/source"]
++
++
++@pytest.fixture
++def native_hosts(monkeypatch):
++    processes = []
++    frame = json.dumps({"chunk": {"model": "stream-test", "choices": [
++        {"index": 0, "delta": {"content": "started"}},
++    ]}})
++    script = f"import time\nprint({frame!r}, flush=True)\ntime.sleep(60)\n"
++
++    def launch(*_):
++        process = subprocess.Popen(
++            [sys.executable, "-u", "-c", script], stdout=subprocess.PIPE,
++            text=True, encoding="utf-8",
++        )
++        processes.append(process)
++        return process
++
++    monkeypatch.setattr(broker, "start_bridge", launch)
++    yield processes
++    for process in processes:
++        if process.poll() is None:
++            process.terminate()
++            process.wait(timeout=5)
++        process.stdout.close()
++
++
++@pytest.mark.asyncio
++async def test_async_client_close_stops_returned_stream_host(native_hosts):
++    client = broker.AsyncOmpBrokerClient(broker.OmpBrokerClient("anthropic"))
++    stream = await client.chat.completions.create(model="stream-test", messages=[], stream=True)
++    assert (await stream.__anext__()).choices[0].delta.content == "started"
++    assert native_hosts[0].poll() is None
++    await client.close()
++    assert native_hosts[0].poll() is not None
++    with pytest.raises(StopAsyncIteration):
++        await stream.__anext__()
++
++
++@pytest.mark.asyncio
++async def test_canceling_one_async_stream_does_not_stop_another(native_hosts):
++    client = broker.AsyncOmpBrokerClient(broker.OmpBrokerClient("anthropic"))
++    first = await client.chat.completions.create(model="stream-test", messages=[], stream=True)
++    second = await client.chat.completions.create(model="stream-test", messages=[], stream=True)
++    await first.__anext__()
++    await second.__anext__()
++    pending = asyncio.create_task(first.__anext__())
++    await asyncio.sleep(0)
++    pending.cancel()
++    with pytest.raises(asyncio.CancelledError):
++        await pending
++    assert native_hosts[0].poll() is not None
++    assert native_hosts[1].poll() is None
++    await client.close()
++    assert native_hosts[1].poll() is not None
++
++
++@pytest.fixture
++def exclusive_broker_config(monkeypatch):
++    settings = {"enabled": True, "providers": ["anthropic"]}
++    monkeypatch.setattr(
++        "hermes_cli.config_effective.load_user_config_effective",
++        lambda: {"omp_broker": settings},
++    )
++    return settings
++
++
++def test_enabled_broker_rejects_legacy_explicit_runtime(exclusive_broker_config):
++    from hermes_cli.runtime_provider import resolve_runtime_provider
++
++    with pytest.raises(RuntimeError, match="omp_broker is enabled.*openai"):
++        resolve_runtime_provider(
++            requested="openai", explicit_api_key="unused-test-key",
++            explicit_base_url="http://127.0.0.1:4000/v1", target_model="route-test",
++        )
++
++
++def test_enabled_broker_rejects_legacy_auxiliary_route(exclusive_broker_config):
++    from agent.auxiliary_client import resolve_provider_client
++
++    with pytest.raises(RuntimeError, match="omp_broker is enabled.*openai"):
++        resolve_provider_client(
++            "openai", model="route-test", explicit_api_key="unused-test-key",
++            explicit_base_url="http://127.0.0.1:4000/v1",
++        )
++
++
++def test_auto_auxiliary_route_uses_native_main_identity(exclusive_broker_config):
++    from agent.auxiliary_client import _get_cached_client
++
++    client, model = _get_cached_client(
++        "auto", main_runtime={"provider": "anthropic", "model": "route-test"},
++        base_url="http://127.0.0.1:4000/v1", api_key="unused-test-key",
++    )
++    assert client.base_url == "broker://anthropic"
++    assert model == "route-test"
++    client.close()
++
++
++def test_broker_failure_cannot_enter_legacy_auxiliary_recovery(exclusive_broker_config):
++    from agent.auxiliary_client import _aux_recovery_ladder
++
++    failure = RuntimeError("omp auth-broker is unavailable")
++    recovery = _aux_recovery_ladder(
++        failure, client=None, kwargs={}, task="summarization", async_mode=False,
++        base_info="broker://anthropic", resolved_provider="anthropic", resolved_model="route-test",
++        resolved_base_url=None, resolved_api_key=None, resolved_api_mode="chat_completions",
++        final_model="route-test", max_tokens=128, main_runtime=None, route_info=None,
++    )
++    with pytest.raises(RuntimeError) as caught:
++        next(recovery)
++    assert caught.value is failure
++
++
++def test_disabled_broker_does_not_restrict_upstream_providers(exclusive_broker_config):
++    from hermes_cli.omp_broker import require_broker_provider
++
++    exclusive_broker_config["enabled"] = False
++    assert require_broker_provider("openai") is False
+diff --git c/tests/hermes_cli/test_inventory.py i/tests/hermes_cli/test_inventory.py
+index 3d2674d025..0449b50bef 100644
+--- c/tests/hermes_cli/test_inventory.py
++++ i/tests/hermes_cli/test_inventory.py
+@@ -676,16 +676,10 @@ def test_list_authenticated_providers_refresh_busts_cache():
+         assert clear.call_count == 1
+ 
+ 
+-def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_path, monkeypatch):
+-    """Custom-provider metadata stays constant-read as its model count grows (#119048).
+-
+-    ``get_model_capabilities`` and ``get_model_info`` deliberately stay real:
+-    each lookup resolves ``providers.lab.catalog_provider`` before consulting
+-    the seeded models.dev catalog.  Removing snapshot threading from that
+-    path makes the larger payload re-open config.yaml once per lookup.
+-    """
++def test_custom_catalog_metadata_preserves_explicit_models(tmp_path, monkeypatch):
+     from agent import models_dev
+     from hermes_cli import config as config_module
++    from hermes_cli.inventory import load_picker_context
+ 
+     home = tmp_path / "hermes"
+     home.mkdir()
+@@ -722,22 +716,6 @@ def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_pa
+     monkeypatch.setattr(models_dev, "_models_dev_cache", registry)
+     monkeypatch.setattr(models_dev, "_models_dev_cache_time", float("inf"))
+ 
+-    snapshot = config_module.load_config_readonly()
+-    baseline = [
+-        (
+-            models_dev.get_model_capabilities("custom:lab", model),
+-            models_dev.get_model_info("custom:lab", model),
+-        )
+-        for model in models
+-    ]
+-    snapshot_result = [
+-        (
+-            models_dev.get_model_capabilities("custom:lab", model, config=snapshot),
+-            models_dev.get_model_info("custom:lab", model, config=snapshot),
+-        )
+-        for model in models
+-    ]
+-    assert snapshot_result == baseline
+ 
+     def _rows(model_ids):
+         return [{
+@@ -750,51 +728,21 @@ def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_pa
+             "source": "user-config",
+         }]
+ 
+-    def _build_and_count(model_ids):
+-        cfg_get_calls = 0
+-        real_cfg_get = models_dev._cfg_get
++    with (
++        _list_auth_returning(_rows(models)),
++        patch("hermes_cli.inventory._local_runtime_row", return_value=None),
++        patch("hermes_cli.inventory._moa_provider_row", return_value=None),
++        patch("hermes_cli.models.model_supports_fast_mode", return_value=False),
++        patch("hermes_cli.inventory._reasoning_catalog_reader", return_value=None),
++    ):
++        payload = build_models_payload(
++            load_picker_context(), capabilities=True, featured=True,
++        )
+ 
+-        def counted_cfg_get(*keys, **kwargs):
+-            nonlocal cfg_get_calls
+-            cfg_get_calls += 1
+-            return real_cfg_get(*keys, **kwargs)
+-
+-        with (
+-            _list_auth_returning(_rows(model_ids)),
+-            patch("hermes_cli.inventory._local_runtime_row", return_value=None),
+-            patch("hermes_cli.inventory._moa_provider_row", return_value=None),
+-            patch("hermes_cli.models.model_supports_fast_mode", return_value=False),
+-            patch("hermes_cli.inventory._reasoning_catalog_reader", return_value=None),
+-            patch.object(models_dev, "_cfg_get", side_effect=counted_cfg_get),
+-            patch.object(
+-                config_module, "load_config_readonly",
+-                wraps=config_module.load_config_readonly,
+-            ) as readonly_load,
+-            patch.object(
+-                config_module, "_load_config_impl", wraps=config_module._load_config_impl,
+-            ) as config_impl,
+-        ):
+-            payload = build_models_payload(
+-                _empty_ctx(), capabilities=True, featured=True,
+-            )
+-        return payload, cfg_get_calls, readonly_load.call_count, config_impl.call_count
+-
+-    small_payload, small_cfg_get, small_reads, small_impls = _build_and_count(models[:3])
+-    large_payload, large_cfg_get, large_reads, large_impls = _build_and_count(models)
+-
+-    # Snapshot threading leaves _cfg_get's cheap dict traversals proportional
+-    # to model count, while eliminating config/signature reads from the hot path.
+-    assert small_cfg_get < large_cfg_get
+-    assert (small_reads, large_reads) == (1, 1)
+-    assert (small_impls, large_impls) == (1, 1)
+-
+-    small_row = small_payload["providers"][0]
+-    large_row = large_payload["providers"][0]
+-    assert small_row["capabilities"] == {
++    row = payload["providers"][0]
++    assert row["models"] == models
++    assert row["capabilities"] == {
+         model: {"fast": False, "reasoning": model.startswith("openai/")}
+-        for model in models[:3]
++        for model in models
+     }
+-    # #120217: ``providers.lab`` is a user-defined row, so its models: list is an explicit
+-    # allow-list and is never shortlisted — the constant-read invariant above is now carried
+-    # by the capabilities lookups alone.
+-    assert large_row["featured_models"] == []
++    assert row["featured_models"] == []
+diff --git c/tests/hermes_cli/test_model_visibility.py i/tests/hermes_cli/test_model_visibility.py
+new file mode 100644
+index 0000000000..a09aa555ea
+--- /dev/null
++++ i/tests/hermes_cli/test_model_visibility.py
+@@ -0,0 +1,148 @@
++"""Release-date visibility never becomes an inference allowlist."""
++
++from datetime import date
++import json
++import time
++
++import pytest
++
++from hermes_cli import model_visibility
++
++
++@pytest.fixture
++def catalog_home(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    (tmp_path / "config.yaml").write_text(
++        "model_visibility:\n  max_age_months: 4\n  hide_unknown: true\n",
++        encoding="utf-8",
++    )
++
++    class Today(date):
++        @classmethod
++        def today(cls):
++            return cls(2026, 10, 8)
++
++    monkeypatch.setattr(model_visibility, "date", Today)
++    from agent import models_dev
++
++    monkeypatch.setattr(models_dev, "_models_dev_cache", {
++        "openai": {"models": {
++            "gpt-recent": {"id": "gpt-recent", "release_date": "2026-06-08"},
++            "gpt-archived": {"id": "gpt-archived", "release_date": "2026-06-07"},
++        }},
++    })
++    return tmp_path
++
++
++@pytest.mark.parametrize(("today", "cutoff"), [
++    (date(2026, 10, 8), date(2026, 6, 8)),
++    (date(2026, 10, 31), date(2026, 6, 30)),
++    (date(2024, 6, 30), date(2024, 2, 29)),
++    (date(2025, 6, 30), date(2025, 2, 28)),
++])
++def test_cutoff_uses_calendar_months(today, cutoff):
++    assert model_visibility.ModelVisibility(4).cutoff(today) == cutoff
++
++
++def test_unknown_future_and_boundary_release_dates(catalog_home):
++    rows = [
++        {"id": "old", "release_date": "2026-06-07"},
++        {"id": "boundary", "release_date": "2026-06-08"},
++        {"id": "today", "release_date": "2026-10-08"},
++        {"id": "future", "release_date": "2026-10-09"},
++        {"id": "future-timestamp", "release_date": "2026-10-09T00:00:00Z"},
++        {"id": "unknown-2026-10-08", "updated_at": "2026-10-08", "created": 1791417600},
++    ]
++    assert [row["id"] for row in model_visibility.visible_models("example", rows)] == ["boundary", "today"]
++    config = {"model_visibility": {"max_age_months": 4, "hide_unknown": False}}
++    assert [row["id"] for row in model_visibility.visible_models("example", rows, config=config)] == [
++        "boundary", "today", "unknown-2026-10-08",
++    ]
++
++
++def test_created_at_requires_validated_release_semantics_and_source(catalog_home):
++    created_at = "2026-09-01T00:00:00Z"
++    rows = [
++        {"id": "catalog-insertion", "created_at": created_at},
++        {"id": "unsourced", "created_at": created_at, "created_at_is_release_date": True},
++        {"id": "documented-release", "created_at": created_at, "created_at_is_release_date": True,
++         "release_date_source": "https://vendor.example/docs/models#created_at"},
++    ]
++    assert [row["id"] for row in model_visibility.visible_models("example", rows)] == ["documented-release"]
++
++
++def test_stale_cache_write_time_cannot_make_old_model_visible(catalog_home, monkeypatch):
++    from hermes_cli import models
++
++    (catalog_home / "provider_models_cache.json").write_text(json.dumps({
++        "openai": {"fp": "same-principal", "at": time.time() - 8 * 24 * 3600,
++                   "models": ["gpt-recent", "gpt-archived", "gpt-unknown"]},
++    }), encoding="utf-8")
++    monkeypatch.setattr(models, "_credential_fingerprint", lambda _provider: "same-principal")
++    monkeypatch.setattr(models, "_spawn_swr_refresh", lambda *_args: None)
++    assert models.cached_provider_model_ids("openai", non_blocking=True) == ["gpt-recent"]
++
++
++def test_current_model_injection_cannot_resurrect_hidden_selection(catalog_home):
++    from hermes_cli.model_switch_providers import _finalize_picker_rows
++
++    rows = [{"slug": "openai", "name": "OpenAI", "is_current": True,
++             "models": ["gpt-recent"], "total_models": 1}]
++    listed = _finalize_picker_rows(rows, {}, "gpt-archived")
++    assert listed[0]["models"] == ["gpt-recent"]
++    assert listed[0]["total_models"] == 1
++
++
++def test_explicit_hidden_model_still_validates_against_raw_catalog(catalog_home, monkeypatch):
++    from hermes_cli import models
++    from hermes_cli.models_validate import validate_requested_model
++
++    monkeypatch.setattr(models, "_configured_relay_base_url", lambda _provider: "")
++    monkeypatch.setitem(models._PROVIDER_CATALOG_FETCHERS, "openai-codex",
++                        lambda _provider, _refresh: ["gpt-recent", "gpt-archived"])
++    assert models.provider_model_ids("openai-codex") == ["gpt-recent"]
++    verdict = validate_requested_model("gpt-archived", "openai-codex")
++    assert verdict["accepted"] and verdict["recognized"]
++
++
++def test_image_catalog_filter_does_not_rewrite_stored_default(catalog_home):
++    config = {"model_visibility": {"max_age_months": 4, "hide_unknown": True},
++              "image_gen": {"model": "old-image"}}
++    catalog = {"old-image": {"release_date": "2026-05-28"},
++               "new-image": {"release_date": "2026-09-01"}}
++    assert list(model_visibility.visible_model_catalog("example", catalog, config=config)) == ["new-image"]
++    assert config["image_gen"]["model"] == "old-image"
++
++
++def test_broker_validation_uses_raw_catalog_and_never_falls_back(catalog_home, monkeypatch):
++    from hermes_cli import models, omp_broker
++    from hermes_cli.models_validate import validate_requested_model
++
++    config_path = catalog_home / "config.yaml"
++    config_path.write_text(config_path.read_text(encoding="utf-8") +
++                           "\nomp_broker:\n  enabled: true\n  providers: [openai-codex]\n",
++                           encoding="utf-8")
++    catalog = [{"id": "gpt-recent", "release_date": "2026-06-08"},
++               {"id": "gpt-archived", "release_date": "2026-06-07"}]
++    monkeypatch.setattr(omp_broker, "broker_model_catalog", lambda _provider: catalog)
++    assert models.provider_model_ids("openai-codex") == ["gpt-recent"]
++    known = validate_requested_model("gpt-archived", "openai-codex")
++    assert known["accepted"] and known["recognized"]
++    unknown = validate_requested_model("gpt-unlisted", "openai-codex")
++    assert unknown["accepted"] and not unknown["recognized"]
++
++    def unavailable(_provider):
++        raise RuntimeError("unavailable")
++
++    monkeypatch.setattr(omp_broker, "broker_model_catalog", unavailable)
++    rejected = validate_requested_model("gpt-archived", "openai-codex")
++    assert not rejected["accepted"] and not rejected["persist"]
++
++
++def test_reseller_vendor_identity_does_not_date_unindexed_variants(catalog_home):
++    rows = [
++        {"id": "gpt-recent", "identity": {"class": "openai"}},
++        {"id": "gpt-recent-fast", "identity": {"class": "openai"}},
++        {"id": "fusion-gpt-recent", "identity": {"class": "unknown"}},
++    ]
++    assert [row["id"] for row in model_visibility.visible_models("devin", rows)] == ["gpt-recent"]
+diff --git c/tests/hermes_cli/test_omp_broker.py i/tests/hermes_cli/test_omp_broker.py
+new file mode 100644
+index 0000000000..54fd1ba784
+--- /dev/null
++++ i/tests/hermes_cli/test_omp_broker.py
+@@ -0,0 +1,73 @@
++"""Request hosts handle image-size JSON frames and enforce the image deadline."""
++
++import os
++import sys
++from types import SimpleNamespace
++
++import pytest
++
++from hermes_cli import omp_broker
++
++
++@pytest.fixture
++def request_host(monkeypatch, tmp_path):
++    runtime = tmp_path / "omp-broker-runtime"
++    runtime.mkdir()
++    (runtime / "bridge.ts").touch()
++    processes = []
++    monkeypatch.setattr(omp_broker, "get_default_hermes_root", lambda **_: tmp_path)
++    monkeypatch.setattr(omp_broker, "get_hermes_home", lambda: tmp_path)
++    monkeypatch.setattr(omp_broker, "broker_config", lambda: {
++        "url": "http://127.0.0.1:8765", "token_file": str(tmp_path / "broker.token"),
++        "providers": ["google-antigravity"],
++    })
++    monkeypatch.setattr("tools.environments.local.served_profile_child_env", lambda **_: dict(os.environ))
++    real_popen = omp_broker.subprocess.Popen
++
++    def launch(*args, **kwargs):
++        process = real_popen(*args, **kwargs)
++        processes.append(process)
++        return process
++
++    monkeypatch.setattr(omp_broker.subprocess, "Popen", launch)
++
++    def install(script):
++        monkeypatch.setattr("hermes_platform.resolver.locate_command", lambda _: SimpleNamespace(
++            found=True, command=(sys.executable, "-u", "-c", script),
++        ))
++        return processes
++
++    yield install
++    for process in processes:
++        if process.poll() is None:
++            process.terminate()
++            process.wait(timeout=5)
++        if process.stdout:
++            process.stdout.close()
++
++
++def test_large_image_request_and_response_cross_host_without_pipe_deadlock(request_host):
++    processes = request_host(
++        "import json,sys\n"
++        "request=json.load(sys.stdin)\n"
++        "reference=request['request']['reference_images'][0]\n"
++        "print(json.dumps({'result':{'image':reference}}),flush=True)\n"
++    )
++    reference = "data:image/jpeg;base64," + "A" * (640 * 1024)
++    result = omp_broker.bridge_result("google-antigravity", "image", {"reference_images": [reference]})
++    assert result["image"] == reference
++    assert processes[0].poll() is not None
++
++
++def test_incomplete_image_response_cannot_block_deadline(request_host, monkeypatch):
++    processes = request_host(
++        "import json,sys,time\n"
++        "json.load(sys.stdin)\n"
++        "sys.stdout.write('{\"result\":{\"image\":\"'+'A'*100000)\n"
++        "sys.stdout.flush()\n"
++        "time.sleep(60)\n"
++    )
++    monkeypatch.setattr(omp_broker, "IMAGE_TIMEOUT_SECONDS", 2.0)
++    with pytest.raises(TimeoutError, match="Native image generation timed out"):
++        omp_broker.bridge_result("google-antigravity", "image", {"prompt": "deadline-test"})
++    assert processes[0].poll() is not None
+diff --git c/tools/image_generation_broker.py i/tools/image_generation_broker.py
+new file mode 100644
+index 0000000000..ad7854d9b5
+--- /dev/null
++++ i/tools/image_generation_broker.py
+@@ -0,0 +1,67 @@
++"""Direct native Gemini image generation with broker-owned authentication."""
++
++from __future__ import annotations
++
++import base64
++import json
++
++from hermes_cli.omp_broker import bridge_result, is_broker_provider
++
++DEFAULT_MODEL = "gemini-3.1-flash-image"
++
++
++def image_config() -> dict | None:
++    from hermes_cli.config_effective import load_user_config_effective
++
++    config = load_user_config_effective().get("image_gen", {})
++    if not isinstance(config, dict) or config.get("provider") != "google-antigravity":
++        return None
++    return config
++
++
++def capabilities() -> dict:
++    config = image_config() or {}
++    return {"provider": "Google Antigravity", "model": config.get("model") or DEFAULT_MODEL,
++            "modalities": ["text", "image"], "max_reference_images": 14, "supports_upscale": False}
++
++
++def available() -> bool:
++    return image_config() is not None and is_broker_provider("google-antigravity")
++
++
++def generate(prompt: str, aspect_ratio: str = "square", *, image_url: str | None = None,
++             reference_image_urls: list | None = None, task_id: str | None = None, **_) -> str | None:
++    config = image_config()
++    if config is None:
++        return None
++    try:
++        if not is_broker_provider("google-antigravity"):
++            raise RuntimeError("image_gen.provider=google-antigravity requires omp_broker to be enabled for google-antigravity")
++        from model_tools import _run_async
++        from tools.image_source import ResolveContext, resolve_image_source
++        from agent.image_gen_provider import save_b64_image
++
++        references = [ref for ref in [image_url, *(reference_image_urls or [])] if isinstance(ref, str) and ref.strip()]
++        inputs = []
++        for ref in references:
++            resolved = _run_async(resolve_image_source(ref, ResolveContext(task_id=task_id)))
++            inputs.append(f"data:{resolved.mime};base64,{base64.b64encode(resolved.data).decode('ascii')}")
++        model = str(config.get("model") or DEFAULT_MODEL).removeprefix("google-antigravity/")
++        result = bridge_result("google-antigravity", "image", {
++            "model": model, "prompt": prompt, "reference_images": inputs,
++            "aspect_ratio": {"square": "1:1", "landscape": "16:9", "portrait": "9:16"}.get(aspect_ratio, aspect_ratio),
++            "image_size": str(config.get("image_size") or "1K"), "count": 1,
++        })
++        images = result.get("images", [])
++        if not images:
++            raise RuntimeError("Native Gemini image generation returned no image")
++        paths = []
++        for image in images:
++            extension = {"image/jpeg": "jpg", "image/webp": "webp"}.get(image["mimeType"], "png")
++            paths.append(str(save_b64_image(image["data"], prefix="gemini", extension=extension)))
++        return json.dumps({"success": True, "image": paths[0], "images": paths, "provider": "google-antigravity",
++                           "model": result.get("model") or model, "modality": "image" if inputs else "text",
++                           "text": result.get("text"), "usage": result.get("usage"), "upscaled": False})
++    except Exception as error:
++        return json.dumps({"success": False, "image": None, "provider": "google-antigravity",
++                           "error": str(error), "error_type": type(error).__name__})
+diff --git c/tools/image_generation_tool.py i/tools/image_generation_tool.py
+index 431aa6d38a..77c13d1d45 100644
+--- c/tools/image_generation_tool.py
++++ i/tools/image_generation_tool.py
+@@ -532,6 +532,9 @@ def _get_plugin_provider(name: str, *, force: bool = False):
+ 
+ def check_image_generation_requirements() -> bool:
+     """True if FAL or the explicitly configured image backend is available."""
++    from tools.image_generation_broker import available, image_config
++    if image_config() is not None:
++        return available()
+     try:
+         if check_fal_api_key():
+             # Lazy import doubles as the SDK presence check: ImportError falls through to plugins.
+@@ -775,6 +778,11 @@ def _handle_image_generate(args, **kw):
+         args.get("image_url"), args.get("reference_image_urls"), task_id)
+     if confine_error is not None:
+         return confine_error
++    from tools.image_generation_broker import generate
++    broker_result = generate(prompt, aspect_ratio, image_url=image_url,
++                             reference_image_urls=reference_image_urls, task_id=task_id)
++    if broker_result is not None:
++        return _postprocess_image_generate_result(broker_result, task_id=task_id)
+     # Order matters: explicit plugin provider, then the model-driven managed gateways (Krea /
+     # Portal — only under the "nous"/unset selection, so BYO/direct FAL stays untouched), then FAL.
+     sources = dict(image_url=image_url, reference_image_urls=reference_image_urls,
+@@ -803,6 +811,9 @@ def _active_image_capabilities() -> Dict[str, Any]:
+     plugin, a set ``image_gen.provider`` asks that plugin, else the FAL catalog.
+     Fail-closed: an undeclared capability is advertised as absent.
+     """
++    from tools.image_generation_broker import capabilities, image_config
++    if image_config() is not None:
++        return capabilities()
+     info: Dict[str, Any] = dict(_NO_CAPABILITIES)
+     configured_provider = _read_configured_image_provider()
+     managed = _managed_model_plugin()
