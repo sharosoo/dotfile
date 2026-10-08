@@ -1,0 +1,18 @@
+{
+  "diagnose-crash": {
+    "kind": "absolute",
+    "target": "/usr/share/omarchy/default/agents/skills/diagnose-crash"
+  },
+  "model-routing": {
+    "kind": "home",
+    "target": ".omp/agent/managed-skills/model-routing"
+  },
+  "omarchy": {
+    "kind": "absolute",
+    "target": "/usr/share/omarchy/default/agents/skills/omarchy"
+  },
+  "omp-auth-gateway": {
+    "kind": "home",
+    "target": ".omp/agent/managed-skills/omp-auth-gateway"
+  }
+}

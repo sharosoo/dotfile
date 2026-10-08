@@ -1,73 +1,92 @@
 ---
 name: hermes-model-config
-description: "Use when switching Hermes model or provider."
-version: 1.0.0
+description: "Use when selecting Hermes models via the local omp gateway."
+version: 2.0.0
 author: Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux]
 metadata:
   hermes:
-    tags: [hermes, model, provider, configuration, xai, grok, oauth]
-    related_skills: [hermes-agent]
+    tags: [hermes, model, provider, configuration, omp, gateway]
+    related_skills: [hermes-agent, model-routing, omp-auth-gateway]
 ---
 
 # Hermes Model / Provider Configuration
 
 ## When to Use
 
-- You need to change the Hermes agent's default model or provider (`hermes config set model.*`, `hermes model`, `/model`, or `hermes setup`).
-- A model is routing to the wrong provider/credential, or a switch left stale `base_url`/`api_mode` residue.
-- You're choosing between xAI direct API (`xai`) and SuperGrok OAuth (`xai-oauth`) for Grok.
+- You need to select a Hermes model or diagnose an unexpected session model.
+- A model switch routes around the local omp gateway, retains a stale direct endpoint, or fails with a catalog/credential error.
+- You need to translate the shared omp model-routing policy into Hermes delegation configuration.
 
-The bundled **`hermes-agent`** skill is the authoritative hub for general Hermes setup — load it first. This skill captures the operational gotchas its references don't spell out.
+On this machine, **Hermes uses provider `omp` for model calls**. Read `omp-auth-gateway` for usage commands, provider boundaries, diagnostics, and Hermes delegation adaptation; read the shared `model-routing` before choosing a model or starting a wave. The general `hermes-agent` skill remains the hub for unrelated Hermes setup. Historical xAI/Grok notes below are not the active provider setup.
 
-## Config keys (nested under `model:` in config.yaml)
+## Active provider and model IDs
 
-- `model.default` — the model ID. **Not** `model.name`; `hermes config get model.name` errors "Config key not set". `hermes config get model` prints the effective section.
-- `model.provider` — provider slug.
-- `model.base_url` / `model.api_mode` — only meaningful for custom providers. **Unset them when switching to a native provider**; a leftover `base_url`/`api_mode` from a prior custom endpoint (e.g. `opencode-go`) lingers and confuses routing/the picker.
-
-## Provider selection nuance — xAI / Grok
-
-- `xai` = direct API key (`XAI_API_KEY`), `api_mode=codex_responses`.
-- `xai-oauth` = SuperGrok / Premium+ OAuth (device_code), also `codex_responses` + `https://api.x.ai/v1`, forced regardless of `model.api_mode`.
-- The built-in alias **`grok` maps to `xai` (API key), NOT `xai-oauth`**. So `/model grok` takes the API-key path; if only OAuth creds exist, use the explicit model name with provider `xai-oauth`.
-
-Check what credentials actually exist before choosing a provider: `hermes auth list` (shows e.g. `xai-oauth  device_code  oauth`). OAuth pool lives in `auth.json` under `credential_pool.xai-oauth` (tokens + refresh_token, auto-refreshes).
-
-## Switch procedure (native provider)
-
-```bash
-hermes config set model.provider xai-oauth
-hermes config set model.default grok-4.6
-hermes config unset model.base_url     # clear stale custom endpoint
-hermes config unset model.api_mode     # clear stale transport mode
-hermes config get model                # confirm
+```yaml
+model:
+  provider: omp
+  default: anthropic/claude-haiku-5-5
+  base_url: http://127.0.0.1:4000/v1
+  api_mode: chat_completions
 ```
 
-## Verification (do not trust config alone)
+- `model.default` is the qualified gateway model ID, not `model.name` and not an omp agent name such as `haiku`.
+- `model.provider` stays `omp`; the model ID carries the upstream provider (`anthropic/...`, `openai-codex/...`, `google-antigravity/...`).
+- The provider plugin at `~/.hermes/plugins/model-providers/omp` resolves its local secret from `OMP_GATEWAY_API_KEY`. Hermes must not receive copied upstream OAuth tokens or direct provider keys.
+- The broker URL is scoped to `omp-auth-gateway.service`. Interactive omp clients and local usage commands still use `~/.omp/agent/agent.db`; do not globally export `OMP_AUTH_BROKER_URL`.
+- The gateway catalog ignores custom `~/.omp/agent/models.yml` overrides, including omp context caps. Agent bindings are policy inputs, not proof that the same ID or cap exists in the gateway. Use `/v1/models` and report absent selectors instead of silently substituting an older ID.
 
-`hermes chat -q "reply with exactly: ok"` is the authoritative end-to-end test — it proves credential resolution + token refresh + model-ID validity in one shot. Reading config or `hermes auth list` is not proof the model actually responds.
+## Switch procedure
 
-## Gateway live-reload
+For an explicitly requested change to the persistent default:
 
-The running gateway reads `config.yaml` through an mtime-keyed raw-yaml cache per session build, so `model.default` changes apply to **new sessions without a restart**. The already-running session keeps its previously-built model (prompt-cache invariant); to switch that live session use `/model <id>` or start a new thread. Gateway restart, if ever needed, is external only: `systemctl --user restart hermes-gateway` — never from a gateway/child shell.
+```bash
+hermes config set model.provider omp
+hermes config set model.default anthropic/claude-haiku-5-5
+hermes config set model.base_url http://127.0.0.1:4000/v1
+hermes config set model.api_mode chat_completions
+hermes config get model
+```
 
-## Gateway /model ≠ config.yaml — session overrides
+For a session-only change, pin the Hermes provider explicitly:
 
-- A bare `/model <name>` in a gateway chat (Discord/Telegram/…) sets a **per-session model override**, not `config.yaml` (unless `--global`). Overrides are write-through persisted to `~/.hermes/sessions/sessions.json` under the session key (`"model_override": {model, provider, base_url}`) and survive gateway restarts.
-- Resolution order: session override → channel_overrides → global config. So `/model` can report e.g. `grok-4.6` while `hermes config get model` shows the intended default — global config was never the effective model for that chat.
-- Fix: run `/new` in that chat (clears all conversation-scoped state incl. the model override, session re-resolves from config), or `/model <id> --provider <p> --global` to overwrite both global and session state. `/model --provider p` alone only re-sets the session override.
-- Historical note (2026-08-30): the `#일반` group session carried a stale `grok-4.6/xai-oauth` override for months while config was `z-ai/glm-5.3-flash` on commandcode. New auto-threads from `#일반` correctly used config default; only the long-lived group session itself kept the override.
+```text
+/model anthropic/claude-haiku-5-5 --provider omp --session
+```
 
-## Pitfalls
+Replace the qualified model ID only after checking `headroom.sh`, `omp usage --redact`, the canonical routing policy, and the gateway catalog. Do not switch Hermes to a direct upstream provider to resolve a gateway failure. Do not unset the gateway endpoint/transport as though switching back to the old native-provider setup.
 
-- `hermes config get model.name` fails — the key is `model.default`.
-- `/model` showing a stale model while config looks correct → check `model_override` in `sessions.json` for that session key before touching config.
-- `grok` alias resolves to `xai` (API key), not `xai-oauth`; with OAuth-only creds that path is dead.
-- Forgetting to `unset model.base_url`/`model.api_mode` when leaving a custom provider leaves stale routing residue.
-- Assuming a gateway restart is required for a model.default change — it isn't (mtime cache).
+## Hermes delegation is not omp `task`
 
-## Reference
+omp agent names and `effort: lo|med|hi` are not Hermes tool arguments. Read the current `model:`/`thinking-level:` in `~/.omp/agent/agents/<agent>.md` and translate the intended selector and explicit reasoning level using `omp-auth-gateway`.
 
-See `references/xai-grok-provider-notes.md` for the xAI model-ID list and source-code resolution pointers (models.py, runtime_provider.py, gateway/run.py).
+The current model-facing `delegate_task` uses `tasks` entries with `goal`, `context`, and optional output schema/images/group. It has **no per-task model, provider, agent, or effort field**. Children inherit the parent route unless the shared `delegation.provider`/`delegation.model` configuration pins the entire wave. Explicit child reasoning belongs in `delegation.request_overrides.reasoning_effort`, not an invented task argument. Do not change shared config under active waves or call a same-model batch an independent-family review.
+
+The canonical skill is shared through `~/.hermes/skills/model-routing`; gateway guidance is shared through `~/.hermes/skills/omp-auth-gateway`. Neither link needs a cron copy or a second routing policy.
+
+## Verification
+
+Configuration is not runtime proof. When verification is explicitly requested, `hermes chat -q "Reply with exactly: ok"` checks credential resolution, transport, and model-ID validity for that invocation. It does not prove a long-lived gateway chat has no session override.
+
+For actual skill discovery, run `hermes skills list --source local --enabled-only` and then use `skill_view` for `model-routing`, `omp-auth-gateway`, and `hermes-model-config` in a new Hermes session. See `omp-auth-gateway` for safe service and endpoint diagnostics; never print tokens or dump `.env`.
+
+## Gateway live-reload and session overrides
+
+The running Hermes gateway reads `config.yaml` through an mtime-keyed raw-YAML cache when building sessions, so default model changes apply to **new sessions without a restart**. A running session keeps its built model; use an explicit `/model ... --provider omp --session` switch or start a new thread.
+
+- A session-only `/model` switch is persisted in `~/.hermes/sessions/sessions.json` as a `model_override` and can survive a gateway restart.
+- Resolution order is session override → channel overrides → global config. `hermes config get model` therefore does not establish the effective model in an existing chat.
+- `/new` clears conversation-scoped state, including the model override, and re-resolves the configuration. Use `--global` only when the user actually requests a persistent default change.
+- A stale override pointing to a direct provider must be cleared or explicitly switched to `omp`; restarting the gateway does not remove a persisted override.
+- If a service restart is needed for plugin code or environment changes, the outside orchestrator handles it. Never restart the gateway from a gateway/child shell.
+
+## Image generation
+
+The user approved Gemini image generation through `image_gen/omp`, using `google-antigravity/gemini-3.1-flash-image` on the local omp gateway. This is separate from chat model selection. Codex image-generation carriers are unsupported by the installed gateway image route; do not re-enable the old direct Codex image plugin or introduce separate provider credentials as a fallback.
+
+## Historical references — not active instructions
+
+`references/xai-grok-provider-notes.md` records the former direct xAI/SuperGrok setup and source-resolution pointers. Its provider choices, credential pool, model-ID list, and native-provider switch recipe are historical context only, not instructions for the current omp gateway setup.
+
+Historical incident (2026-08-30): a long-lived group session retained a Grok/direct-provider override while new threads used the then-current default. This illustrates override persistence, not permission to restore Grok routing; the canonical routing policy controls disabled providers.
