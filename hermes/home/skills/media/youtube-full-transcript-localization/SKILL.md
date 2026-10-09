@@ -62,7 +62,7 @@ Skip for short summaries/chapters only, or static markdown doc sets (`documentat
 
 6. **Images.**
    - Crop figures (pymupdf caption+drawing bbox → trim). Verify page_frac ≪ 1.0.
-   - Host: `cdn put <files> --prefix <dir>` (`cdn` skill) → `https://cdn.sharosoo.com/<dir>/...`; the CLI verifies HTTP 200 + bytes.
+   - Host: `sharosoo-cdn put <files> --prefix <dir>` (`sharosoo-cdn` skill) → `https://cdn.sharosoo.com/<dir>/...`; the CLI verifies HTTP 200 + bytes.
    - No `/tmp/...` paths in published MD.
    - Optional video slide frames: only when they show slides/diagrams, not talking-head spam.
 

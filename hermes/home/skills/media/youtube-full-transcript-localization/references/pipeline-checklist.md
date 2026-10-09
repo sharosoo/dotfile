@@ -18,7 +18,7 @@
 ## Figures
 - [ ] Crop by caption + drawings/images (not full-page `pdftoppm`)
 - [ ] page_frac sanity (reject ~full-page accidents)
-- [ ] Host with `cdn put --prefix <dir>` → `cdn.sharosoo.com` URLs (CLI verifies 200)
+- [ ] Host with `sharosoo-cdn put --prefix <dir>` → `cdn.sharosoo.com` URLs (CLI verifies 200)
 - [ ] Inline under claims; one-line source caption
 - [ ] Optional video frames only if they show slides/diagrams
 
