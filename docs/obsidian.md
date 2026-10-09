@@ -21,7 +21,6 @@ cd ~/workspaces/sharosoo/dotfile/scripts
 ```
 
 - `libfuse.so.2` 없으면 래퍼가 `APPIMAGE_EXTRACT_AND_RUN=1` 사용 (`packages.apt`의 `libfuse2`)
-- niri 타일 규칙: `niri/config.kdl`의 `app-id=^obsidian$` window-rule, `scripts/sync-niri-config.sh` 후 `niri msg action load-config-file`
 
 ## 관련
 

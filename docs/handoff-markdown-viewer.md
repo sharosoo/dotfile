@@ -40,7 +40,7 @@
 | Obsidian 앱 | AppImage `~/.local/share/obsidian`, `~/.local/bin/obsidian` |
 | 등록 vault (앱) | `~/Documents/Obsidian/default` (이름 `default`) |
 | Neovim workspace | `default`, `infra-journey`, `dotfile` — `obsidian.nvim` |
-| OS | Linux (niri, fish) |
+| OS | Linux (Omarchy, fish) |
 
 ### Neovim 쪽 이미 갖춘 것
 
