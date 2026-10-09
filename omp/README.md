@@ -44,7 +44,7 @@ omp plugin link .
 omp plugin list          # omo-layer@0.1.0이 표시되어야 한다
 ```
 
-`restore`는 설정, 에이전트, 스킬, 룰, 확장을 대상 경로로 복사하고, 이미 존재하는 `mcp.json`은 덮어쓰지 않고 유지하며, `cap-context.py`를 실행한다(단, `cap-context.py`는 omp가 모델을 최소 한 번은 탐색해야 동작하므로 최초 로그인 후에 다시 실행한다). 저장소에 있던 `mcp.json`을 새로 복원했다면 환경 변수 `ARTIFACT_HUB_TOKEN`을 설정하거나 플레이스홀더 자리에 실제 토큰을 직접 입력한다. `arthub` 스킬은 artifact-hub 체크아웃 경로에서 심볼릭 링크로 연결한다(`ln -s ~/workspaces/sharosoo/artifact-hub/skills/arthub ~/.agents/skills/arthub`). `cdn` 스킬도 같은 방식으로 cdn 체크아웃에서 `~/.agents/skills/cdn`과 `~/.claude/skills/cdn`에 연결하고, CLI는 `uv tool install --editable ~/workspaces/sharosoo/cdn`으로 설치한다.
+`restore`는 설정, 에이전트, 스킬, 룰, 확장을 대상 경로로 복사하고, 이미 존재하는 `mcp.json`은 덮어쓰지 않고 유지하며, `cap-context.py`를 실행한다(단, `cap-context.py`는 omp가 모델을 최소 한 번은 탐색해야 동작하므로 최초 로그인 후에 다시 실행한다). 저장소에 있던 `mcp.json`을 새로 복원했다면 환경 변수 `ARTIFACT_HUB_TOKEN`을 설정하거나 플레이스홀더 자리에 실제 토큰을 직접 입력한다. `arthub` 스킬은 artifact-hub 체크아웃 경로에서 심볼릭 링크로 연결한다(`ln -s ~/workspaces/sharosoo/artifact-hub/skills/arthub ~/.agents/skills/arthub`). `cdn` 스킬도 같은 방식으로 cdn 체크아웃에서 `~/.agents/skills/cdn`과 `~/.claude/skills/cdn`에 연결하고, CLI는 `curl -fsSL https://cdn.sharosoo.com/tools/cdn/install.sh | sh`로 설치한다.
 
 omo-layer는 런타임 확장을 포함하므로 마켓플레이스에서 설치하지 말고 반드시 `omp plugin link`로 연결해야 한다. `~/.omp/agent/omo-personas.json` 파일이 없으면 각 페르소나는 `agent/config.yml`에 지정된 모델 역할을 따른다. 특정 페르소나의 모델을 고정하려면 `omo-layer/omo-personas.example.json`을 `~/.omp/agent/omo-personas.json`으로 복사한 뒤 `pins` 항목을 수정한다.
 
