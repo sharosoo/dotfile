@@ -36,6 +36,28 @@ o.window({ tag = "floating-window", class = "org.omarchy.btop" }, { size = { 170
 o.window({ tag = "chromium-based-browser" }, { opacity = "0.985 0.96" })
 o.window({ tag = "firefox-based-browser" }, { opacity = "0.985 0.96" })
 
+-- OpenLogi Actions Ring opens as a plain toplevel (Wayland ignores its requested
+-- position). Tiled, it shoves the scrolling layout aside. no_focus would also
+-- drop its pointer input (slots become unclickable), so only initial and
+-- hover focus are suppressed; a click still focuses it.
+o.window("^openlogi-action-ring$", {
+  float = true,
+  pin = true,
+  size = { 360, 360 },
+  move = { "cursor_x-(window_w*0.5)", "cursor_y-(window_h*0.5)" },
+  no_follow_mouse = true,
+  no_initial_focus = true,
+  decorate = false,
+  border_size = 0,
+  rounding = 0,
+  no_shadow = true,
+  no_blur = true,
+  no_anim = true,
+  no_dim = true,
+  tag = "-default-opacity",
+  opacity = "1 1",
+})
+
 -- Local overrides of Omarchy scripts (e.g. calmer omarchy-screensaver) must win
 -- over $OMARCHY_PATH/bin, which default envs.lua puts first in PATH.
 do
