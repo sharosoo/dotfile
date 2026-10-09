@@ -26,12 +26,12 @@ Omarchy 기본 제공 패키지와 제외한 항목은 각 파일 주석에 적�
 
 | 영역 | 문서 | dotfile 경로 |
 |------|------|----------------|
-| **인덱스 / 데스크톱** | [desktop-stack.md](docs/desktop-stack.md) | niri, noctalia, fcitx5, systemd |
-| **Niri + Noctalia** | [NIRI-NOCTALIA.md](docs/NIRI-NOCTALIA.md) · [단축키](docs/niri-noctalia-단축키.md) | `niri/`, `noctalia/`, `systemd/user/` |
+| **인덱스 / 데스크톱** | [desktop-stack.md](docs/desktop-stack.md) | fcitx5, systemd |
 | **Omarchy (Hyprland·셸)** | [omarchy/README.md](omarchy/README.md) | `omarchy/` |
 | **Fish 셸** | [fish.md](docs/fish.md) | `fish/` |
 | **터미널 (Ghostty, Starship)** | [TERMINAL_SETUP.md](docs/TERMINAL_SETUP.md) | `ghostty/`, `starship/` |
 | **OMP (oh-my-pi)** | [omp/README.md](omp/README.md) | `omp/` |
+| **에이전트 브라우저 (relay·vault)** | [browser/README.md](browser/README.md) | `browser/` |
 | **Hermes Agent** | [hermes/README.md](hermes/README.md) | `hermes/` |
 | **Claude Code** | [.claude/README.md](.claude/README.md) | `.claude/` |
 | **Neovim** | [nvim.md](docs/nvim.md) | `nvim/` |
@@ -43,9 +43,9 @@ Omarchy 기본 제공 패키지와 제외한 항목은 각 파일 주석에 적�
 ```
 dotfile/
 ├── scripts/link-desktop-config.sh
-├── niri/ noctalia/ fcitx5/ systemd/user/
+├── fcitx5/ systemd/user/
 ├── fish/ ghostty/ starship/ nvim/ tmux/
-├── omp/ .claude/
+├── omp/ .claude/ browser/
 └── docs/
 ```
 

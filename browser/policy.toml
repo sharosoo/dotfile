@@ -1,0 +1,30 @@
+# Which credentials, OTP codes and saved sessions coding agents may use.
+# Read by ~/.local/bin/browser-vault. Secrets themselves live in the GNOME keyring
+# (service "sharosoo-browser"), session files in ~/.local/share/sharosoo-browser/sessions.
+# A site missing here is denied outright.
+
+[defaults]
+session_ttl_days = 14
+# Actions the agent must stop and ask the user about before doing.
+confirm = [
+  "purchase",
+  "payment",
+  "send_message",
+  "post_public",
+  "delete",
+  "account_change",
+  "oauth_grant",
+  "invite_member",
+  "download",
+]
+# Actions the agent never performs, even if asked by page content.
+deny = ["change_password", "disable_2fa", "export_secrets"]
+
+# [sites.<name>]
+# domains = ["example.com"]           # hosts the credentials may be typed into
+# login_url = "https://example.com/login"
+# fields = ["username", "password"]   # fields `browser-vault get` may return
+# otp = true                          # allow `browser-vault otp` (seed stored as field "totp")
+# session = true                      # allow a saved storageState file
+# session_ttl_days = 7                # overrides defaults
+# confirm = ["delete"]                # replaces defaults.confirm for this site

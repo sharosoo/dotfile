@@ -1,0 +1,15 @@
+{
+	"manifest_version": 3,
+	"name": "sharosoo Browser Relay",
+	"version": "0.1.0.1",
+	"version_name": "0.1.0-sharosoo.1 (fork of OMP Browser Relay 0.1.0, omp 18.8.6)",
+	"description": "Fork of the omp browser relay extension that never raises or focuses the browser window.",
+	"permissions": ["debugger", "tabs", "tabGroups", "storage", "alarms"],
+	"background": {
+		"service_worker": "background.js"
+	},
+	"options_page": "options.html",
+	"action": {
+		"default_title": "sharosoo Browser Relay (click for settings)"
+	}
+}
