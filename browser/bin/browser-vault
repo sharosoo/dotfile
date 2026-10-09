@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""Local credentials, TOTP and saved browser sessions for coding agents.
+
+Secrets live in the GNOME keyring (libsecret, unlocked at login), never in files
+or dotfiles. Which site/field an agent may read is decided by policy.toml.
+Session files are Playwright-style storageState JSON written by omp's
+`tab.saveState(path)` and restored with `tab.loadState(path)`.
+"""
+
+import argparse
+import base64
+import getpass
+import hashlib
+import hmac
+import json
+import os
+import struct
+import subprocess
+import sys
+import time
+import tomllib
+from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
+
+SERVICE = "sharosoo-browser"
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "sharosoo-browser"
+DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "sharosoo-browser"
+POLICY_PATH = Path(os.environ.get("BROWSER_VAULT_POLICY", CONFIG_DIR / "policy.toml"))
+SESSION_DIR = DATA_DIR / "sessions"
+TOTP_FIELD = "totp"
+
+EXIT_DENIED = 4
+EXIT_CONFIRM = 3
+
+
+def die(msg, code=1):
+    print(f"browser-vault: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def load_policy():
+    if not POLICY_PATH.exists():
+        die(f"policy file missing: {POLICY_PATH} (run dotfile/browser/install.sh)")
+    with POLICY_PATH.open("rb") as f:
+        policy = tomllib.load(f)
+    policy.setdefault("defaults", {})
+    policy.setdefault("sites", {})
+    return policy
+
+
+def site_policy(policy, site):
+    sites = policy["sites"]
+    if site not in sites:
+        die(f"site '{site}' is not in {POLICY_PATH}; add a [sites.{site}] entry first", EXIT_DENIED)
+    merged = dict(policy["defaults"])
+    merged.update(sites[site])
+    merged.setdefault("fields", [])
+    merged.setdefault("otp", False)
+    merged.setdefault("session", False)
+    merged.setdefault("confirm", [])
+    merged.setdefault("deny", [])
+    return merged
+
+
+def keyring(*args, stdin=None):
+    try:
+        return subprocess.run(["secret-tool", *args], input=stdin, capture_output=True, text=True)
+    except FileNotFoundError:
+        die("secret-tool not found (install libsecret)")
+
+
+def attrs(site, field):
+    return ["service", SERVICE, "site", site, "field", field]
+
+
+def lookup(site, field):
+    res = keyring("lookup", *attrs(site, field))
+    if res.returncode != 0 or not res.stdout:
+        die(f"no secret stored for {site}/{field}; run: browser-vault set {site} {field}")
+    return res.stdout
+
+
+def stored_fields():
+    # Attributes go to stderr while item headers, labels and secrets go to stdout, so blocks
+    # cannot be reassembled; the label set in cmd_set ("<service> <site> <field>") identifies
+    # an item. Secret lines are read but never kept.
+    res = subprocess.run(["secret-tool", "search", "--all", "service", SERVICE],
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    found = set()
+    for line in res.stdout.splitlines():
+        parts = line.removeprefix("label = ").split(" ")
+        if line.startswith("label = ") and len(parts) == 3 and parts[0] == SERVICE:
+            found.add((parts[1], parts[2]))
+    return sorted(found)
+
+
+def parse_totp(raw):
+    raw = raw.strip()
+    params = {"digits": 6, "period": 30, "algorithm": "SHA1"}
+    if raw.startswith("otpauth://"):
+        q = parse_qs(urlparse(raw).query)
+        secret = q["secret"][0]
+        for key in ("digits", "period"):
+            if key in q:
+                params[key] = int(q[key][0])
+        if "algorithm" in q:
+            params["algorithm"] = q["algorithm"][0].upper()
+    else:
+        secret = raw
+    secret = unquote(secret).replace(" ", "").upper()
+    secret += "=" * (-len(secret) % 8)
+    return base64.b32decode(secret), params
+
+
+def totp(raw, now=None):
+    key, p = parse_totp(raw)
+    counter = int((now if now is not None else time.time()) // p["period"])
+    digest = hmac.new(key, struct.pack(">Q", counter), getattr(hashlib, p["algorithm"].lower())).digest()
+    offset = digest[-1] & 0x0F
+    code = (struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % 10 ** p["digits"]
+    remaining = p["period"] - int(now if now is not None else time.time()) % p["period"]
+    return str(code).zfill(p["digits"]), remaining
+
+
+def session_info(site, ttl_days):
+    path = SESSION_DIR / f"{site}.json"
+    info = {"site": site, "path": str(path), "exists": path.exists()}
+    if path.exists():
+        age = (time.time() - path.stat().st_mtime) / 86400
+        info["age_days"] = round(age, 2)
+        info["stale"] = ttl_days is not None and age > ttl_days
+    return info
+
+
+def cmd_list(args):
+    policy = load_policy()
+    stored = stored_fields()
+    for site in sorted(policy["sites"]):
+        p = site_policy(policy, site)
+        have = [f for s, f in stored if s == site]
+        sess = session_info(site, p.get("session_ttl_days"))
+        print(json.dumps({
+            "site": site,
+            "domains": p.get("domains", []),
+            "allowed_fields": p["fields"],
+            "stored_fields": have,
+            "otp": p["otp"] and TOTP_FIELD in have,
+            "session": p["session"] and sess["exists"],
+            "session_stale": sess.get("stale"),
+        }, ensure_ascii=False))
+    orphans = sorted({s for s, _ in stored} - set(policy["sites"]))
+    if orphans:
+        print(f"browser-vault: keyring has entries for sites without policy: {', '.join(orphans)}", file=sys.stderr)
+
+
+def cmd_set(args):
+    policy = load_policy()
+    p = site_policy(policy, args.site)
+    if args.field == TOTP_FIELD and not p["otp"]:
+        die(f"sites.{args.site}.otp is false", EXIT_DENIED)
+    if args.field != TOTP_FIELD and args.field not in p["fields"]:
+        die(f"field '{args.field}' is not listed in sites.{args.site}.fields", EXIT_DENIED)
+    if sys.stdin.isatty():
+        value = getpass.getpass(f"{args.site}/{args.field}: ")
+    else:
+        value = sys.stdin.read().rstrip("\n")
+    if not value:
+        die("empty value")
+    if args.field == TOTP_FIELD:
+        try:
+            totp(value)
+        except Exception as e:  # noqa: BLE001 - any parse failure means a bad seed
+            die(f"invalid TOTP seed or otpauth URI: {e}")
+    res = keyring("store", f"--label={SERVICE} {args.site} {args.field}", *attrs(args.site, args.field), stdin=value)
+    if res.returncode != 0:
+        die(res.stderr.strip() or "secret-tool store failed")
+    print(f"stored {args.site}/{args.field}", file=sys.stderr)
+
+
+def cmd_get(args):
+    p = site_policy(load_policy(), args.site)
+    if args.field == TOTP_FIELD:
+        die("the TOTP seed is never printed; use: browser-vault otp " + args.site, EXIT_DENIED)
+    if args.field not in p["fields"]:
+        die(f"field '{args.field}' is not allowed by sites.{args.site}.fields", EXIT_DENIED)
+    sys.stdout.write(lookup(args.site, args.field))
+
+
+def cmd_otp(args):
+    p = site_policy(load_policy(), args.site)
+    if not p["otp"]:
+        die(f"sites.{args.site}.otp is false", EXIT_DENIED)
+    code, remaining = totp(lookup(args.site, TOTP_FIELD))
+    if remaining < args.min_remaining:
+        time.sleep(remaining)
+        code, remaining = totp(lookup(args.site, TOTP_FIELD))
+    print(code)
+    print(f"valid for {remaining}s", file=sys.stderr)
+
+
+def cmd_rm(args):
+    res = keyring("clear", *attrs(args.site, args.field))
+    if res.returncode != 0:
+        die(res.stderr.strip() or "secret-tool clear failed")
+    print(f"removed {args.site}/{args.field}", file=sys.stderr)
+
+
+def cmd_session(args):
+    p = site_policy(load_policy(), args.site)
+    if not p["session"]:
+        die(f"sites.{args.site}.session is false", EXIT_DENIED)
+    SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(DATA_DIR, 0o700)
+    os.chmod(SESSION_DIR, 0o700)
+    path = SESSION_DIR / f"{args.site}.json"
+    if args.action == "rm":
+        path.unlink(missing_ok=True)
+        print(f"removed {path}", file=sys.stderr)
+        return
+    if args.action == "seal" and path.exists():
+        os.chmod(path, 0o600)
+    print(json.dumps(session_info(args.site, p.get("session_ttl_days")), ensure_ascii=False))
+
+
+def cmd_policy(args):
+    policy = load_policy()
+    if args.site:
+        print(json.dumps(site_policy(policy, args.site), ensure_ascii=False, indent=2))
+    else:
+        print(json.dumps(policy, ensure_ascii=False, indent=2))
+
+
+def cmd_check(args):
+    p = site_policy(load_policy(), args.site)
+    if args.action in p["deny"]:
+        print("deny")
+        sys.exit(EXIT_DENIED)
+    if args.action in p["confirm"]:
+        print("confirm")
+        sys.exit(EXIT_CONFIRM)
+    print("allow")
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="browser-vault", description=__doc__.splitlines()[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("list", help="sites, allowed/stored fields, otp and session state (no values)").set_defaults(fn=cmd_list)
+    for name, fn, hlp in (("set", cmd_set, "store a field from stdin or a hidden prompt"),
+                          ("get", cmd_get, "print a field allowed by policy"),
+                          ("rm", cmd_rm, "delete a stored field")):
+        p = sub.add_parser(name, help=hlp)
+        p.add_argument("site")
+        p.add_argument("field")
+        p.set_defaults(fn=fn)
+    p = sub.add_parser("otp", help="print the current TOTP code")
+    p.add_argument("site")
+    p.add_argument("--min-remaining", type=int, default=5, help="wait for the next code if fewer seconds are left")
+    p.set_defaults(fn=cmd_otp)
+    p = sub.add_parser("session", help="session file path/state; 'seal' chmods it 600 after tab.saveState")
+    p.add_argument("action", choices=["info", "seal", "rm"])
+    p.add_argument("site")
+    p.set_defaults(fn=cmd_session)
+    p = sub.add_parser("policy", help="print the merged policy")
+    p.add_argument("site", nargs="?")
+    p.set_defaults(fn=cmd_policy)
+    p = sub.add_parser("check", help=f"allow (0) / confirm ({EXIT_CONFIRM}) / deny ({EXIT_DENIED}) for an action")
+    p.add_argument("site")
+    p.add_argument("action")
+    p.set_defaults(fn=cmd_check)
+    args = ap.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()
