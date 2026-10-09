@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Font demo</title>
+<script>
+  // ?css=dynamic (default) | subset | full ; edit file names/family to match build_web.py output
+  const mode = new URLSearchParams(location.search).get('css') || 'dynamic';
+  const file = {dynamic: 'libridi-dynamic-subset.css', subset: 'libridi-subset.css', full: 'libridi.css'}[mode] || 'libridi-dynamic-subset.css';
+  document.write('<link rel="stylesheet" href="static/' + file + '">');
+</script>
+<style>
+  :root { --fs: 20px; --lh: 1.75; --bg: #f4f1ea; --fg: #111; }
+  body.dark { --bg: #111; --fg: #ddd; }
+  body.eink { --bg: #e8e6df; --fg: #000; filter: grayscale(1) contrast(1.05); }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: 'LibRidi Proto', serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 20px 80px; }
+  .bar { font: 14px system-ui, sans-serif; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 10px 12px; background: rgba(128,128,128,.15); border-radius: 8px; margin-bottom: 20px; position: sticky; top: 0; }
+  .bar a, .bar button { font: inherit; color: inherit; border: 1px solid currentColor; background: transparent; border-radius: 6px; padding: 3px 9px; cursor: pointer; text-decoration: none; opacity: .75; }
+  .bar a.on { opacity: 1; font-weight: 600; }
+  h2 { font: 600 13px system-ui, sans-serif; opacity: .6; margin: 24px 0 8px; }
+  .read { font-size: var(--fs); line-height: var(--lh); word-break: keep-all; overflow-wrap: break-word; }
+  .read p { margin: 0 0 1em; text-indent: 1em; }
+  .guide { position: relative; font-size: 72px; line-height: 1.6; white-space: nowrap; overflow: hidden; }
+  .guide i { position: absolute; left: 0; right: 0; height: 0; border-top: 1px solid; opacity: .8; }
+  .b { font-weight: 700; } .it { font-style: italic; }
+  #log { font: 12px/1.6 ui-monospace, monospace; white-space: pre-wrap; background: rgba(128,128,128,.12); padding: 10px; border-radius: 6px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="bar">
+    <span>CSS: <a href="?css=dynamic" id="m-dynamic">dynamic</a> <a href="?css=subset" id="m-subset">subset</a> <a href="?css=full" id="m-full">full</a></span>
+    <label>크기 <input type="range" id="fs" min="12" max="40" value="20"></label>
+    <label>줄간격 <input type="range" id="lh" min="12" max="24" value="17"></label>
+    <button id="dark">다크</button> <button id="eink">흑백</button>
+  </div>
+  <h2>본문 (Regular / Italic / Bold / Bold Italic)</h2>
+  <div class="read">
+    <p>The harbor was quiet that morning. 항구는 그날 아침 조용했고, 안개 속에서 배 한 척이 천천히 들어오고 있었다. <span class="it">낡은 지도</span>와 <span class="b">오래된 항로</span>.</p>
+    <p>“Reading is a slow craft,” she said. “읽기는 느린 기술이야”라고 말했다. 「서울」에서 2026년에 만났다. <span class="b it">Bold Italic · 굵은 기울임</span></p>
+    <p>똘방똘방 뷁 쀼 읊 깎 닭 값 — KS X 1001 밖 글자(subset 모드에서는 fallback으로 보여야 정상).</p>
+  </div>
+  <h2>정렬 확인 (red=baseline, blue=x-height, green=cap-height; x/cap = Latin font metrics in em)</h2>
+  <div class="guide" id="g"><span>Hxg 가한글 xHp 꿈gx 가H</span></div>
+  <h2>받은 woff2</h2>
+  <div id="log">측정 중…</div>
+</main>
+<script>
+  const $ = id => document.getElementById(id);
+  $('m-' + mode).classList.add('on');
+  const root = document.documentElement, XH = 0.531, CAP = 0.698;
+  $('fs').oninput = e => root.style.setProperty('--fs', e.target.value + 'px');
+  $('lh').oninput = e => root.style.setProperty('--lh', e.target.value / 10);
+  $('dark').onclick = () => document.body.classList.toggle('dark');
+  $('eink').onclick = () => document.body.classList.toggle('eink');
+  const g = $('g'), span = g.firstElementChild;
+  function place() {
+    g.querySelectorAll('i').forEach(n => n.remove());
+    const fs = parseFloat(getComputedStyle(g).fontSize);
+    const probe = document.createElement('span'); probe.style.cssText = 'display:inline-block;width:0;height:0;vertical-align:baseline';
+    span.appendChild(probe);
+    const base = probe.getBoundingClientRect().top - g.getBoundingClientRect().top; probe.remove();
+    [[0, 'red'], [XH, 'blue'], [CAP, 'green']].forEach(([h, c]) => { const i = document.createElement('i'); i.style.top = (base - h * fs) + 'px'; i.style.borderColor = c; g.appendChild(i); });
+  }
+  document.fonts.ready.then(place); addEventListener('resize', place);
+  document.fonts.ready.then(() => setTimeout(() => {
+    const rs = performance.getEntriesByType('resource').filter(r => r.name.endsWith('.woff2'));
+    let t = 0; const lines = rs.map(r => { const s = r.encodedBodySize || r.transferSize || 0; t += s; return (s / 1024).toFixed(1).padStart(7) + ' KB  ' + r.name.split('/').pop(); });
+    $('log').textContent = '모드: ' + mode + '\n' + rs.length + '개 파일, 합계 ' + (t / 1024).toFixed(0) + ' KB\n\n' + lines.join('\n');
+  }, 400));
+</script>
+</body>
+</html>

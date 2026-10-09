@@ -23,15 +23,15 @@
       "schedule_display": "0 5 * * *",
       "repeat": {
         "times": null,
-        "completed": 98
+        "completed": 99
       },
       "enabled": true,
       "state": "scheduled",
       "paused_at": null,
       "paused_reason": null,
       "created_at": "2026-07-08T00:19:22.816554+09:00",
-      "next_run_at": "2026-10-09T05:00:00+09:00",
-      "last_run_at": "2026-10-08T08:09:05.397235+09:00",
+      "next_run_at": "2026-10-10T05:00:00+09:00",
+      "last_run_at": "2026-10-09T05:05:04.422307+09:00",
       "last_status": "ok",
       "last_error": null,
       "last_delivery_error": null,
@@ -48,10 +48,10 @@
       "fire_claim": null,
       "failure_streak": 0,
       "last_dispatch": {
-        "scheduled_at": "2026-10-08T05:00:00+09:00",
-        "dispatched_at": "2026-10-08T08:05:50.653696+09:00",
-        "lateness_seconds": 11150.7,
-        "kind": "catch_up"
+        "scheduled_at": "2026-10-09T05:00:00+09:00",
+        "dispatched_at": "2026-10-09T05:00:57.858622+09:00",
+        "lateness_seconds": 57.9,
+        "kind": "on_time"
       }
     },
     {
@@ -77,15 +77,15 @@
       "schedule_display": "30 5 * * *",
       "repeat": {
         "times": null,
-        "completed": 97
+        "completed": 98
       },
       "enabled": true,
       "state": "scheduled",
       "paused_at": null,
       "paused_reason": null,
       "created_at": "2026-07-08T00:19:43.541491+09:00",
-      "next_run_at": "2026-10-09T05:30:00+09:00",
-      "last_run_at": "2026-10-08T08:07:08.834270+09:00",
+      "next_run_at": "2026-10-10T05:30:00+09:00",
+      "last_run_at": "2026-10-09T05:31:46.594499+09:00",
       "last_status": "ok",
       "last_error": null,
       "last_delivery_error": null,
@@ -102,10 +102,10 @@
       "fire_claim": null,
       "failure_streak": 0,
       "last_dispatch": {
-        "scheduled_at": "2026-10-08T05:30:00+09:00",
-        "dispatched_at": "2026-10-08T08:05:50.653696+09:00",
-        "lateness_seconds": 9350.7,
-        "kind": "catch_up"
+        "scheduled_at": "2026-10-09T05:30:00+09:00",
+        "dispatched_at": "2026-10-09T05:30:57.858573+09:00",
+        "lateness_seconds": 57.9,
+        "kind": "on_time"
       }
     },
     {
@@ -131,15 +131,15 @@
       "schedule_display": "0 6 * * 5",
       "repeat": {
         "times": null,
-        "completed": 14
+        "completed": 15
       },
       "enabled": true,
       "state": "scheduled",
       "paused_at": null,
       "paused_reason": null,
       "created_at": "2026-07-08T00:20:11.561398+09:00",
-      "next_run_at": "2026-10-09T06:00:00+09:00",
-      "last_run_at": "2026-10-02T06:04:14.401924+09:00",
+      "next_run_at": "2026-10-16T06:00:00+09:00",
+      "last_run_at": "2026-10-09T06:07:12.317031+09:00",
       "last_status": "ok",
       "last_error": null,
       "last_delivery_error": null,
@@ -156,9 +156,9 @@
       "fire_claim": null,
       "failure_streak": 0,
       "last_dispatch": {
-        "scheduled_at": "2026-10-02T06:00:00+09:00",
-        "dispatched_at": "2026-10-02T06:00:59.597848+09:00",
-        "lateness_seconds": 59.6,
+        "scheduled_at": "2026-10-09T06:00:00+09:00",
+        "dispatched_at": "2026-10-09T06:00:57.858884+09:00",
+        "lateness_seconds": 57.9,
         "kind": "on_time"
       }
     },
@@ -188,17 +188,17 @@
       "schedule_display": "0 6 * * *",
       "repeat": {
         "times": null,
-        "completed": 87
+        "completed": 88
       },
       "enabled": true,
       "state": "scheduled",
       "paused_at": null,
       "paused_reason": null,
       "created_at": "2026-07-16T14:06:29.432221+09:00",
-      "next_run_at": "2026-10-09T06:00:00+09:00",
-      "last_run_at": "2026-10-08T08:06:36.627002+09:00",
-      "last_status": "ok",
-      "last_error": null,
+      "next_run_at": "2026-10-10T06:00:00+09:00",
+      "last_run_at": "2026-10-09T06:03:05.949290+09:00",
+      "last_status": "error",
+      "last_error": "오늘 브리핑용 최신 upstream 산출물은 10/9분이 없고, 10/8에 정상 생성된 자료를 기준으로 정리했습니다.\n\n- **학습:** [Lachesis](https://arxiv.org/abs/2610.08378)\n  - agent serving의 KV cache는 요청이 끝나도 session·sub-agent 때문에 오래 남습니다.\n  - 짧게 살 KV는 HBM에, 오래 살 KV는 high-bandwidth flash에 두어 flash write endurance를 아끼는 방식입니다.\n  - temporal·structural·inter-worker lifetime을 예측해 write 시점에 placement를 결정합니다.\n  - 논문은 trace-driven simulation 결과 HBF 수명을 HBM-first 대비 **1.19–3.13배** 늘렸다고 보고합니다.\n  - 오늘은 Abstract와 §1 Introduction을 읽고, `lifetime → placement → reclaim` 계약을 그림으로 정리하세요. 단, 실장비 production 검증이 아니라 simulation 결과라는 경계를 유지해야 합니다.\n\n- **GitHub 기여 후보:** [vLLM #60499](https://github.com/vllm-project/vllm/issues/60499)\n  - 상태는 **OPEN**이며, 페이지에 assignee와 claim/WIP 표기가 없습니다.\n  - 증상은 W8A8 int8 모델에서 RMSNorm과 int8 quantization이 분리 실행되고, `rms_norm_dynamic_per_token_quant`가 prefill 큰 batch에서 unfused pair보다 최대 약 2배 느린 것입니다.\n  - 최소 범위는 `vllm/compilation/passes/fusion/rms_quant_fusion.py`의 int8 pattern 등록 가능성을 확인하고, 기존 kernel과 fused Triton 경로를 token 수별로 재현·비교하는 것입니다.\n  - 먼저 issue의 RTX 4090 재현 코드를 실행하고 tokens `1, 64, 128, 1024, 4096`에서 correctness와 latency를 고정하세요. 바로 PR을 쓰기보다 어떤 fused kernel을 선택할지 benchmark로 결정합니다. 난이도는 중상입니다.\n\n- [참고 신호](https://github.com/triton-inference-server/server/issues/8999): Triton `generate`가 model error를 모두 HTTP 400으로 매핑하는 open issue입니다. 다만 이미 PR #9002가 참조되어 있어 오늘의 착수 후보에서는 제외합니다.\n\n**게시 실패:** Artifact Hub MCP를 통해 발행하려 했지만 deferred tool bridge가 모든 호출 인자를 빈 `{}`로 전달했습니다. `publish_artifact`의 필수 `content`와 `read_artifact`의 `id`가 서버에 도달하지 않아 게시·검증을 완료할 수 없었습니다.",
       "last_delivery_error": null,
       "deliver": "discord:1523289661680910469",
       "origin": {
@@ -213,12 +213,16 @@
       ],
       "workdir": null,
       "fire_claim": null,
-      "failure_streak": 0,
+      "failure_streak": 1,
       "last_dispatch": {
-        "scheduled_at": "2026-10-08T06:00:00+09:00",
-        "dispatched_at": "2026-10-08T08:05:50.653696+09:00",
-        "lateness_seconds": 7550.7,
-        "kind": "catch_up"
+        "scheduled_at": "2026-10-09T06:00:00+09:00",
+        "dispatched_at": "2026-10-09T06:00:57.858884+09:00",
+        "lateness_seconds": 57.9,
+        "kind": "on_time"
+      },
+      "last_failure": {
+        "at": "2026-10-09T06:03:05.949290+09:00",
+        "detail": "오늘 브리핑용 최신 upstream 산출물은 10/9분이 없고, 10/8에 정상 생성된 자료를 기준으로 정리했습니다.\n\n- **학습:** [Lachesis](https://arxiv.org/abs/2610.08378)\n  - agent serving의 KV cache는 요청이 끝나도 session·sub-agent 때문에 오래 남습니다.\n  - 짧게 살 KV는 HBM에, 오래 살 KV는 high-bandwidth flash에 두어 flash write endurance를 아끼는 방식입니다.\n  - temporal·structural·inter-worker lifetime을 예측해 write 시점에 placement를 결정합니다.\n  - 논문은 trace-driven simulation 결과 HBF 수명을 HBM-first 대비 **1.19–3.13배** 늘렸다고 보고합니다.\n  - 오늘은 Abstract와 §1 Introduction을 읽고, `lifetime → placement → reclaim` 계약을 그림으로 정리하세요. 단, 실장비 production 검증이 아니라 simulation 결과라는 경계를 유지해야 합니다.\n\n- **GitHub 기여 후보:** [vLLM #60499](https://github.com/vllm-project/vllm/issues/60499)\n  - 상태는 **OPEN**이며, 페이지에 assignee와 claim/WIP 표기가 없습니다.\n  - 증상은 W8A8 int8 모델에서 RMSNorm과 int8 quantization이 분리 실행되고, `rms_norm_dynamic_per_token_quant`가 prefill 큰 batch에서 unfused pair보다 최대 약 2배 느린 것입니다.\n  - 최소 범위는 `vllm/compilation/passes/fusion/rms_quant_fusion.py`의 int8 pattern 등록 가능성을 확인하고, 기존 kernel과 fused Triton 경로를 token 수별로 재현·비교하는 것입니다.\n  - 먼저 issue의 RTX 4090 재현 코드를 실행하고 tokens `1, 64, 128, 1024, 4096`에서 correctness와 latency를 고정하세요. 바로 PR을 쓰기보다 어떤 fused kernel을 선택할지 benchmark로 결정합니다. 난이도는 중상입니다.\n\n- [참고 신호](https://github.com/triton-inference-server/server/issues/8999): Triton `generate`가 model error를 모두 HTTP 400으로 매핑하는 open issue입니다. 다만 이미 PR #9002가 참조되어 있어 오늘의 착수 후보에서는 제외합니다.\n\n**게시 실패:** Artifact Hub MCP를 통해 발행하려 했지만 deferred tool bridge가 모든 호출 인자를 빈 `{}`로 전달했습니다. `publish_artifact`의 필수 `content`와 `read_artifact`의 `id`가 서버에 도달하지 않아 게시·검증을 완료할 수 없었습니다."
       }
     },
     {
@@ -245,15 +249,15 @@
       "schedule_display": "30 7 * * *",
       "repeat": {
         "times": null,
-        "completed": 18
+        "completed": 19
       },
       "enabled": true,
       "state": "scheduled",
       "paused_at": null,
       "paused_reason": null,
       "created_at": "2026-09-22T12:32:13.210151+09:00",
-      "next_run_at": "2026-10-09T07:30:00+09:00",
-      "last_run_at": "2026-10-08T08:10:23.120172+09:00",
+      "next_run_at": "2026-10-10T07:30:00+09:00",
+      "last_run_at": "2026-10-09T07:37:26.938138+09:00",
       "last_status": "ok",
       "last_error": null,
       "last_delivery_error": null,
@@ -272,10 +276,10 @@
       "workdir": null,
       "fire_claim": null,
       "last_dispatch": {
-        "scheduled_at": "2026-10-08T07:30:00+09:00",
-        "dispatched_at": "2026-10-08T08:05:50.653696+09:00",
-        "lateness_seconds": 2150.7,
-        "kind": "late"
+        "scheduled_at": "2026-10-09T07:30:00+09:00",
+        "dispatched_at": "2026-10-09T07:30:57.858610+09:00",
+        "lateness_seconds": 57.9,
+        "kind": "on_time"
       }
     },
     {
@@ -306,15 +310,15 @@
       "schedule_display": "every 60m",
       "repeat": {
         "times": null,
-        "completed": 9
+        "completed": 33
       },
       "enabled": true,
       "state": "scheduled",
       "paused_at": null,
       "paused_reason": null,
       "created_at": "2026-10-08T00:05:09.874524+09:00",
-      "next_run_at": "2026-10-08T17:14:13.252096+09:00",
-      "last_run_at": "2026-10-08T16:14:13.252096+09:00",
+      "next_run_at": "2026-10-09T17:38:00.401306+09:00",
+      "last_run_at": "2026-10-09T16:38:00.401306+09:00",
       "last_status": "ok",
       "last_error": null,
       "last_delivery_error": null,
@@ -333,13 +337,13 @@
       "enabled_toolsets": null,
       "workdir": null,
       "last_dispatch": {
-        "scheduled_at": "2026-10-08T16:13:21.458751+09:00",
-        "dispatched_at": "2026-10-08T16:14:10.754150+09:00",
-        "lateness_seconds": 49.3,
+        "scheduled_at": "2026-10-09T16:37:00.287622+09:00",
+        "dispatched_at": "2026-10-09T16:37:57.859100+09:00",
+        "lateness_seconds": 57.6,
         "kind": "on_time"
       },
       "fire_claim": null
     }
   ],
-  "updated_at": "2026-10-08T16:14:13.252662+09:00"
+  "updated_at": "2026-10-09T16:38:00.402213+09:00"
 }

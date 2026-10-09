@@ -28,3 +28,10 @@ deny = ["change_password", "disable_2fa", "export_secrets"]
 # session = true                      # allow a saved storageState file
 # session_ttl_days = 7                # overrides defaults
 # confirm = ["delete"]                # replaces defaults.confirm for this site
+
+# Migrated from the Hermes vault (2026-10-09). Used by Hermes browser-availability-monitoring.
+[sites.korail]
+domains = ["korail.com", "www.korail.com"]
+login_url = "https://www.korail.com"
+fields = ["username", "password"]
+session = true
