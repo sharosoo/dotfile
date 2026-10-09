@@ -1,11 +1,22 @@
 ---
 name: browser-agent
-description: "Use before any browser automation (omp browser prelude, relay, CDP, Puppeteer): picking headless vs the user's real Chrome, focus-free relay use on Hyprland, observation/waits/tab hygiene, logins with browser-vault credentials/TOTP/saved sessions, and confirmation rules."
+description: "Use before any browser automation (omp browser prelude, relay, CDP, Puppeteer; Hermes delegates to omp): headless vs the user's real Chrome, focus-free relay on Hyprland, observation/waits/tab hygiene, logins via browser-vault credentials/TOTP/saved sessions, confirmation rules."
 ---
 
 # Browser agent rules (all repos)
 
 Machine setup lives in the dotfile repo: `~/workspaces/sharosoo/dotfile/browser/` (README there). Research behind these rules: `references/` next to this file.
+
+## 0. From Hermes (or any harness without omp's `browser` prelude)
+Hermes' own browser and vault tools are disabled (`agent.disabled_toolsets: [browser]`); do not try `browser_*` / `browser_vault_*`. Delegate the browser part to omp (it loads this skill), following Hermes' `omp-headless-delegation` skill for launch mechanics (brief in a file, background terminal with notify, log check):
+```bash
+omp -p --auto-approve --no-title "$(cat ~/.hermes/cache/scratch/<topic>/browser-task.md)" > run.log 2>&1; echo "EXIT=$?"
+```
+- The brief must be self-contained (the omp run has no Hermes context): URL, exact steps, what to return, which `browser-vault` site to log in with, read-only or which user-confirmed action. Never put secrets in it — name the site instead.
+- A short read-only check (one page, one answer) can run in the foreground; verified: `omp -p --auto-approve "<task>"` returns in ~15 s.
+- Add "use the relay with target <substring>" only when the user's logged-in Chrome is needed; otherwise omp stays headless.
+- `browser-vault list|check|session info` can be run directly from Hermes' terminal; `get`/`otp` only inside the omp browser cell that types the value.
+- Consequential actions: run `browser-vault check <site> <action>` in Hermes first and ask the user on exit 3, before delegating.
 
 ## 1. Pick the cheapest surface
 1. Public page, API, docs → `read` / `curl`. No browser.

@@ -1,7 +1,7 @@
 {
-  "sharosoo-cdn": {
+  "browser-agent": {
     "kind": "home",
-    "target": "workspaces/sharosoo/sharosoo-cdn/skills/sharosoo-cdn"
+    "target": ".omp/agent/managed-skills/browser-agent"
   },
   "diagnose-crash": {
     "kind": "absolute",
@@ -18,5 +18,9 @@
   "omp-auth-broker": {
     "kind": "home",
     "target": ".omp/agent/managed-skills/omp-auth-broker"
+  },
+  "sharosoo-cdn": {
+    "kind": "home",
+    "target": "workspaces/sharosoo/sharosoo-cdn/skills/sharosoo-cdn"
   }
 }
