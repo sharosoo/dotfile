@@ -23,7 +23,7 @@ hyprctl reload
 | 스크롤링 레이아웃 기본 적용 및 라운딩 10 | `.config/hypr/looknfeel.lua` | 모든 워크스페이스의 기본 레이아웃을 스크롤링(scrolling)으로 지정합니다. |
 | `Super+F` 열 너비 전체 확장 | `.config/hypr/bindings.lua`<br>`.local/bin/scroll-full-width` | 스크롤링 레이아웃을 유지하면서 현재 포커스된 열(column) 너비를 화면 전체와 이전 너비 사이에서 토글합니다. 열이 화면 전체를 채워도 `Super+방향키` 슬라이드 이동이 유지됩니다. 실제 전체화면(fullscreen)은 `Super+Alt+F`로 옮겼습니다. |
 | `Super+Shift+←/→` 열 순서 변경 | `.config/hypr/bindings.lua`<br>`.local/bin/scroll-swap` | 창 단위가 아니라 열 전체 단위로 맞바꿉니다(`swapcol`). Omarchy 기본 창 교체는 슬롯 너비를 그대로 유지해 옮겨진 창이 화면 전체로 늘어나는 문제가 있었습니다. 열 단위로 바꾸면 각 창의 원래 너비가 유지됩니다. |
-| 스크린샷 단축키 | `.config/hypr/bindings.lua`<br>`.local/bin/screenshot-upload.sh` | `Super+Shift+S`는 일반 스크린샷을 찍습니다. `Super+Ctrl+Shift+S`는 영역 스크린샷을 찍어 GitHub `sharosoo/image` 저장소에 올리고 클립보드에 CDN 링크를 복사합니다. |
+| 스크린샷 단축키 | `.config/hypr/bindings.lua`<br>`.local/bin/screenshot-upload.sh` | `Super+Shift+S`는 일반 스크린샷을 찍습니다. `Super+Ctrl+Shift+S`는 영역 스크린샷을 찍어 `cdn` CLI([sharosoo/cdn](https://github.com/sharosoo/cdn))로 `cdn.sharosoo.com`(Cloudflare R2)의 `screenshots/<연>/<월>/`에 올리고 클립보드에 링크를 복사합니다. |
 | 브라우저 반투명화 | `.config/hypr/hyprland.lua` | Chromium/Firefox 계열 브라우저에도 일반 창과 동일한 불투명도(포커스 시 `0.985`, 비포커스 시 `0.96`)를 적용합니다 (Omarchy 기본 설정은 브라우저를 예외 처리함). |
 | 차분한 화면보호기 | `.local/share/omarchy-overrides/bin/omarchy-screensaver`<br>`.config/hypr/hyprland.lua` (PATH 블록) | 무작위 효과를 `colorshift highlight sweep wipe middleout slide rain print`로 한정합니다. `hyprland.lua`에서 `~/.local/share/omarchy-overrides/bin`을 Omarchy 자체 bin보다 PATH 앞쪽에 두어 오버라이드합니다. |
 | 유휴(idle) 시간 조정 | `.config/omarchy/shell.json` (`idle`) | 600초(10분) 뒤 화면보호기를 켜고, 1800초(30분) 뒤 화면을 잠급니다. |
