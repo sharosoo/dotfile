@@ -1,4 +1,8 @@
 {
+  "cdn": {
+    "kind": "home",
+    "target": "workspaces/sharosoo/cdn/skills/cdn"
+  },
   "diagnose-crash": {
     "kind": "absolute",
     "target": "/usr/share/omarchy/default/agents/skills/diagnose-crash"

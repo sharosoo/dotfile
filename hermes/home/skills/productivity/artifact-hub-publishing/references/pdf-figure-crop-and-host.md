@@ -62,11 +62,10 @@ tesseract fig02.png - | head -12   # OCR should echo the figure's own label text
 
 ## Host (정혁)
 
-1. Public repo `github.com/sharosoo/image` (or current public image host).
-2. Commit under a topic dir, e.g. `kimi-k3-sudoremove/crops/fig02.png`.
-3. Embed:
-   `https://raw.githubusercontent.com/sharosoo/image/main/<dir>/fig02.png`
-4. Preflight: HTTP 200 + non-zero `Content-Length` (or small GET). After publish, raw HTML should contain `<img` and the filename.
+1. Upload with the `cdn` skill/CLI under a topic dir: `cdn put fig02.png --prefix kimi-k3-sudoremove/crops`.
+2. Embed the printed URL, e.g. `https://cdn.sharosoo.com/kimi-k3-sudoremove/crops/fig02.png`.
+3. `cdn put` already HEAD-checks 200 + size. After publish, raw HTML should contain `<img` and the filename.
+4. Never commit to `github.com/sharosoo/image` or embed jsDelivr/raw.githubusercontent URLs for it; that repo is a frozen archive.
 
 ## Placement
 

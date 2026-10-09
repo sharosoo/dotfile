@@ -62,8 +62,8 @@ Skip for short summaries/chapters only, or static markdown doc sets (`documentat
 
 6. **Images.**
    - Crop figures (pymupdf caption+drawing bbox → trim). Verify page_frac ≪ 1.0.
-   - Host: 정혁 default `github.com/sharosoo/image` → `raw.githubusercontent.com/sharosoo/image/main/<dir>/...`
-   - Verify HTTP 200 + bytes before embed. No `/tmp/...` paths in published MD.
+   - Host: `cdn put <files> --prefix <dir>` (`cdn` skill) → `https://cdn.sharosoo.com/<dir>/...`; the CLI verifies HTTP 200 + bytes.
+   - No `/tmp/...` paths in published MD.
    - Optional video slide frames: only when they show slides/diagrams, not talking-head spam.
 
 6. **Publish.** Body > 30KB → **in-process arthub handler from v1**. list → update/publish same `(project,slug)` → `read_artifact` phrases → raw grep images. Fix linter one family per version; residual single `prefer-table` after two passes OK.

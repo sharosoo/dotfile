@@ -32,7 +32,7 @@
 hl.unbind("SUPER + SHIFT + S")
 o.bind("SUPER + SHIFT + S", "Screenshot", "omarchy-capture-screenshot")
 
--- Region screenshot uploaded to GitHub sharosoo/image; CDN link goes to the clipboard.
+-- Region screenshot uploaded to cdn.sharosoo.com (R2) via the cdn CLI; the link goes to the clipboard.
 o.bind("SUPER + CTRL + SHIFT + S", "Screenshot upload", "/home/sharosoo/.local/bin/screenshot-upload.sh")
 
 -- Super+F is the full-width column (keeps the scrolling layout, so Super+arrows
