@@ -1,5 +1,5 @@
 [Unit]
-Description=KDE Wallet daemon (niri / non-Plasma sessions)
+Description=KDE Wallet daemon (non-Plasma sessions)
 After=dbus.service graphical-session.target
 PartOf=graphical-session.target
 

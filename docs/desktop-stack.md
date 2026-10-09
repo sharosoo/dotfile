@@ -7,12 +7,8 @@
 
 | Component | Live path | Dotfile |
 |-----------|-----------|---------|
-| Niri | `~/.config/niri/` | `niri/` |
-| Noctalia settings | `~/.config/noctalia/settings.json` | `noctalia/` |
-| Noctalia shell | `~/.config/quickshell/noctalia-shell/` | clone separately |
 | fcitx5 | `~/.config/fcitx5/` | `fcitx5/` |
 | systemd user | `~/.config/systemd/user/` | `systemd/user/` |
 | OMP (oh-my-pi) 설정 | `~/.omp/` | `omp/` (런타임 DB·로그·캐시는 제외) |
 
-**Apply:** `./scripts/link-desktop-config.sh`  
-**Detail:** `docs/NIRI-NOCTALIA.md`
+**Apply:** `./scripts/link-desktop-config.sh`

@@ -95,8 +95,7 @@ claude-desktop    # omarchy repo
 # volta rustup(pkg)   node/rust managed by mise
 # docker-ce buildx compose-plugin containerd  Omarchy ships docker
 # snapd flatpak firefox spotify telegram thunderbird  desktop apps, not CLI
-# fcitx5* fuzzel cliphist brightnessctl wl-clipboard xdotool wmctrl xclip  desktop/niri/Noctalia-specific
-# niri noctalia quickshell  old desktop stack, replaced by Hyprland/Omarchy
+# fcitx5* fuzzel cliphist brightnessctl wl-clipboard xdotool wmctrl xclip  desktop-specific
 # cuda-toolkit nvidia-* va-driver i965  GPU/driver, handle separately
 # kubuntu-* baloo calamares dracut shim grub mokutil  Ubuntu/KDE base
 # anysign4pc nprotect hoffice-hwp dodo-payments  Korean-banking/vendor Ubuntu debs

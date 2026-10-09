@@ -2,7 +2,7 @@
 
 일괄 설치 스크립트 대신 **영역별 심링크** 또는 아래 스크립트 사용.
 
-## 데스크톱 (niri / Noctalia / fcitx / systemd)
+## 데스크톱 (fcitx / systemd)
 
 ```bash
 cd ~/workspaces/sharosoo/dotfile
