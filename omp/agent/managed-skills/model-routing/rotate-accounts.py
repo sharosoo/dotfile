@@ -53,6 +53,11 @@ SPRINT_END_S = 60  # hand back to the primary this long before the helper's rese
 SPRINT_MAX_USED = 0.70  # sprint only on a helper with at least 30% of its 5-hour window unused
 SPRINT_MIN_7D_LEFT = 0.03  # weekly room left below the account's cap (shared caps are enforced separately)
 SPRINT_PRIMARY_5H = 0.75  # only worth it while the primary's own 5-hour window is tight
+# A non-shared Claude helper whose weekly window resets within this many hours, before the primary's,
+# with at least BURN_MIN_LEFT unused takes all Claude traffic (primary off) until a window of it walls
+# (user, 2026-10-09: spend admin-developers' week before its reset).
+BURN_EXCLUSIVE_HOURS = 48
+BURN_WATCH = 0.80  # a burning helper window at or above this is polled every NEAR_POLL_S
 
 PROVIDERS = {
     "anthropic": {
@@ -215,8 +220,9 @@ def omp_panes():
         return []
 
 
-# Standing routing policy (user, 2026-10-07 evening): Claude yh and opus quota are spent for this
-# cycle, so GPT-6.1 Sol carries the load and opus/astra are reserved for work that needs them.
+# Standing directives. The one sent is picked from quota: the provider whose primary weekly window
+# would be left with more unused quota at its reset carries the normal slots (user, 2026-10-09: a
+# fixed sol-first rule kept spending Codex while Claude sat idle).
 SOL_FIRST = (
     "sol-first",
     "Sol-first routing: put every normal slot (implementation, tests, contracts, migrations, verification, second opinions, "
@@ -224,15 +230,44 @@ SOL_FIRST = (
     "truly needs top intelligence: astra for the hardest logic, security/authz/concurrency/crash-consistency and critical "
     "reviews; opus for critical frontend/UI/copy judgement or a mandatory Anthropic review seat. Aim for at most about 1 in 10 "
     "spawns on astra or opus combined. Keep cheap models (gemini, luna) for search/scans only.")
+CLAUDE_FIRST = (
+    "claude-first",
+    "Claude-first routing: Claude has the spare weekly quota and Codex is on pace to use more of its own. Put every normal slot "
+    "(implementation, tests, contracts, migrations, planning drafts, second opinions) on agent \"opus\" (omit effort), with "
+    "\"sonnet\" for high-volume implementation and fill-in, and run waves wide on them. Keep GPT for independence and the "
+    "hardest logic only: \"sol\" as the non-Anthropic verifier of Claude-authored work, \"astra\" for security/authz/concurrency/"
+    "crash-consistency and critical reviews; aim for at most about 1 in 5 spawns on sol or astra combined. Keep cheap models "
+    "(gemini, haiku) for search/scans only.")
+CODEX_MODE = (
+    "codex-mode",
+    "Claude has no usable account right now: do not spawn opus at all, use astra for the rare top-intelligence slot. "
+    + SOL_FIRST[1])
+STEER_HYSTERESIS = 0.15  # projected weekly-use gap needed to flip between sol-first and claude-first
 
 
-def claude_steer(blocked, helpers_on):
-    """Routing directive for running Mains; Claude availability only matters when it is gone entirely."""
-    if blocked and not helpers_on:
-        return "codex-mode", (
-            "Claude has no usable account right now: do not spawn opus at all, use astra for the rare top-intelligence slot. "
-            + SOL_FIRST[1])
-    return SOL_FIRST
+def projected_use(w7):
+    """Weekly fraction the window will have used at its reset at its average burn so far, or None."""
+    if not w7 or not w7.get("resetsAt"):
+        return None
+    left_s = w7["resetsAt"] - now
+    elapsed = WEEK_S - left_s
+    if elapsed < MIN_AVG_ELAPSED_S or left_s <= 0:
+        return None
+    return w7["used"] + w7["used"] / elapsed * left_s
+
+
+def pick_steer(last_key, claude_gone, codex_blocked, proj):
+    """Directive for running Mains from Claude/Codex availability and projected weekly use."""
+    if claude_gone:
+        return CODEX_MODE
+    if codex_blocked:
+        return CLAUDE_FIRST
+    claude, codex = proj.get("anthropic"), proj.get("openai-codex")
+    if claude is None or codex is None:
+        return CLAUDE_FIRST if last_key == CLAUDE_FIRST[0] else SOL_FIRST
+    if last_key == CLAUDE_FIRST[0]:
+        return SOL_FIRST if codex < claude - STEER_HYSTERESIS else CLAUDE_FIRST
+    return CLAUDE_FIRST if claude < codex - STEER_HYSTERESIS else SOL_FIRST
 
 
 def pane_busy_input(pid):
@@ -355,6 +390,42 @@ def pick_sprint(cache, cfg, p):
     return (best[0] if best else None), max(30, wake)
 
 
+def pick_burn(cache, cfg, p):
+    """Helper whose weekly window would expire unused: it takes all traffic while every window of it is healthy.
+
+    Shared accounts never qualify. A helper paused by its own 5-hour wall is picked again once that window
+    resets (cached windows past their reset count as empty). Returns (helper or None, seconds until the next
+    check this needs).
+    """
+    wake = MAX_INTERVAL_S
+    best = None
+    primary_reset = (p.get("7d") or {}).get("resetsAt")
+    for email in cfg["helpers"]:
+        if email in SHARED_CAPS:
+            continue
+        win = current(cache.get(email, {}))
+        w7 = win.get("7d")
+        if not w7 or not w7.get("resetsAt"):
+            continue
+        left_s = w7["resetsAt"] - now
+        if left_s >= BURN_EXCLUSIVE_HOURS * 3600 or (primary_reset and w7["resetsAt"] >= primary_reset):
+            continue
+        if left7(win, email) < BURN_MIN_LEFT:
+            continue
+        if not healthy(win, email):
+            for w in win.values():  # walled: come back when the wall resets
+                if w["used"] >= HELPER_LIMIT and w.get("resetsAt"):
+                    wake = min(wake, w["resetsAt"] - now + 5)
+            continue
+        if best is None or left_s < best[1]:
+            best = (email, left_s)
+    if best:
+        hot = any(w["used"] >= BURN_WATCH for w in current(cache.get(best[0], {})).values())
+        wake = min(wake, NEAR_POLL_S if hot else MIN_INTERVAL_S)
+    return (best[0] if best else None), max(30, wake)
+
+
+
 def run_once():
     """One rotation pass; returns seconds until the next check."""
     global now
@@ -371,7 +442,8 @@ def run_once():
     samples = state.setdefault("samples", {})
     interval = MAX_INTERVAL_S
     plan = {}
-    steer = None
+    proj = {}
+    claude_gone = False
 
     for provider, cfg in PROVIDERS.items():
         reports = {r["metadata"].get("email"): r for r in usage["reports"] if r.get("provider") == provider and r.get("metadata")}
@@ -465,25 +537,32 @@ def run_once():
             # zk looks spent; enable it anyway rather than stall Codex on a dead primary.
             helpers = {e: True for e in helpers}
         sprint = None
+        burn = None
         if provider == "anthropic":
-            sprint, sprint_wake = pick_sprint(cache, cfg, p)
-            interval = min(interval, sprint_wake)
-            if sprint:
-                helpers = {e: e == sprint for e in helpers}
+            burn, burn_wake = pick_burn(cache, cfg, p)
+            interval = min(interval, burn_wake)
+            if burn:
+                helpers = {e: e == burn for e in helpers}
+            else:
+                sprint, sprint_wake = pick_sprint(cache, cfg, p)
+                interval = min(interval, sprint_wake)
+                if sprint:
+                    helpers = {e: e == sprint for e in helpers}
         for email, on in helpers.items():
             if on and email in SHARED_CAPS and left7(current(cache.get(email, {})), email) < 0.08:
                 interval = min(interval, NEAR_POLL_S)  # close to the shared cap: watch it closely
         plan[provider] = blocked
+        proj[provider] = projected_use(p.get("7d"))
         if provider == "anthropic":
-            steer = claude_steer(blocked, any(helpers.values()))
+            claude_gone = blocked and not any(helpers.values())
 
         changed = False
         if not DRY:
-            changed = set_enabled(db, provider, cfg["primary"], not sprint)
+            changed = set_enabled(db, provider, cfg["primary"], not (sprint or burn))
             for email, on in helpers.items():
                 changed |= set_enabled(db, provider, email, on)
         if changed or DRY:
-            log(f"{provider}: primary {'sprint-rest' if sprint else 'spent' if blocked else 'burning'} {json.dumps({k: v['used'] for k, v in p.items()})} "
+            log(f"{provider}: primary {'burn-rest (' + burn + ')' if burn else 'sprint-rest' if sprint else 'spent' if blocked else 'burning'} {json.dumps({k: v['used'] for k, v in p.items()})} "
                 f"rates/10min {json.dumps({k: (round(v * 600, 3) if v is not None else None) for k, v in rates.items()})}; helpers {helpers}")
 
     if not DRY:
@@ -491,7 +570,10 @@ def run_once():
     db.close()
 
     if plan:
-        steer = steer or SOL_FIRST  # the anthropic pass is skipped while the user holds yh off
+        steer = pick_steer(state.get("steer", {}).get("key"), claude_gone, plan.get("openai-codex", False), proj)
+        log_proj = {k: (round(v, 2) if v is not None else None) for k, v in proj.items()}
+        if state.get("steer", {}).get("key") != steer[0]:
+            log(f"steer pick {steer[0]}: projected weekly use at reset {log_proj}")
         broadcast(state, *steer)
         apply_budget(plan, steer[1])
 
