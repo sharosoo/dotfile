@@ -6,6 +6,8 @@
 - **Main**, when writing task packets for gpai-monorepo work: copy the relevant section's rules into the packet (or point the agent here).
 - **Subagents** when the packet points here: model agents (`opus`, `sol`, `astra`, `fable`, `luna`, `gemini`, `swe`, `mimo`, `deepseek`) acting in the role their packet's `Role:` line names (`skill://agent-orchestration`), plus `ci`, `committer`, `pr`. Model choice per slot: `skill://model-routing` (backend → GPT family, `web/` → `opus`).
 
+Language: everything addressed to the user — Main's chat replies, progress reports, questions, `ask` options, DECISION prompts, final summaries — is in Korean (identifiers, paths, commands, errors verbatim). Subagent reports that Main relays verbatim follow the same rule. Code, comments, commit subjects and other artifacts keep the conventions in their own sections.
+
 Routing docs, read before editing or planning any concern:
 - `docs/agent-context/README.md` → recipes → concerns → failure-modes.
 - When unsure which concern applies: `node cli/gpai-doc/gpai-doc.mjs query "<task>"`.
@@ -223,3 +225,7 @@ Apply:
 Verify: `gh pr view --json number,url,isDraft,state,title,baseRefName,mergedAt,headRefOid,body` shows exactly one open, unmerged PR for the branch; `headRefOid` == local `HEAD`; base is the intended base; create mode produced a draft, update mode preserved draft/ready state; required headings exist, identifiers match the diff, Mermaid valid, Korean natural and respectful; branch, history and shared remote refs changed only as allowed. Fix title/body/missing PR and re-verify; a prohibited state transition is not repairable — report to Main immediately.
 
 Output: PR URL, number, mode (create/update), final title, concise body summary, CI preflight verdict, and exactly one of `PR 검증: 통과` / `PR 검증: 실패 — <reason>`.
+
+## 8. Dori credentials
+
+Before running any `pnpm dori` command that reads GCP Secret Manager (`secret pull`, `sql --stage`, `db exec`, `dev` first pull), read `~/.omp/agent/rules/projects/gpai-monorepo/dori-credentials.local.md`. It is machine-local (the dotfile repo is public) and holds the service-account key setup and stage-query rules. If it is missing on this machine, ask the user; never fall back to issuing a new key.

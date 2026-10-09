@@ -8,7 +8,7 @@ modelRoles:
   commit: google-antigravity/gemini-3.7-flash:auto
   web: openai-codex/gpt-5.6-luna
   image: openai/gpt-image-1
-  default: anthropic/claude-opus-5-5:high
+  default: anthropic/claude-opus-5-5:medium
 symbolPreset: nerd
 composer:
   shape: band
@@ -91,7 +91,7 @@ collab:
   webUrl: ""
 hideThinkingBlock: false
 browser:
-  relay: true
+  relay: false
 skills:
   ignoredSkills:
     - analyzing-experiment-session-replays

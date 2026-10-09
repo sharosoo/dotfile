@@ -6,7 +6,7 @@ description: "Use when acting as Main orchestrating subagents or as a subagent g
 # Agent orchestration
 
 Agents are **models**, not roles. Main picks, per task item:
-- `agent`: which model (`opus`, `sol`, `astra`, `fable`, `luna`, `gemini`, `swe`, `mimo`, `deepseek`, `muse`). Grok is disabled (2026-10-07).
+- `agent`: which model (`opus`, `sonnet`, `haiku`, `sol`, `astra`, `fable`, `luna`, `gemini`, `swe`, `mimo`, `deepseek`, `muse`). Grok is disabled (2026-10-07).
 - `effort`: `lo` | `med` | `hi`, mapped to the model's lowest/middle/highest effort (capped at xhigh)
 - a `Role:` line in the packet: `planner` | `researcher` | `advisor` | `coder` | `reviewer` | `verifier` | `blind-reader`
 
