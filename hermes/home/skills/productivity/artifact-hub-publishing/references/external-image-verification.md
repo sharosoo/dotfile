@@ -29,4 +29,4 @@ When a game or product artifact needs visual materials (boards, components, card
 1. **Shopify storefronts** — find product handles in the homepage HTML (`/products/([a-z0-9-]+)`), then `curl https://<shop>/products/<handle>.js` returns a JSON object with every CDN image URL (`//cdn.shopify.com/...`).
 2. **Steam games and DLC** — `curl 'https://store.steampowered.com/api/appdetails?appids=<id>&l=english'` returns the header image and full-resolution screenshot URLs on `shared.akamai.steamstatic.com`.
 3. Download candidates, confirm real image data with `file` (JPEG/PNG, sane dimensions), and identify each picture visually so captions describe what it actually shows.
-4. Optimize before hosting: resize to ≤1400px, JPEG quality ~82, flatten alpha onto a white background, then upload with `cdn put` (see `pdf-figure-crop-and-host.md`) and embed per the workflow above.
+4. Optimize before hosting: resize to ≤1400px, JPEG quality ~82, flatten alpha onto a white background, then upload with `sharosoo-cdn put` (see `pdf-figure-crop-and-host.md`) and embed per the workflow above.

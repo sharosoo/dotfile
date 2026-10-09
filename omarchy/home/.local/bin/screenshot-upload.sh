@@ -1,7 +1,7 @@
 #!/bin/bash
-# Select a screen region, upload it to cdn.sharosoo.com with the `cdn` CLI, and copy the link.
+# Select a screen region, upload it to cdn.sharosoo.com with the `sharosoo-cdn` CLI, and copy the link.
 
-CDN_BIN="${CDN_BIN:-$HOME/.local/bin/cdn}"
+CDN_BIN="${CDN_BIN:-$HOME/.local/bin/sharosoo-cdn}"
 
 notify() {
   notify-send "$@"

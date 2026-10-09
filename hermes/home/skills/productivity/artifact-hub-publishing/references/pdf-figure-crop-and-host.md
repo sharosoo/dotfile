@@ -62,9 +62,9 @@ tesseract fig02.png - | head -12   # OCR should echo the figure's own label text
 
 ## Host (정혁)
 
-1. Upload with the `cdn` skill/CLI under a topic dir: `cdn put fig02.png --prefix kimi-k3-sudoremove/crops`.
+1. Upload with the `sharosoo-cdn` skill/CLI under a topic dir: `sharosoo-cdn put fig02.png --prefix kimi-k3-sudoremove/crops`.
 2. Embed the printed URL, e.g. `https://cdn.sharosoo.com/kimi-k3-sudoremove/crops/fig02.png`.
-3. `cdn put` already HEAD-checks 200 + size. After publish, raw HTML should contain `<img` and the filename.
+3. `sharosoo-cdn put` already HEAD-checks 200 + size. After publish, raw HTML should contain `<img` and the filename.
 4. Never commit to `github.com/sharosoo/image` or embed jsDelivr/raw.githubusercontent URLs for it; that repo is a frozen archive.
 
 ## Placement

@@ -1,7 +1,7 @@
 {
-  "cdn": {
+  "sharosoo-cdn": {
     "kind": "home",
-    "target": "workspaces/sharosoo/cdn/skills/cdn"
+    "target": "workspaces/sharosoo/sharosoo-cdn/skills/sharosoo-cdn"
   },
   "diagnose-crash": {
     "kind": "absolute",
