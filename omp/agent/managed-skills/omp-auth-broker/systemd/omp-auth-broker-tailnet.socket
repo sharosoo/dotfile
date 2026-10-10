@@ -1,0 +1,11 @@
+[Unit]
+Description=omp auth-broker on the tailnet address (proxied to loopback)
+
+[Socket]
+# turing's Tailscale IPv4 (stable per node). FreeBind lets the socket start before
+# tailscaled has brought the address up. Clients still need the broker bearer token.
+ListenStream=100.65.137.27:8765
+FreeBind=true
+
+[Install]
+WantedBy=sockets.target

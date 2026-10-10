@@ -1,6 +1,6 @@
 ---
 name: omp-auth-broker
-description: "Use for Hermes direct provider authentication through the local omp auth broker, usage checks, recent-model visibility, or shared routing policy."
+description: "Use for Hermes direct provider authentication through the local omp auth broker, remote omp clients using the broker over Tailscale, usage checks, recent-model visibility, or shared routing policy."
 ---
 
 # Local omp auth broker and Hermes
@@ -13,9 +13,35 @@ Hermes selects native providers separately: `anthropic`, `openai-codex`, `google
 
 - The broker owns OAuth refresh over `~/.omp/agent/agent.db`; `omp-account-rotate.service` remains the account-policy owner. Native request authentication reads a fresh broker snapshot and observes disabled/deleted accounts.
 - Hermes reads `~/.omp/auth-broker.token` to authenticate to the broker. Never copy upstream credentials into Hermes auth pools or `.env`. Broker failure must fail closed, not fall back to local provider credentials.
-- Local omp clients and usage commands continue to use their local vault. Do not globally export `OMP_AUTH_BROKER_URL` or change interactive omp auth mode.
-- Never print token files, bearer values, `.env`, credential snapshots, or SQLite credential rows. Do not run token-generation commands for diagnostics, widen the loopback bind, disable authentication, log in, redeem resets, or toggle accounts as a routing workaround.
+- On turing (the broker host) omp clients and usage commands keep using the local vault. Do not export `OMP_AUTH_BROKER_URL` there, and never set `auth.broker.url` in `~/.omp/agent/config.yml`: that file is synced to every machine through the dotfile repo. Other machines opt in per machine; see "Remote omp clients over Tailscale".
+- Never print token files, bearer values, `.env`, credential snapshots, or SQLite credential rows. Do not run token-generation commands for diagnostics, change the broker's own `127.0.0.1` bind, disable authentication, log in, redeem resets, or toggle accounts as a routing workaround.
 - Broker tokens, vault databases, conversation history, and the real Hermes `.env` stay private and outside dotfiles.
+
+## Remote omp clients over Tailscale
+
+The broker process stays on `127.0.0.1:8765`. `omp-auth-broker-tailnet.socket` listens on turing's Tailscale address `100.65.137.27:8765` and hands each connection to `omp-auth-broker-tailnet.service`, a `systemd-socket-proxyd` forward to loopback. Tailscale (WireGuard) encrypts the traffic, and the bearer token still gates every endpoint except `/v1/healthz`. Tailscale Serve (HTTPS) is not used because it is disabled on this tailnet. Because of the proxy, the broker logs remote requests with peer `127.0.0.1`.
+
+Broker host (turing), once:
+
+```bash
+d=~/.omp/agent/managed-skills/omp-auth-broker/systemd
+ln -sfn $d/omp-auth-broker.service $d/omp-auth-broker-tailnet.socket $d/omp-auth-broker-tailnet.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now omp-auth-broker.service omp-auth-broker-tailnet.socket
+```
+
+The socket hardcodes turing's tailnet IPv4 address. If the broker moves to another node, change `ListenStream` to that node's address (`tailscale ip -4`).
+
+Client machine (any other tailnet node), to turn on broker mode:
+
+1. Copy the token out of band (scp or paste, never through the dotfile repo) to `~/.omp/auth-broker.token` and run `chmod 600` on it. omp resolves the token from `OMP_AUTH_BROKER_TOKEN`, then `auth.broker.token`, then this file.
+2. Add `export OMP_AUTH_BROKER_URL=http://turing:8765` to `~/.env.local`. This file is machine-local and the synced fish config sources it. `OMP_AUTH_BROKER_URL` overrides `auth.broker.url`.
+3. Do not log in or import accounts on the client, and do not enable `omp-auth-broker*` or `omp-account-rotate` units there. `omp/sync.sh restore` copies the unit files but enables nothing. turing stays the only canonical vault and the only account-policy owner.
+4. Verify with a new shell and `omp usage --redact`: it should list turing's accounts. If the broker URL is set but no token resolves, omp fails closed instead of using a local vault.
+
+Turning broker mode off on a client means removing the `~/.env.local` line. Revoking every client means running `omp auth-broker token --regenerate` on turing, restarting `omp-auth-broker.service`, and updating the token file Hermes reads (the same `~/.omp/auth-broker.token`).
+
+Checks: `curl -s -o /dev/null -w '%{http_code}' http://turing:8765/v1/healthz` returns `200` from any node, and `/v1/snapshot` without a token returns `401`.
 
 ## Shared policy and usage
 
