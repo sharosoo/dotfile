@@ -1,0 +1,8 @@
+[Unit]
+Description=omp auth-broker tailnet proxy
+Requires=omp-auth-broker.service
+After=omp-auth-broker.service
+
+[Service]
+# The broker itself stays bound to 127.0.0.1; this only forwards tailnet connections.
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:8765

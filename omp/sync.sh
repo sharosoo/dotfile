@@ -7,7 +7,8 @@
 # Copied, not symlinked: omp and skill managers rewrite these files in place.
 # MCP header secrets are replaced with ${<SERVER>_TOKEN} placeholders on capture (the repo
 # is public); omp expands ${VAR} in mcp.json headers, so export that variable or put the
-# real value back after restore.
+# real value back after restore. Files named *.local.* (e.g. rules holding company-internal
+# identifiers) stay on the machine: capture skips them and --delete leaves them alone.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,7 +36,7 @@ capture() {
   cp "$LIVE/agent/config.yml" "$REPO/agent/config.yml"
   redact_mcp "$LIVE/agent/mcp.json" >"$REPO/agent/mcp.json"
   for d in "${AGENT_DIRS[@]}"; do
-    rsync -a --delete "$LIVE/agent/$d/" "$REPO/agent/$d/"
+    rsync -a --delete --exclude '*.local.*' "$LIVE/agent/$d/" "$REPO/agent/$d/"
   done
   cp "$LIVE/marketplaces.json" "$REPO/marketplaces.json"
   cp "$LIVE/plugins/installed_plugins.json" "$REPO/installed_plugins.json"

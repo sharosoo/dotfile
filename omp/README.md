@@ -50,6 +50,46 @@ omo-layer는 런타임 확장을 포함하므로 마켓플레이스에서 설치
 
 `marketplaces.json`과 `installed_plugins.json`에는 `/home/sharosoo` 기준 절대 경로가 들어 있다. 다른 계정에서 복원할 때는 경로를 알맞게 수정하거나, omp에서 마켓플레이스를 다시 등록하고 플러그인을 재설치한다.
 
+## auth broker를 Tailscale로 공유하기
+
+전체 AI 제공자 계정을 관리하는 omp auth broker는 turing 머신 한 대에서만 띄운다. 테일넷(tailnet)에 연결된 다른 머신들은 각자 로그인하지 않고 broker 모드로 turing에 붙어 인증을 공유한다.
+
+turing 내부에서 broker 프로세스는 `127.0.0.1:8765`에 바인딩되어 동작한다. 외부 요청은 `omp-auth-broker-tailnet.socket`이 turing의 Tailscale IP에서 수신한 뒤 `systemd-socket-proxyd`를 거쳐 로컬 루프백으로 넘겨준다. 통신 구간은 Tailscale로 자동 암호화되며, 헬스체크 외의 모든 요청은 broker token 검증을 거친다.
+
+### turing 설정 (최초 1회)
+
+```bash
+d=~/.omp/agent/managed-skills/omp-auth-broker/systemd
+ln -sfn $d/omp-auth-broker.service $d/omp-auth-broker-tailnet.socket $d/omp-auth-broker-tailnet.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now omp-auth-broker.service omp-auth-broker-tailnet.socket
+```
+
+### 새 머신(클라이언트) 설정
+
+새 머신에서 `./sync.sh restore`를 실행한 뒤, 아래 두 단계로 broker 모드를 켠다.
+
+```bash
+# 1. copy the token from turing (never via this repo)
+scp turing:.omp/auth-broker.token ~/.omp/auth-broker.token && chmod 600 ~/.omp/auth-broker.token
+# 2. machine-local switch, sourced by the fish config
+echo 'export OMP_AUTH_BROKER_URL=http://turing:8765' >> ~/.env.local
+```
+
+새 셸을 열고 아래 명령어로 확인한다. turing에 등록된 계정 목록이 보이면 정상이다.
+
+```bash
+omp usage --redact
+```
+
+### 주의 사항
+
+- **`agent/config.yml`에 broker URL을 적지 않는다.** 이 파일은 turing을 포함한 모든 머신에 그대로 동기화되므로, 여기에 주소를 넣으면 turing 본인마저 로컬 볼트 대신 broker 모드로 동작하게 된다.
+- **클라이언트 머신에서 계정을 직접 로그인하거나 broker 및 계정 로테이션 서비스를 켜지 않는다.** `restore` 스크립트는 유닛 파일만 복사할 뿐 서비스를 활성화하지 않으므로 그대로 둔다.
+- broker 모드를 끄려면 `~/.env.local`에서 해당 줄을 삭제한다.
+- 토큰 교체나 IP 변경 등 자세한 내용은 `omp-auth-broker` 스킬을 참고한다.
+- gpai-monorepo처럼 회사 내부 식별자가 들어 있는 룰은 `*.local.md` 이름으로 두면 `capture`가 저장소로 복사하지 않는다(이 저장소는 공개 저장소다). 새 머신에는 직접 옮긴다.
+
 ## Git 관리 제외 대상
 
 `~/.omp/` 하위의 런타임 데이터는 Git 관리 대상에서 제외한다: `agent/*.db*`, `agent/sessions/`, `agent/memories/`(mnemopi 벡터 DB, 수십 MB), `agent/custom-session-files/`, `agent/backup-*`, `logs/`, `cache/`, `webcache/`, `plugins/cache/`, `wt/`, `run/`, `install-id`.
