@@ -391,11 +391,12 @@ def pick_sprint(cache, cfg, p):
 
 
 def pick_burn(cache, cfg, p):
-    """Helper whose weekly window would expire unused: it takes all traffic while every window of it is healthy.
+    """Helper whose weekly window would expire unused: it takes all traffic until a window of it walls.
 
-    Shared accounts never qualify. A helper paused by its own 5-hour wall is picked again once that window
-    resets (cached windows past their reset count as empty). Returns (helper or None, seconds until the next
-    check this needs).
+    Shared accounts never qualify. The weekly window burns to WALL (the point is to leave nothing unused);
+    the 5-hour window stops at HELPER_LIMIT so the primary takes over before requests fail, and the helper is
+    picked again once that window resets (cached windows past their reset count as empty). Returns (helper or
+    None, seconds until the next check this needs).
     """
     wake = MAX_INTERVAL_S
     best = None
@@ -410,11 +411,11 @@ def pick_burn(cache, cfg, p):
         left_s = w7["resetsAt"] - now
         if left_s >= BURN_EXCLUSIVE_HOURS * 3600 or (primary_reset and w7["resetsAt"] >= primary_reset):
             continue
-        if left7(win, email) < BURN_MIN_LEFT:
-            continue
-        if not healthy(win, email):
-            for w in win.values():  # walled: come back when the wall resets
-                if w["used"] >= HELPER_LIMIT and w.get("resetsAt"):
+        limits = {wid: (WALL if wid == "7d" else HELPER_LIMIT) for wid in win}
+        walled = [w for wid, w in win.items() if w["used"] >= limits[wid]]
+        if walled:
+            for w in walled:  # come back when the wall resets
+                if w.get("resetsAt"):
                     wake = min(wake, w["resetsAt"] - now + 5)
             continue
         if best is None or left_s < best[1]:
@@ -423,7 +424,6 @@ def pick_burn(cache, cfg, p):
         hot = any(w["used"] >= BURN_WATCH for w in current(cache.get(best[0], {})).values())
         wake = min(wake, NEAR_POLL_S if hot else MIN_INTERVAL_S)
     return (best[0] if best else None), max(30, wake)
-
 
 
 def run_once():
