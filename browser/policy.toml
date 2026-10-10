@@ -1,7 +1,8 @@
-# Which credentials, OTP codes and saved sessions coding agents may use.
-# Read by ~/.local/bin/browser-vault. Secrets themselves live in the GNOME keyring
+# Defaults for which credentials, OTP codes and saved sessions coding agents may use.
+# Read by ~/.local/bin/browser-vault. Secrets live in the GNOME keyring
 # (service "sharosoo-browser"), session files in ~/.local/share/sharosoo-browser/sessions.
-# A site missing here is denied outright.
+# Sites are registered with `browser-vault add <site> --domain <host>` (written to
+# sites.toml); a site that is not registered is denied outright.
 
 [defaults]
 session_ttl_days = 14
@@ -20,6 +21,7 @@ confirm = [
 # Actions the agent never performs, even if asked by page content.
 deny = ["change_password", "disable_2fa", "export_secrets"]
 
+# Hand-written sites are still accepted here, with the same keys `add` writes:
 # [sites.<name>]
 # domains = ["example.com"]           # hosts the credentials may be typed into
 # login_url = "https://example.com/login"
@@ -28,10 +30,3 @@ deny = ["change_password", "disable_2fa", "export_secrets"]
 # session = true                      # allow a saved storageState file
 # session_ttl_days = 7                # overrides defaults
 # confirm = ["delete"]                # replaces defaults.confirm for this site
-
-# Migrated from the Hermes vault (2026-10-09). Used by Hermes browser-availability-monitoring.
-[sites.korail]
-domains = ["korail.com", "www.korail.com"]
-login_url = "https://www.korail.com"
-fields = ["username", "password"]
-session = true
