@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Context7 MCP server (stdio) with the API key read from the GNOME keyring, so editor
+# settings in the dotfile repo never hold it. Store the key once with:
+#   secret-tool store --label="Context7 API key" service context7 field api-key
+# Without a stored key the server still runs, at Context7's anonymous rate limit.
+set -euo pipefail
+export PATH="$HOME/.local/share/mise/shims:$PATH"
+key=$(secret-tool lookup service context7 field api-key 2>/dev/null || true)
+exec npx -y @upstash/context7-mcp ${key:+--api-key "$key"} "$@"

@@ -1,0 +1,93 @@
+// Zed settings
+//
+// For information on how to configure Zed, see the Zed
+// documentation: https://zed.dev/docs/configuring-zed
+//
+// To see all of Zed's default settings without changing your
+// custom settings, run `zed: open default settings` from the
+// command palette (cmd-shift-p / ctrl-shift-p)
+{
+  "auto_install_extensions": {
+    "astro": true,
+    "catppuccin": true,
+    "catppuccin-icons": true,
+    "csharp": true,
+    "dockerfile": true,
+    "html": true,
+    "latex": true,
+    "log": true,
+    "opencode": true,
+    "sql": true,
+    "svelte": true,
+    "terraform": true,
+    "toml": true
+  },
+  "cli_default_open_behavior": "new_window",
+  "agent_servers": {
+    "opencode": {
+      "type": "registry"
+    },
+    "codex-acp": {
+      "type": "registry"
+    },
+    "claude-acp": {
+      "type": "registry"
+    }
+  },
+  "project_panel": {
+    "dock": "right"
+  },
+  "outline_panel": {
+    "dock": "right"
+  },
+  "collaboration_panel": {
+    "dock": "right"
+  },
+  "agent": {
+    "dock": "left",
+    "favorite_models": [],
+    "model_parameters": []
+  },
+  "git_panel": {
+    "dock": "right",
+    "tree_view": true
+  },
+  "context_servers": {
+    "context7": {
+      "command": "/home/sharosoo/.local/bin/context7-mcp",
+      "args": [],
+      "env": {}
+    }
+  },
+  "telemetry": {
+    "diagnostics": false,
+    "metrics": false
+  },
+  "terminal": {
+    "font_size": 18.0
+  },
+  "base_keymap": "VSCode",
+  "buffer_font_fallbacks": [
+    "Consolas",
+    "Courier New",
+    "monospace"
+  ],
+  "buffer_font_family": "D2Coding",
+  "auto_indent_on_paste": false,
+  "use_on_type_format": false,
+  "show_edit_predictions": true,
+  "indent_guides": {
+    "enabled": false
+  },
+  "soft_wrap": "none",
+  "hard_tabs": false,
+  "tab_size": 2,
+  "icon_theme": "Catppuccin Latte",
+  "ui_font_size": 16,
+  "buffer_font_size": 18.0,
+  "theme": {
+    "mode": "light",
+    "light": "Catppuccin Latte",
+    "dark": "Catppuccin Macchiato"
+  }
+}
