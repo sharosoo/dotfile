@@ -1,0 +1,3 @@
+#!/bin/sh
+# Arch packages Zed's CLI as `zeditor`; keep the upstream name.
+exec /usr/bin/zeditor "$@"

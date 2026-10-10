@@ -7,8 +7,9 @@
 # Some files are copied, not linked, because their owner rewrites them in a way that can
 # replace a symlink with a plain file and silently detach it: the Omarchy shell saves
 # shell.json atomically (temp file + rename), fcitx5 does the same for profile, fisher
-# deletes and recreates fish_plugins, and herdr's config.toml is treated the same way to be
-# safe. Run `./sync.sh capture` after changing any of them.
+# deletes and recreates fish_plugins, Zed rewrites settings.json from its settings UI, and
+# herdr's config.toml is treated the same way to be safe. Run `./sync.sh capture` after
+# changing any of them.
 #
 # Third-party bar plugins are vendored under vendor/plugins/<id>/ with their source in
 # vendor/plugins.lock (`id url commit`). They stay real git checkouts in $HOME so
@@ -25,6 +26,7 @@ COPIED=(
   .config/fcitx5/profile
   .config/herdr/config.toml
   .config/fish/fish_plugins
+  .config/zed/settings.json
 )
 
 is_copied() {
