@@ -19,6 +19,9 @@ link() {
 
 link "$REPO/relay-extension" "$CONFIG/relay-extension"
 link "$REPO/policy.toml" "$CONFIG/policy.toml"
+# Written by `browser-vault add`; must exist so the link points at a real file.
+[[ -e "$REPO/sites.toml" ]] || : >"$REPO/sites.toml"
+link "$REPO/sites.toml" "$CONFIG/sites.toml"
 link "$REPO/bin/browser-vault" "$HOME/.local/bin/browser-vault"
 
 # Session files hold live cookies: private, never in the repo.

@@ -42,16 +42,19 @@ omp -p --auto-approve --no-title "$(cat ~/.hermes/cache/scratch/<topic>/browser-
 - Verify with the page's own signal (URL change, toast text, console errors via `tab.errors()`), not one screenshot. Report the evidence.
 
 ## 4. Logins, OTP, sessions — `browser-vault`
-`browser-vault` (`~/.local/bin`, dotfile `browser/bin/`) stores secrets in the GNOME keyring (service `sharosoo-browser`). Access is gated by `~/.config/sharosoo-browser/policy.toml` (dotfile `browser/policy.toml`): a site missing there is denied; each site lists allowed `fields`, `otp`, `session`, and `confirm`/`deny` actions.
+`browser-vault` (`~/.local/bin`, dotfile `browser/bin/`) stores secrets in the GNOME keyring (service `sharosoo-browser`). Access is gated per site: sites are registered with `browser-vault add` (written to `sites.toml`), defaults live in `policy.toml` (both under `~/.config/sharosoo-browser/` → dotfile `browser/`). An unregistered site is denied; each site lists allowed `domains`, `fields`, `otp`, `session`, and `confirm`/`deny` actions.
+
+A site can hold several accounts: refer to them as `SITE:ACCOUNT` (`google:work`, `google:personal`). Bare `SITE` means its only account and errors when there are several — then ask the user which account, never guess.
 
 | command | does |
 |---|---|
-| `browser-vault list` | sites, allowed vs stored fields, otp/session state (never values) |
-| `browser-vault get <site> <field>` | prints an allowed field |
-| `browser-vault otp <site>` | current TOTP code (waits if < 5 s left); the seed is never printed |
-| `browser-vault session info\|seal\|rm <site>` | storageState path `~/.local/share/sharosoo-browser/sessions/<site>.json`; `seal` = chmod 600 |
+| `browser-vault list` | sites, accounts, allowed vs stored fields, otp/session state (never values) |
+| `browser-vault get <site[:account]> <field>` | prints an allowed field |
+| `browser-vault otp <site[:account]>` | current TOTP code (waits if < 5 s left); the seed is never printed |
+| `browser-vault session info\|seal\|rm <site[:account]>` | storageState path `~/.local/share/sharosoo-browser/sessions/<site>.<account>.json`; `seal` = chmod 600 |
 | `browser-vault check <site> <action>` | exit 0 allow, 3 confirm (ask user first), 4 deny |
-| `browser-vault set <site> <field>` | **user only**, hidden prompt (`totp` field takes a base32 seed or `otpauth://` URI) |
+| `browser-vault add <site[:account]> --domain <host> [--field f] [--otp]` | **user only**: registers/updates the site, then hidden prompts for that account's secrets |
+| `browser-vault set <site[:account]> <field>` / `forget <site[:account]>` | **user only**: store one field / remove an account or a whole site |
 
 Rules:
 - Secrets never enter the transcript. Read them inside the cell that uses them and never print/return them:
@@ -60,9 +63,9 @@ Rules:
   await tab.fill("label/Code", (await Bun.$`browser-vault otp github`.text()).trim());
   ```
   Never put a secret on a `bash` command line, in a file in a repo, or in a message.
-- Never ask the user to paste passwords/codes into chat. Missing secret → tell them the exact `browser-vault set …` (and `policy.toml` entry) to run.
+- Never ask the user to paste passwords/codes into chat. Missing site or secret → tell them the exact `browser-vault add <site>:<account> --domain <host>` (or `set`) to run themselves.
 - Type credentials only into a host listed in the site's `domains`; check `tab.url()` first.
-- Prefer a saved session over typing credentials: `browser-vault session info <site>` → if fresh, `tab.loadState(path)` then reload and confirm logged-in state. After a successful login, `tab.saveState(path)` then `browser-vault session seal <site>`. Stale/expired → log in again, re-save.
+- Prefer a saved session over typing credentials: `browser-vault session info <site:account>` → if fresh, `tab.loadState(path)` then reload and confirm logged-in state (and that it is the intended account). After a successful login, `tab.saveState(path)` then `browser-vault session seal <site:account>`. Stale/expired → log in again, re-save.
 - Storing a TOTP seed next to the password puts both factors in one place; only for sites the user put `otp = true` on.
 - Captcha / passkey / push approval / device check → stop and hand it to the user; do not try to bypass.
 
