@@ -17,6 +17,11 @@ if test -f ~/.env.local
     source ~/.env.local
 end
 
+# Dori service-account key for Google ADC (secret pull, dori sql/exec).
+if test -r ~/.config/gpai/dori-sa.json
+    set -gx GOOGLE_APPLICATION_CREDENTIALS ~/.config/gpai/dori-sa.json
+end
+
 set -gx EDITOR nvim
 set -gx VISUAL nvim
 set -gx SUDO_EDITOR nvim
