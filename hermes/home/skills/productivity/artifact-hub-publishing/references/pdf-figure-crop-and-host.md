@@ -5,7 +5,7 @@ Use when an Artifact Hub article must embed figures/tables from a tech report PD
 ## Do not
 
 - `pdftoppm` whole pages and call them figures
-- Embed `![](/tmp/...)` local paths
+- Embed `![](/tmp/...)` or `![](~/workspaces/.scratch/...)` local paths
 - Dump every figure in a bottom gallery with no narrative anchor
 
 ## Crop recipe (pymupdf)

@@ -164,6 +164,10 @@ Triggers: "깊이 모드", "왜 이 PR이 의미 있는지", "기술 배경 2-3�
 
 For the full prompt template the user calibrated (the one behind the LLM-serving daily cron at KST 11:00) and the converged 10-repo watchlist, see `references/deep-mode-daily-pr-report.md`. For cron-specific runtime quirks (execute_code blocking, GitHub API rate limit, two-step Discord delivery via `hermes send --file`), see `references/cron-runtime-quirks.md`. For the **actual output template** — the `🎯` marker convention, `(N) *(raw M, {theme})*` section header, the `**reject 추정** ① ② ③ / **근본**` phrasing, the `> 핵심 시그널` top-5 block, the `## 🔍 한 줄 흐름` footer with 공통 키워드 / paired 흐름 / 읽을 거리 — see `references/deep-mode-discord-output-conventions.md` (load this BEFORE writing the curated `_discord.md` file). For a ready-to-run shell template that does the per-PR deep-digging via `gh` CLI (inherits user auth, no env var needed) instead of `urllib` (hits 60 req/hr unauth), see `templates/daily_pr_deep_dig_gh.sh`.
 
+## Tracking the user's own contributions
+
+When the user asks about the status of their own PRs/issues, whether they count as a contributor, or wants them logged as career evidence, follow `references/own-contribution-status-and-credit.md` (status check, credit verification vs. bot/other-author fixes, evidence file location). Be exact about credit: an issue reporter whose bug was fixed by someone else's PR is a reporter, not the PR author.
+
 ## Multi-repo first-contribution handoffs
 
 When asked for a handoff or cron revision covering a watchlist, keep **every tracked repo** in the durable full note rather than narrowing it to the top pick. Give each repo its URL, candidate issue URLs (or explicitly none), current ownership/competing PRs, intake gate, and next investigation step. Rank *next actions*, not PR ownership; distinguish actionable, maintainer-alignment, reproduction/measurement, watch-only, and excluded. The chat summary may be selective, but the file must preserve the whole comparison. A 24-hour issue window is insufficient for ongoing candidates: carry forward older tracked issues and allow new ones to supersede them, with fetch failures distinct from an empty window.
@@ -182,7 +186,7 @@ This survey can be delegated to a standing omp agent in herdr (see the herdr-age
 
 ## First-PR intake gates (verify live before recommending)
 
-- For pydantic-ai, non-trivial changes need issue-level maintainer agreement and assignment before PR; trivial docs/one-line fixes are exceptions. An open, unassigned issue alone is not a green light.
+- For pydantic-ai, non-trivial changes need issue-level maintainer agreement and assignment before PR; trivial docs/one-line fixes are exceptions (a small docs PR from an outsider merged within a week). An open, unassigned issue alone is not a green light. Its `pydanty` bot may implement a clear bug itself, so an offer to patch can be pre-empted. CI there requires exactly one `pkg:*` label that only maintainers can add; a failing `Package Label` check on an outsider PR is expected, not a code defect.
 - For modelcontextprotocol/python-sdk, external PRs require a linked open issue assigned to the author or labeled `help wanted`; `good first issue` or `ready for work` alone is not enough. Disclose AI assistance and personally understand the change.
 - For openai/openai-agents-python, non-collaborator PRs are not accepted (even docs); contribute via issue reproduction/root-cause analysis instead.
 - LiteLLM requires CLA and at least one backend test. Recheck assignee, comments, linked PRs, and title/keyword matches immediately before recommending: open issues can attract multiple competing PRs within minutes.

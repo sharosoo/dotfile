@@ -33,8 +33,10 @@ curl -sS --max-time 60 \
   cat%3ACs.AR+OR+cat%3ACs.CL)+AND+
   submittedDate%3A%5B202607280000+TO+202607282359%5D&
   start=0&max_results=100&sortBy=submittedDate&sortOrder=descending" \
-  -o /tmp/arxiv_20260728.xml
+  -o ~/workspaces/.scratch/arxiv_20260728.xml
 ```
+
+Working files live under `~/workspaces/.scratch/` (`mkdir -p` it first) so your own `workspace_read` can open them; do not hand file reading to another agent.
 
 Key details:
 
@@ -58,15 +60,15 @@ submittedDate%3A%5B202607270000+TO+202607292359%5D
 ```bash
 curl -sS --max-time 30 \
   "http://export.arxiv.org/api/query?id_list=2607.24555,2607.24434,2607.24331,2607.24260,2607.25357" \
-  -o /tmp/arxiv_details.xml
+  -o ~/workspaces/.scratch/arxiv_details.xml
 ```
 
 Returns one `<entry>` per id with title / authors / abstract / categories. One call for 10-20 ids. **`id_list` has its own rate-limit counter, separate from `search_query`** — 50 ids in one call routinely works when 3 separate `search_query` calls would 429. Useful as a "second pass" after the submittedDate query narrowed the candidate set.
 
 **End-to-end 2-call recipe** (replaces the 5-7 fan-out flow for daily runs):
 
-1. **Call 1**: submittedDate-range query for the target day. Save to `/tmp/arxiv_day.xml`.
-2. **Call 2** (if borderline candidates need full abstracts): `id_list` batch for those ids. Save to `/tmp/arxiv_details.xml`.
+1. **Call 1**: submittedDate-range query for the target day. Save to `~/workspaces/.scratch/arxiv_day.xml`.
+2. **Call 2** (if borderline candidates need full abstracts): `id_list` batch for those ids. Save to `~/workspaces/.scratch/arxiv_details.xml`.
 3. **Parse + filter + rank** in one Python step.
 4. **Update state** atomically with `scripts/digest_state.py`.
 
@@ -115,7 +117,7 @@ These looked promising but are too noisy or off-target:
 ```bash
 curl -sS --max-time 60 \
   "https://export.arxiv.org/api/query?search_query=abs%3A%22KEYWORD%22+AND+(cat%3ACs.DC+OR+cat%3ACs.LG+OR+cat%3ACs.PF+OR+cat%3ACs.AR+OR+cat%3ACs.CL)&start=0&max_results=N&sortBy=submittedDate&sortOrder=descending" \
-  -o /tmp/arxiv_XX.xml
+  -o ~/workspaces/.scratch/arxiv_XX.xml
 ```
 
 - Use https directly (avoids 301 redirect).
@@ -139,7 +141,7 @@ arXiv batches Friday–Sunday submissions to Monday's announce (US time). A cron
 ```bash
 curl -sS --max-time 30 \
   "https://export.arxiv.org/api/query?search_query=abs%3A%22LLM+inference%22+AND+(cat%3ACs.DC+OR+cat%3ACs.LG)&max_results=5&sortBy=submittedDate&sortOrder=descending" \
-  -o /tmp/arxiv_probe.xml
+  -o ~/workspaces/.scratch/arxiv_probe.xml
 ```
 
 Parse the top entry's `<published>` date. If it's ≥ 2 days before today, ship the empty case and stop. The probe is ~1s vs the 3-5 minute fanout. The same pattern applies to the arxiv year-end holiday window (late Dec / early Jan).
@@ -148,7 +150,7 @@ Parse the top entry's `<published>` date. If it's ≥ 2 days before today, ship 
 
 ## Parsing the API responses
 
-Save each to a separate file (`/tmp/arxiv_a.xml` through `/tmp/arxiv_g.xml`). Parse with a single Python step that opens all files, dedupes by base id, and produces the candidate list.
+Save each to a separate file (`~/workspaces/.scratch/arxiv_a.xml` through `~/workspaces/.scratch/arxiv_g.xml`). Parse with a single Python step that opens all files, dedupes by base id, and produces the candidate list.
 
 ```python
 import re, os
@@ -172,7 +174,7 @@ def parse(path):
     return out
 
 all_papers = {}
-for f in ['/tmp/arxiv_a.xml', ..., '/tmp/arxiv_g.xml']:
+for f in [os.path.expanduser(f'~/workspaces/.scratch/arxiv_{c}.xml') for c in 'abcdefg']:
     for p in parse(f):
         if p['id'] not in all_papers or p['published'] > all_papers[p['id']]['published']:
             all_papers[p['id']] = p
@@ -393,7 +395,7 @@ The script is throwaway (delete after use) — it does not belong in the skill's
 ```bash
 curl -sS --max-time 60 \
   "https://arxiv.org/search/?searchtype=all&query=KEYWORD&start=0&order=-announced_date_first" \
-  -o /tmp/arxiv_search_KEYWORD.html
+  -o ~/workspaces/.scratch/arxiv_search_KEYWORD.html
 ```
 
 **Validated 2026-07-27 actual schema** (Bulma-CSS based). The patterns below are what the current arXiv HTML uses; older docs describe a flatter structure that no longer matches. **Do NOT use the older `Primary Category: <span>` or `class="primary-subject"` selectors, they don't exist on the current page.**
@@ -414,10 +416,10 @@ Use a single Python step across all keyword HTML files; dedupe by base arxiv id 
 
 ```bash
 # First page gives the total count
-curl -sS --max-time 30 "https://arxiv.org/list/cs.LG/2026-07" -o /tmp/arxiv_list_lg.html
+curl -sS --max-time 30 "https://arxiv.org/list/cs.LG/2026-07" -o ~/workspaces/.scratch/arxiv_list_lg.html
 # Then paginate to the last page
 for skip in 50 100 150 ... 2900 2950; do
-  curl -sS --max-time 30 "https://arxiv.org/list/cs.LG/2026-07?skip=${skip}" -o /tmp/arxiv_list_lg_skip${skip}.html
+  curl -sS --max-time 30 "https://arxiv.org/list/cs.LG/2026-07?skip=${skip}" -o ~/workspaces/.scratch/arxiv_list_lg_skip${skip}.html
   sleep 1
 done
 ```
@@ -447,7 +449,7 @@ When the API is 429'ing, **search HTML is faster and simpler than listing HTML**
 # Good — returns 50 real results:
 curl -sS --max-time 45 -A "Mozilla/5.0 hermes-cron" \
   "https://arxiv.org/search/?searchtype=all&query=LLM+inference&start=0&order=-announced_date_first" \
-  -o /tmp/arxiv_search_llm_inference.html
+  -o ~/workspaces/.scratch/arxiv_search_llm_inference.html
 sleep 5  # rate limit courtesy
 
 # Bad — returns 0 results, no error:
@@ -458,13 +460,13 @@ sleep 5  # rate limit courtesy
 
 ```bash
 UA="Mozilla/5.0 hermes-cron"
-mkdir -p /tmp/arxiv_search
+mkdir -p ~/workspaces/.scratch/arxiv_search
 for kw in "LLM+serving" "LLM+inference" "KV+cache" "speculative+decoding" \
           "paged+attention" "prefill+decode" "disaggregated" "MoE+serving"; do
   curl -sS --max-time 45 -A "$UA" \
     "https://arxiv.org/search/?searchtype=all&query=${kw}&start=0&order=-announced_date_first" \
-    -o "/tmp/arxiv_search/${kw}.html"
-  echo "  $kw -> $(wc -c < /tmp/arxiv_search/${kw}.html) bytes"
+    -o "$HOME/workspaces/.scratch/arxiv_search/${kw}.html"
+  echo "  $kw -> $(wc -c < "$HOME/workspaces/.scratch/arxiv_search/${kw}.html") bytes"
   sleep 5
 done
 ```
@@ -484,7 +486,7 @@ When `export.arxiv.org` is not just 429-ing but **completely unreachable** (TLS 
 ```bash
 for cat in cs.DC cs.LG cs.PF cs.AR cs.CL; do
   curl -sS --max-time 30 -A "Mozilla/5.0 hermes-cron" \
-    "https://arxiv.org/list/$cat/current" -o "/tmp/arxiv_list_${cat}_current.html"
+    "https://arxiv.org/list/$cat/current" -o "$HOME/workspaces/.scratch/arxiv_list_${cat}_current.html"
   sleep 1
 done
 ```
@@ -492,10 +494,10 @@ done
 Then parse:
 
 ```python
-import re, html
+import os, re, html
 ids = []
 for cat in ["cs.DC", "cs.LG", "cs.PF", "cs.AR", "cs.CL"]:
-    with open(f"/tmp/arxiv_list_{cat}_current.html") as f: raw = f.read()
+    with open(os.path.expanduser(f"~/workspaces/.scratch/arxiv_list_{cat}_current.html")) as f: raw = f.read()
     blocks = re.split(r"<dt>", raw)[1:]
     for b in blocks:
         m_id = re.search(r"/abs/(\d{4}\.\d{4,6})", b)

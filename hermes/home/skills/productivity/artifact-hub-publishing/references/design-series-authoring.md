@@ -15,8 +15,8 @@ Session-specific detail backing the SKILL.md "Design-series authoring" section. 
 
 ### kroki verification recipe (do this BEFORE updating AH)
 ```python
-import zlib, base64, urllib.request
-mm = open('/tmp/diagram.mmd').read()
+import os, zlib, base64, urllib.request
+mm = open(os.path.expanduser('~/workspaces/.scratch/diagram.mmd')).read()
 enc = base64.urlsafe_b64encode(zlib.compress(mm.encode(), 9)).decode().rstrip('=')
 url = f"https://kroki.io/mermaid/svg/{enc}"
 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})

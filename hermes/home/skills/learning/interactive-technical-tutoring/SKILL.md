@@ -23,6 +23,8 @@ Use this for a learner who needs a dense technical topic rebuilt through dialogu
 - The learner can repeat terms but needs the causal relationship between them.
 - A prior explanation became a list of papers, components, or jargon without a usable mental model.
 
+Do not use this skill when the learner only says “더 자세히/쉽게 알려줘” about a paper or topic. That is a request for a plain, full explanation, not for dialogue. Use Socratic mode only when they ask for questions one at a time, or when they ask for it again. If they complain the questions are annoying (“그냥 설명해줘”), drop the mode immediately and explain directly.
+
 Do not use this skill as a source of domain facts. Load the relevant domain skill or inspect the primary source separately.
 
 ## Core teaching contract

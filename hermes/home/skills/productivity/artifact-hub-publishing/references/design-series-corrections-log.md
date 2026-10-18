@@ -67,7 +67,7 @@ truncated `machin...-Id:` → full machine-token + X-Actor-* headers.
 
 ## 5. Tooling notes for this workflow
 
-- read_file on /tmp drafts can serve stale cached content after execute_code writes —
+- read_file on `~/workspaces/.scratch/` drafts can serve stale cached content after execute_code writes —
   verify with execute_code string checks before pushing to AH.
 - Transient MCP "SSE stream ended without a response" resolves by retrying once.
 - kroki mermaid verification needs User-Agent header (403 bare); transient timeouts retry;

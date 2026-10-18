@@ -52,3 +52,5 @@ Design principles: DSL-free (Python/YAML/markdown/mermaid), Skill→MCP→Tool�
 ## References
 
 See `references/benchmarks-deep-facts.md` for component-level detail (OmO senpi 18 components, SSSF ADW/config shapes, ACP message surface, SDD tool matrix).
+
+See `references/embedding-agent-in-product.md` when choosing or embedding an agent runtime inside a product (harness vs library, embed surfaces of omp/Pi/opencode/Claude Agent SDK/Codex/AI SDK, runner-outside-serverless pattern).

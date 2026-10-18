@@ -31,7 +31,7 @@ This is an endpoint/authentication-layer discrepancy, not evidence that the publ
 `https://artifact-content.sharosoo.com/raw/<id>` is **not** the Markdown source. It is a fully rendered HTML page with `<!doctype html>`, `<head>`, `<title>`, and the Markdown converted to semantic HTML. A 5.9KB Markdown body produces ~9.1KB of HTML on the wire. Implications:
 
 - The `truncated-v1` heuristic (compare `len(read["content"])` to the source file) **only applies to the canonical MCP `read_artifact` response**, never to the raw HTTP endpoint. Comparing raw bytes against the source Markdown is meaningless and will always mismatch.
-- Verification via raw should use `curl -sS -o /tmp/check.html -w 'HTTP %{http_code}, bytes %{size_download}\n' "<raw-url>"` followed by `grep` for distinctive phrases from the body (`grep -o "Top Pick" /tmp/check.html`, `grep -o "WideEP" /tmp/check.html`). The completion test is "the distinctive phrases appear in the rendered HTML," not "byte count matches the source."
+- Verification via raw should use `curl -sS -o ~/workspaces/.scratch/check.html -w 'HTTP %{http_code}, bytes %{size_download}\n' "<raw-url>"` followed by `grep` for distinctive phrases from the body (`grep -o "Top Pick" ~/workspaces/.scratch/check.html`, `grep -o "WideEP" ~/workspaces/.scratch/check.html`). The completion test is "the distinctive phrases appear in the rendered HTML," not "byte count matches the source."
 - The `<title>` element of the raw page reflects the **server-normalized title** (see `Skill pitfalls` → `update_artifact may rewrite the title field server-side`). Do not grep the raw page for the exact title you sent — the server may have folded an emoji or date range from the H1 into it.
 
 ## Multi-document index rule

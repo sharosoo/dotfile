@@ -41,7 +41,7 @@ Hand-written Korean labels read as 번역투 to 정혁. Draft every label in Eng
 1. Write a prompt file with the English labels as a JSON object plus rules: label register (short, drop trailing 조사 where a label reads better without it), keep community terms in English (Throne, Push, Spawn), fixed map (minion→미니언, battle zone→전투 구역, wave counter→웨이브 카운터), respond with JSON only.
 2. Run through a script file built with `shlex.quote` — never inline the prompt through shell double quotes:
    `agy --print <quoted-prompt> --dangerously-skip-permissions`
-   `agy -p "..."` fails argument parsing (prints usage, exit 2) — use `--print` with the prompt as its value.
+   Pass the prompt as ONE properly quoted argument (`--print` or `-p`, flags after it); an inline multi-line prompt in shell double quotes breaks argument parsing (usage, exit 2), so build the command with `shlex.quote` or point agy at a prompt file. For whole-article drafting see `agy-korean-article-drafting.md`.
 3. Regex-extract the outer JSON braces, and read every returned value yourself before rendering.
 
 ## Annotating a real photo/screenshot
@@ -50,7 +50,7 @@ Hand-written Korean labels read as 번역투 to 정혁. Draft every label in Eng
 - Verify placement with vision_analyze on the composed image ("is badge N on feature X — if not, give corrected coordinates"), fix, re-check. Verify label rendering (glyphs, truncation, column overflow) the same way before publishing.
 
 ## Pipeline and caching
-- Compose in /tmp; composite RGBA over white; resize to ~1400-2300px wide; JPEG q88-90 progressive.
+- Compose under `~/workspaces/.scratch/<topic>/` (so `workspace_read` can open the result); composite RGBA over white; resize to ~1400-2300px wide; JPEG q88-90 progressive.
 - Host: `sharosoo-cdn put <files> --prefix <topic>` (`sharosoo-cdn` skill); embed the printed `https://cdn.sharosoo.com/<topic>/<file>.jpg`. The CLI verifies 200 + bytes.
 - Updating an existing image file in place: append `?v=N` to the raw URL in the article body — GitHub raw caches a few minutes and the embed keeps showing old pixels otherwise.
 - Post-publish: browser-check every embed `complete && naturalWidth > 0`, and confirm the new pixel dimensions when an image was replaced — matching dimensions are the proof the fresh file rendered rather than a cache copy.

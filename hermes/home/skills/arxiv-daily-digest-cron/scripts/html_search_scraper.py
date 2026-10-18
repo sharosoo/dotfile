@@ -9,7 +9,7 @@ encoded entirely in the `is-link` vs `is-grey` CSS class on tag spans.
 
 Usage:
     python3 html_search_scraper.py \\
-        --html-glob "/tmp/arxiv_html_*.html" \\
+        --html-glob "$HOME/workspaces/.scratch/arxiv_html_*.html" \\
         --state ~/.hermes/cron/arxiv/state.json \\
         --cutoff 2026-07-23 \\
         --good-cats cs.DC cs.LG cs.PF cs.AR cs.OS cs.NA \\

@@ -7,6 +7,46 @@
     "kind": "absolute",
     "target": "/usr/share/omarchy/default/agents/skills/diagnose-crash"
   },
+  "hyperframes": {
+    "kind": "home",
+    "target": ".claude/skills/hyperframes"
+  },
+  "hyperframes-animation": {
+    "kind": "home",
+    "target": ".claude/skills/hyperframes-animation"
+  },
+  "hyperframes-audio": {
+    "kind": "home",
+    "target": ".claude/skills/hyperframes-audio"
+  },
+  "hyperframes-cli": {
+    "kind": "home",
+    "target": ".claude/skills/hyperframes-cli"
+  },
+  "hyperframes-core": {
+    "kind": "home",
+    "target": ".claude/skills/hyperframes-core"
+  },
+  "hyperframes-creative": {
+    "kind": "home",
+    "target": ".claude/skills/hyperframes-creative"
+  },
+  "hyperframes-keyframes": {
+    "kind": "home",
+    "target": ".claude/skills/hyperframes-keyframes"
+  },
+  "hyperframes-registry": {
+    "kind": "home",
+    "target": ".claude/skills/hyperframes-registry"
+  },
+  "hyperframes-studio": {
+    "kind": "home",
+    "target": ".claude/skills/hyperframes-studio"
+  },
+  "media-use": {
+    "kind": "home",
+    "target": ".claude/skills/media-use"
+  },
   "model-routing": {
     "kind": "home",
     "target": ".omp/agent/managed-skills/model-routing"

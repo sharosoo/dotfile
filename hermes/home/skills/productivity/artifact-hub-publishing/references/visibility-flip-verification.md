@@ -7,7 +7,8 @@
 After a visibility flip, verify with an unauthenticated raw fetch:
 
 ```sh
-curl -sSL "<raw-url>?v=<version>" -o /tmp/check.html -w 'HTTP %{http_code}, bytes %{size_download}\n'
+mkdir -p ~/workspaces/.scratch   # working files stay where workspace_read can open them
+curl -sSL "<raw-url>?v=<version>" -o ~/workspaces/.scratch/check.html -w 'HTTP %{http_code}, bytes %{size_download}\n'
 ```
 
 - A login-redirect page (`sharosoo · 로그인` in `<title>`, ~1KB) means the artifact is STILL gated.

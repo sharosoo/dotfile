@@ -106,7 +106,7 @@ For bodies > 30KB (the depth-mode daily report is typically 30–45KB; long blog
 
 ```python
 # Cron-safe pattern — body is read from a file, no argument-size limit
-import sys
+import os, sys
 sys.path.insert(0, "/home/global/.hermes/hermes-agent")
 from tools.mcp_tool_discovery import discover_mcp_tools   # moved from tools.mcp_tool; old path kept only for external plugins
 from tools.registry import registry
@@ -114,7 +114,7 @@ from tools.registry import registry
 discover_mcp_tools()
 update = registry.get_entry("mcp__arthub__update_artifact").handler
 
-content = open("/tmp/full_body.md", encoding="utf-8").read()
+content = open(os.path.expanduser("~/workspaces/.scratch/full_body.md"), encoding="utf-8").read()
 result = update({
     "slug": "llm-serving-daily-report-2026-08-07",
     "project": "llm-serving",
@@ -150,14 +150,14 @@ Running the in-process publish script via the `terminal` tool can crash with `Va
 Same imports, same payload, but invoke through `execute_code` instead — it executes in the session's active venv (the hermes venv), so the imports resolve without any shell command:
 
 ```python
-import sys
+import os, sys
 sys.path.insert(0, "/home/global/.hermes/hermes-agent")
 from tools.mcp_tool_discovery import discover_mcp_tools   # moved from tools.mcp_tool; old path kept only for external plugins
 from tools.registry import registry
 
 discover_mcp_tools()
 publish = registry.get_entry("mcp__arthub__publish_artifact").handler
-content = open("/tmp/article.md", encoding="utf-8").read()
+content = open(os.path.expanduser("~/workspaces/.scratch/article.md"), encoding="utf-8").read()
 result = publish({
     "content": content, "title": "...", "slug": "...",
     "project": "...", "format": "md", "visibility": "link",
