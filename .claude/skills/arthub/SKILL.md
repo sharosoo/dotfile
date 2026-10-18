@@ -30,9 +30,35 @@ claude mcp add --transport http arthub https://artifact.sharosoo.com/mcp --heade
 2. `#` 제목은 문서당 하나
 3. `:::` 컴포넌트 중첩은 바깥 마커를 더 길게 (`::::grid` > `:::card`)
 4. 라이브 블록은 자체로 완결되게 (블록 간 변수 공유 불가, 부모 접근 불가)
-5. 차트는 ```chart 프리셋으로만 만든다
+5. 차트는 OpenUI 공식 차트(BarChart, LineChart, AreaChart, PieChart, RadarChart, RadialChart, ScatterChart, HorizontalBarChart, SingleStackedBarChart)를 먼저 쓴다. 단순 정적 수치는 `chart` 프리셋도 된다.
 
 전체 규약: https://artifact.sharosoo.com/llms-full.txt
+
+## Structured UI with OpenUI
+
+Use `openui` fences for structured and interactive UI. Use `html render` only
+when OpenUI cannot express the component. OpenUI server-renders initial HTML
+and mounts a reactive browser runtime without an iframe. `$variables`, built-in
+`@` functions, actions, Query/Mutation, and the complete official OpenUI component
+library are supported: charts, column tables, cards, FormControl/SelectItem forms,
+tabs, accordions, images and rich text. Document components add Grid, Stat,
+Callout, Badge and curated Lucide Icon SVGs, with optional leading icons on
+Card/Stat/Callout/Badge/Button. Select and Slider accept optional visible labels.
+Query-backed content shows shaped skeletons during initial loads and refetches.
+Use `http_get` for JSON and `store_*` tools for per-document localStorage persistence.
+`@ToAssistant` is rejected: a document has no assistant. `@Custom` emits a host event.
+Existing document signatures remain valid; overlapping official signatures are
+selected by argument shape (or an explicit `OfficialName` for ambiguous calls).
+Official SSR includes button variants, selected values, table rows, the first tab
+panel, native accordion details, images and static chart SVGs. Only the official
+renderers and styles used by a document load; document-only programs load the
+small shared runtime. Three-argument warning Callout uses the official left bar;
+pass a fourth icon argument (or null) to retain the document warning tone.
+
+Read [the generated component reference](references/openui.md) for exact
+positional arguments and examples. It is generated from the same library used
+by the renderer (`npm run docs:openui`); `/llms-full.txt` always exposes the
+current generated reference.
 
 ## 툴
 

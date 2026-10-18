@@ -37,10 +37,11 @@ Skip for short summaries/chapters only, or static markdown doc sets (`documentat
 1. **Fetch (file-backed).**
    ```bash
    SKILL_DIR="$HOME/.hermes/skills/media/youtube-content"
-   mkdir -p /tmp/<vid>
+   mkdir -p ~/workspaces/.scratch/<vid>
    # Prefer spoken language. Example Korean talk:
-   python3 "$SKILL_DIR/scripts/fetch_transcript.py" "URL" --language ko --timestamps > /tmp/<vid>/transcript.json
+   python3 "$SKILL_DIR/scripts/fetch_transcript.py" "URL" --language ko --timestamps > ~/workspaces/.scratch/<vid>/transcript.json
    ```
+   - Working files (transcript, body.md, frames, crops) live under `~/workspaces/.scratch/<vid>/` so your own `workspace_read` can open them (images and PDFs included); do not hand image reading to another agent.
    - Helper has **no `-o`**. Redirect stdout.
    - Do not use `head -c` for the canonical dump.
    - If `ko` is thin/broken and `en` is the only complete track, say so; still **refine** into Korean notes rather than dumping EN.
@@ -63,7 +64,7 @@ Skip for short summaries/chapters only, or static markdown doc sets (`documentat
 6. **Images.**
    - Crop figures (pymupdf caption+drawing bbox → trim). Verify page_frac ≪ 1.0.
    - Host: `sharosoo-cdn put <files> --prefix <dir>` (`sharosoo-cdn` skill) → `https://cdn.sharosoo.com/<dir>/...`; the CLI verifies HTTP 200 + bytes.
-   - No `/tmp/...` paths in published MD.
+   - No local working paths (`/tmp/...`, `~/workspaces/.scratch/...`) in published MD.
    - Optional video slide frames: only when they show slides/diagrams, not talking-head spam.
 
 6. **Publish.** Body > 30KB → **in-process arthub handler from v1**. list → update/publish same `(project,slug)` → `read_artifact` phrases → raw grep images. Fix linter one family per version; residual single `prefer-table` after two passes OK.
@@ -81,6 +82,17 @@ Short English talk with no arXiv/report behind it (RoboNuggets Opus 5 output-sty
 5. **Citations**: a numbered `## Sources` list (video + primary sources actually consulted) is sufficient for a single-video note; reserve the full grounded-citations ledger for articles with many fine-grained sourced claims.
 6. **Proofread the local body (typos, 조사) BEFORE the first publish** — a post-publish typo fix costs a whole artifact version (v2→v3 this session).
 7. **Project**: model/tool-usage talks → `project=model-notes`, English slug `<topic>-ko` (precedents: `kimi-k3-sudoremove-transcript-ko`, `opus5-output-style-and-skills-ko`).
+
+## Variant — screen-share talk where frames carry the content (2026-10 Durable Objects/celld session)
+
+When the user asks for "영상의 이미지도 받아서" on a code-demo video (no paper):
+
+1. **Download**: `yt-dlp -f 136` (720p mp4_dash) can 403; fall back to `-f 232` (720p HLS, ~20MB, works). Quote the output template (`-o 'video.%(ext)s'`) or the shell chokes on parentheses. yt-dlp progress spam can exceed the terminal capture, so redirect its output to a file and read only the result line.
+2. **Pick frames by transcript anchors**, not even spacing: extract ~20 candidates at transcript segment times with `ffmpeg -ss <t> -i video.mp4 -frames:v 1 -vf scale=1280:-2`, tile them (`ffmpeg -pattern_type glob -i 'f_*.jpg' -vf scale=480:270,tile=4x5`) and ask vision for filename/code per cell. Vision on a contact sheet mislabels details; re-check the 6-8 finalists individually before captioning them. Captions state "영상 약 m:ss".
+3. **Diagrams**: flows → ```mermaid; cards, timelines, stat tiles, comparisons, steps → ```openui (server-rendered, themed; see `artifact-hub-publishing` → `references/rich-markdown-and-charts.md`). Hand-written SVG inside ```html render only for layouts neither can express; render each such block standalone with `chromium --headless=new --no-sandbox --screenshot=x.png file://...` and fix arrows crossing text before publishing. After publish, full-page screenshot the raw URL with `--window-size=1000,24000 --virtual-time-budget=25000`, crop with ffmpeg, and vision-check every block. `mmdc` validates mermaid locally; the server also rejects mermaid and OpenUI that do not compile.
+4. **Date traps in fetched pages**: a blog page's trailing "October 6, 2026" can be the next-post sidebar, not the article date. Read `article:published_time` from the HTML meta before putting a date in a timeline.
+5. When the user asks for the Korean text and diagrams to be written by `agy -p` from English intent, follow `artifact-hub-publishing` → `references/agy-korean-article-drafting.md` (English brief, background run, mandatory fidelity review, fixes round, render check).
+6. When the user adds a news-style question ("왜 X가 Y에 관심?"), search for the event itself first: the answer was a same-day announcement (Deno joining Cloudflare) that post-dated the video. Label official statements vs community reading vs own inference in the article.
 
 ## Variant — re-upload of a known talk (Tech Bridge channel)
 
