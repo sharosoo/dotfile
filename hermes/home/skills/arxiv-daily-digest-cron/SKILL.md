@@ -42,7 +42,7 @@ A cron job (or recurring task) that:
 - HTTP 503 with a 60s timeout on the first request of the day after a quiet period
 - A single big query can stall 45s before 503-ing
 
-**Working pattern**: split into 5–7 narrow per-keyword queries, each with `max_results=10–20`, run serially with 5–8s sleeps between, save each to `/tmp/arxiv_X.xml`, parse and merge in a single Python step. This rides under the rate limit and recovers gracefully from intermittent 503s (retry the failed file once after a 30–60s backoff).
+**Working pattern**: split into 5–7 narrow per-keyword queries, each with `max_results=10–20`, run serially with 5–8s sleeps between, save each to `~/workspaces/.scratch/arxiv_X.xml` (`mkdir -p ~/workspaces/.scratch` first; working files live there so your own `workspace_read` can open them — do not hand file reading to another agent), parse and merge in a single Python step. This rides under the rate limit and recovers gracefully from intermittent 503s (retry the failed file once after a 30–60s backoff).
 
 **Fast empty-day check (30-second decision)**: before the fanout, do ONE probe query (`max_results=5`, any keyword, `sortBy=submittedDate&sortOrder=descending`) and look at the top result's `published` date. If it's ≥ 2 days before today, this is a weekend/holiday gap — skip the fanout entirely, update state with `last_yield: 0`, and ship "오늘 새 논문 없음". Saves 3-5 minutes of futile parsing.
 
@@ -50,14 +50,14 @@ A cron job (or recurring task) that:
 
 ```bash
 # Probe (use the broadest keyword; the LLM inference one returns the most)
-curl -sS --max-time 30 "https://export.arxiv.org/api/query?search_query=abs%3A%22LLM+inference%22+AND+%28cat%3ACs.DC+OR+cat%3ACs.LG%29&max_results=5&sortBy=submittedDate&sortOrder=descending" -o /tmp/arxiv_probe.xml
+curl -sS --max-time 30 "https://export.arxiv.org/api/query?search_query=abs%3A%22LLM+inference%22+AND+%28cat%3ACs.DC+OR+cat%3ACs.LG%29&max_results=5&sortBy=submittedDate&sortOrder=descending" -o ~/workspaces/.scratch/arxiv_probe.xml
 ```
 
 ```bash
 # 5-7 small queries with sleeps
-curl -sS --max-time 60 "https://export.arxiv.org/api/query?search_query=abs%3A%22LLM+inference%22+AND+%28cat%3Acs.DC+OR+cat%3Acs.LG%29&max_results=20&sortBy=submittedDate&sortOrder=descending" -o /tmp/arxiv_a.xml
+curl -sS --max-time 60 "https://export.arxiv.org/api/query?search_query=abs%3A%22LLM+inference%22+AND+%28cat%3Acs.DC+OR+cat%3Acs.LG%29&max_results=20&sortBy=submittedDate&sortOrder=descending" -o ~/workspaces/.scratch/arxiv_a.xml
 sleep 6
-curl -sS --max-time 60 "https://export.arxiv.org/api/query?search_query=abs%3A%22KV+cache%22+..." -o /tmp/arxiv_b.xml
+curl -sS --max-time 60 "https://export.arxiv.org/api/query?search_query=abs%3A%22KV+cache%22+..." -o ~/workspaces/.scratch/arxiv_b.xml
 # ... etc
 ```
 
@@ -419,14 +419,14 @@ curl -sS --max-time 15 "https://arxiv.org/" -o /tmp/x -w "HTTP:%{http_code} size
 # 1. Get the current batch ids per category
 for cat in cs.DC cs.LG cs.PF cs.AR cs.CL; do
   curl -sS --max-time 30 -A "Mozilla/5.0 hermes-cron" \
-    "https://arxiv.org/list/$cat/current" -o "/tmp/arxiv_list_${cat}_current.html"
+    "https://arxiv.org/list/$cat/current" -o "$HOME/workspaces/.scratch/arxiv_list_${cat}_current.html"
   sleep 1
 done
 
 # 2. Optionally also pull the current month's listing (catches papers
 #    that were in the current batch but listed under a different category)
 curl -sS --max-time 30 -A "Mozilla/5.0 hermes-cron" \
-  "https://arxiv.org/list/cs.LG/2026-08" -o /tmp/arxiv_list_cs_lg_aug.html
+  "https://arxiv.org/list/cs.LG/2026-08" -o ~/workspaces/.scratch/arxiv_list_cs_lg_aug.html
 ```
 
 Then parse with the same `re.findall(r"arXiv:(\d{4}\.\d{4,6})", body)` + per-`/abs/<id>`-fetch pattern as the listing-HTML path. The "current" page returns ~9 entries for cs.DC, ~26 for cs.LG, ~2 for cs.PF — far fewer than a month page, but every entry is from the *current* announce batch.

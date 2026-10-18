@@ -14,14 +14,14 @@ Ready-to-merge notes for `references/arthub-mcp-contract.md` (write to that file
 ## Verified publish+read-back recipe (model-notes, single-video talk)
 
 ```python
-import json, sys
+import json, os, sys
 sys.path.insert(0, "/home/global/.hermes/hermes-agent")
 from tools.mcp_tool import discover_mcp_tools
 from tools.registry import registry
 
 discover_mcp_tools()
 publish = registry.get_entry("mcp__arthub__publish_artifact").handler
-content = open("/tmp/specvideo/body.md", encoding="utf-8").read()
+content = open(os.path.expanduser("~/workspaces/.scratch/specvideo/body.md"), encoding="utf-8").read()
 res = publish({
     "content": content, "title": "...", "slug": "...",
     "project": "model-notes", "format": "md", "visibility": "link",
@@ -41,10 +41,11 @@ assert canonical.strip() == content.strip()   # byte-identical verification
 Raw/detail endpoint spot-check in the same run:
 
 ```bash
-curl -sS -o /tmp/check.html -w 'RAW HTTP %{http_code}, bytes %{size_download}\n' "https://artifact-content.sharosoo.com/raw/<id>?v=1"
-grep -c '<distinctive-phrase>' /tmp/check.html
-curl -sS -o /tmp/detail.html -w 'DETAIL HTTP %{http_code}, bytes %{size_download}\n' "https://artifact.sharosoo.com/a/<id>?v=1"
-grep -o 'Open v1' /tmp/detail.html | head -1
+mkdir -p ~/workspaces/.scratch   # keep working files where workspace_read can open them
+curl -sS -o ~/workspaces/.scratch/check.html -w 'RAW HTTP %{http_code}, bytes %{size_download}\n' "https://artifact-content.sharosoo.com/raw/<id>?v=1"
+grep -c '<distinctive-phrase>' ~/workspaces/.scratch/check.html
+curl -sS -o ~/workspaces/.scratch/detail.html -w 'DETAIL HTTP %{http_code}, bytes %{size_download}\n' "https://artifact.sharosoo.com/a/<id>?v=1"
+grep -o 'Open v1' ~/workspaces/.scratch/detail.html | head -1
 ```
 
 In-process registry handler payload for `publish_artifact` (worked 2026-08-30): `content`, `title`, `slug`, `project`, `format`, `visibility: "link"`, `agent_source` — no `tags` (known contract limitation).

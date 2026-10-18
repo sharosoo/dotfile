@@ -160,4 +160,6 @@ Avoid dumping hundreds of grep matches. Compress repeated provider details into 
 
 ## Session-Specific References
 
+- Release notes, per-package changelog in a single-version monorepo, and "does it support Python X / free-threaded" questions about an OSS repo the user follows: `references/release-changelog-and-support-matrix.md`.
+
 - Native reasoning/replay, artifact-backed chat, live feature context, affinity, tests, and commit evidence from a provider-continuity investigation: `references/provider-native-chat-investigation.md`.

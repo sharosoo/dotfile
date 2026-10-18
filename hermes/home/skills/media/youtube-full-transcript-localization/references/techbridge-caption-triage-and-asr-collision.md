@@ -39,9 +39,9 @@ Unresolvable speaker name ("Luna Diva"): multi-web-search attempts found no matc
 Programmatic check after drafting, before publish:
 
 ```python
-import json
-t = json.load(open('/tmp/<vid>/transcript.json'))
-body = open('/tmp/<vid>/body.md', encoding='utf-8').read()
+import json, os
+t = json.load(open(os.path.expanduser('~/workspaces/.scratch/<vid>/transcript.json')))
+body = open(os.path.expanduser('~/workspaces/.scratch/<vid>/body.md'), encoding='utf-8').read()
 missing = []
 for s in t['segments']:
     sec = int(s['start']); mm, ss = divmod(sec, 60)

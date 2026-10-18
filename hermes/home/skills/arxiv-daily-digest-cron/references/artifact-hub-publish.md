@@ -66,7 +66,7 @@ All of that lives in `state.json` and in the stdout (1-line 비고 line). The Ar
 Do NOT put `<div>`, `<table>`, `<tr>`, `<td>`, `<html>`, `<body>`, `<span>`, `<p>` directly in the Markdown body — Artifact Hub's `no-raw-html` lint rejects these. The arXiv digest body has no such tags; just confirm with:
 
 ```bash
-grep -nE '<(div|table|tr|td|th|html|body|span|p )' /tmp/arxiv_content.md
+grep -nE '<(div|table|tr|td|th|html|body|span|p )' ~/workspaces/.scratch/arxiv_content.md
 ```
 
 Should return zero lines.
