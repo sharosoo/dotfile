@@ -7,6 +7,15 @@
 마크다운이 기본이다. 산문은 테마가 알아서 예쁘게 렌더하고, 인터랙티브한 부분만
 라이브 블록으로 뺀다. 통짜 HTML은 슬라이드처럼 레이아웃을 완전히 장악해야 할 때만 쓴다.
 
+Use `openui` fences for structured and interactive UI; use `html render` only
+when OpenUI cannot express the component. See [the generated OpenUI reference](openui.md)
+for all component and tool signatures. Initial server-rendered HTML remains
+visible without JavaScript; the browser runtime supports `$variables`, built-in
+`@` functions, actions, Query/Mutation, forms and inputs. `http_get` fetches JSON
+subject to CSP; `store_get`, `store_set`, `store_append`, `store_remove` persist
+document-local data. `@ToAssistant` is rejected because there is no assistant.
+Simple bars may use OpenUI BarChart as an alternative to the `chart` preset.
+
 **스타일을 직접 쓰지 마라.** 색·폰트·여백은 테마가 소유한다. 아래 컴포넌트로 표현하고,
 컴포넌트로 표현할 수 없는 것만 라이브 블록으로 처리한다.
 
@@ -25,8 +34,10 @@
 4. 라이브 블록은 자체로 완결돼야 한다. 블록마다 별개 문서에서 실행되므로
    블록 간 변수 공유가 안 되고, 부모 문서(window.parent, top.)에 접근할 수 없다.
 
-5. 차트는 ```chart 프리셋으로만 만든다. Charts.css <table>을 직접 쓰지 않는다.
-   라벨 겹침 방지는 이 방식에서만 적용된다.
+5. Use the `chart` preset for its supported chart types, or OpenUI BarChart for simple bars.
+   Do not hand-write Charts.css tables; their label-collision handling only runs on the preset path.
+
+6. Diagrams that fail to compile are rejected.
 
 ## 컴포넌트
 
