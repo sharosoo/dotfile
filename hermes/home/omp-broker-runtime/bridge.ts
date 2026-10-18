@@ -102,7 +102,10 @@ async function catalog(provider: string, auth: AuthStorage) {
   if (!resolved?.credentialId) throw new Error(`No active broker credential for ${provider}`);
   let options;
   if (provider === "google-antigravity") {
-    options = googleAntigravityModelManagerOptions({ oauthToken: JSON.parse(resolved.apiKey).token });
+    options = googleAntigravityModelManagerOptions({ resolveAccounts: async () => {
+      const accounts = await auth.oauth.accessAll(provider, { signal: controller.signal });
+      return accounts.flatMap(row => row.ok ? [{ accessToken: row.accessToken, accountKey: row.email || row.accountId }] : []);
+    } });
   } else if (provider === "openai-codex") {
     options = openaiCodexModelManagerOptions({ resolveAccounts: async () => {
       const accounts = await auth.oauth.accessAll(provider, { signal: controller.signal });
@@ -177,6 +180,15 @@ async function run(input: BridgeInput) {
     let model = getBundledModels(input.provider as GeneratedProvider).find(row => row.id === id);
     if (!model) model = (await catalog(input.provider, auth)).find(row => row.id === id);
     if (!model) throw new Error(`Unknown native model ${input.provider}/${id}`);
+    const accountIds = input.provider === "google-antigravity"
+      ? (["claude-opus-5-5", "claude-sonnet-5-5", "gemini-4-argon"].includes(model.id)
+        ? ["yh04060@gmail.com"]
+        : ["zkwmak08@gmail.com", "sharosoo14@gmail.com"])
+      : (model.accountAccess ? Object.keys(model.accountAccess) : undefined);
+    if (accountIds?.length) {
+      const origGet = auth.keys.getWithCredential.bind(auth.keys);
+      auth.keys.getWithCredential = (prov, sid, opts) => origGet(prov, sid, { ...opts, accountIds: opts?.accountIds ?? accountIds });
+    }
     const nativeResolver = auth.keys.resolver(input.provider, { modelId: model.id, sessionId: request.session_id || undefined, baseUrl: model.baseUrl });
     const resolver: ApiKeyResolver = async context => {
       // Every actual attempt observes the broker, including disabled/deleted rows; no snapshot disk cache or local refresh.
