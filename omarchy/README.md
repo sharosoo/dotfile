@@ -41,6 +41,7 @@ hyprctl reload
 | 바 위젯: 시스템 통계 및 OMP 사용량 | `.config/omarchy/plugins/sharosoo.sysstat/`<br>`.config/omarchy/plugins/sharosoo.omp-usage/` | 상단 바에 CPU·메모리 사용량과 디스크 읽기·쓰기 속도를 표시(마우스를 올리면 I/O 대기 비율도 표시, 클릭 시 btop 실행)하고 OMP 사용량 패널을 제공합니다. 기존 `~/workspaces/sharosoo/omarchy-plugins`에서 이곳으로 옮겨왔습니다. 패널의 전체 요약과 각 프로바이더 탭에서 꺼둔 계정을 포함한 모든 계정을 온·오프 스위치와 함께 표시합니다(Command Code API 키처럼 식별 정보가 없는 계정은 스위치 제외). 스위치는 `bin/omp-accounts`를 실행해 `~/.omp/agent/agent.db`의 `disabled_cause`를 설정·해제하며, 인증 실패로 omp가 비활성화한 계정은 제외하고 사용자가 직접 끈 계정만 다시 켭니다. |
 | 블루투스 키보드 페어링 | `.local/bin/bt-keyboard-pair` | 페어링 모드 상태인 키보드를 찾아 페어링·신뢰·연결까지 진행하며, 화면 알림으로 패스키를 보여줍니다. |
 | 서드파티 바 플러그인 | `vendor/plugins/`<br>`vendor/plugins.lock` | `jankeesvw.herdr`, `jankeesvw.notification-center`, `quickshell.spotify`(MIT)의 코드(업스트림 문서·스크린샷 제외)와 업스트림 주소 및 커밋 해시입니다. `sync.sh`가 해당 커밋으로 복제하며 실패 시 보관된 코드로 대체합니다. `omarchy plugin update` 후에는 `sync.sh capture`로 코드와 락 파일을 갱신합니다. |
+| Btrfs storage runbook | [`BTRFS.md`](BTRFS.md) | Manual diagnosis, per-checkout subvolumes, pnpm store constraints, and reversible tuning on turing. No automatic mount or encryption changes. |
 
 ## Omarchy 업데이트 후
 
