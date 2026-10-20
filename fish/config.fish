@@ -80,13 +80,6 @@ set -gx BUN_INSTALL $HOME/.bun
 # pnpm
 set -gx PNPM_HOME $HOME/.local/share/pnpm
 
-# NVM
-set -gx NVM_DIR $HOME/.nvm
-
-# Volta
-set -gx VOLTA_HOME $HOME/.volta
-set -gx PATH $PATH $VOLTA_HOME/bin
-
 # Homebrew
 switch (uname -s)
     case Darwin
@@ -215,3 +208,8 @@ end
 # >>> grok installer >>>
 fish_add_path $HOME/.grok/bin
 # <<< grok installer <<<
+
+# mise (node 등 버전 관리) — brew shellenv 이후에 활성화해야 PATH 우선순위가 맞음
+if type -q mise
+    mise activate fish | source
+end
