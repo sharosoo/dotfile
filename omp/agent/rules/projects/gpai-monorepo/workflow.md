@@ -229,3 +229,12 @@ Output: PR URL, number, mode (create/update), final title, concise body summary,
 ## 8. Dori credentials
 
 Before running any `pnpm dori` command that reads GCP Secret Manager (`secret pull`, `sql --stage`, `db exec`, `dev` first pull), read `~/.omp/agent/rules/projects/gpai-monorepo/dori-credentials.local.md`. It is machine-local (the dotfile repo is public) and holds the service-account key setup and stage-query rules. If it is missing on this machine, ask the user; never fall back to issuing a new key.
+
+## 9. Worktrees and scratch checkouts
+
+Every checkout a session creates for gpai-monorepo — `git worktree add` anywhere, isolated subagent copies under `/tmp/<Name>`, `/tmp/pr<n>-*` merge checkouts — is removed by that session when its work ends (merged, pushed to its branch, or abandoned), before the final report. Main removes isolated subagent checkouts once their result is integrated.
+
+- Before removing: `git -C <path> status --porcelain` is empty or holds only throwaway files, and every commit is on a pushed branch or already in the main checkout. Otherwise keep it and name it in the report.
+- Remove with `ionice -c3 git worktree remove --force <path>` (plain scratch dirs: `ionice -c3 rm -rf -- <path>`), **one at a time**, then `git worktree prune`. Never delete many checkouts in parallel: on turing (DRAM-less QLC SSD under dm-crypt + btrfs) parallel small-file deletes of `node_modules`/`.venv`/`.mypy_cache` stall the whole desktop for an hour.
+- Keep a checkout only when the user asked for it or a draft PR in this conversation is still being iterated; list each kept path in the final report.
+- Never remove checkouts another session or the user created without asking.
