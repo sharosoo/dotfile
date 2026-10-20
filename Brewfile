@@ -99,7 +99,6 @@ cask "font-hack-nerd-font"
 # Applications
 cask "ghostty"
 cask "sol"            # Launcher
-cask "rectangle"      # Window manager
 cask "podman-desktop"
 cask "ente-auth"
 cask "upic"           # Image upload
