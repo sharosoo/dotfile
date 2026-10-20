@@ -103,6 +103,10 @@ struct Limit: Identifiable {
     let durationMs: Double
     let detail: String
     let exhausted: Bool
+
+    /// `omp usage` caches reports, so a window whose reset time has passed still
+    /// carries the old fraction; it is actually empty again.
+    var current: Double { resetsAt > 0 && resetsAt / 1000 < Date().timeIntervalSince1970 ? 0 : fraction }
 }
 
 struct Credential { let id: Int; let enabled: Bool; let userDisabled: Bool }
@@ -125,7 +129,7 @@ final class Account: Identifiable {
 
     var enabled: Bool { credentials.isEmpty || credentials.contains { $0.enabled } }
     var switchable: Bool { !credentials.isEmpty && credentials.allSatisfy { $0.enabled || $0.userDisabled } }
-    var peak: Limit? { limits.max { $0.fraction < $1.fraction } }
+    var peak: Limit? { limits.max { $0.current < $1.current } }
     var shortLabel: String { label.split(separator: "@").first.map(String.init) ?? label }
 }
 
@@ -135,7 +139,9 @@ final class Provider: Identifiable {
     var accounts: [Account] = []
     var keyed: [String: Account] = [:]
     init(id: String) { self.id = id; name = providerName(id) }
-    var peak: Limit? { accounts.compactMap(\.peak).max { $0.fraction < $1.fraction } }
+    /// omp rotates between a provider's enabled accounts, so the provider runs out
+    /// only when its least-used account does: that account's peak is the provider level.
+    var level: Double? { accounts.filter(\.enabled).compactMap { $0.peak?.current }.min() }
 }
 
 func fmtAmount(_ v: Any?, unit: String? = nil) -> String {
@@ -246,16 +252,14 @@ final class UsageStore: ObservableObject {
 
     private var timer: Timer?
 
-    init() {
+    init(autoRefresh: Bool = true) {
+        guard autoRefresh else { return }
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in Task { @MainActor in self?.refresh() } }
     }
 
-    var overall: (provider: String, limit: Limit)? {
-        var best: (String, Limit)?
-        for p in providers { if let pk = p.peak, best == nil || pk.fraction > best!.1.fraction { best = (p.name, pk) } }
-        return best.map { ($0.0, $0.1) }
-    }
+    /// The provider closest to running out.
+    var overall: Double? { providers.compactMap(\.level).max() }
 
     func refresh() {
         guard !loading else { return }
@@ -368,20 +372,41 @@ struct Meter: View {
     }
 }
 
+/// Compact limit name: window spelled short, provider prefix and "(shared)" dropped.
+func shortTitle(_ title: String) -> String {
+    var t = title
+    for (from, to) in [("Claude 5 Hour", "5h"), ("Claude 7 Day", "7d"), (" (shared)", ""), ("5-hour limit", "5h"), ("Weekly limit", "7d"),
+                       ("5 Hour", "5h"), ("7 Day", "7d"), ("7 days", "7d"), ("Weekly", "7d"), ("Daily", "1d")] {
+        t = t.replacingOccurrences(of: from, with: to)
+    }
+    return t.trimmingCharacters(in: .whitespaces)
+}
+
+func shortReset(_ ms: Double) -> String {
+    guard ms > 0 else { return "" }
+    let left = Int(ms / 1000 - Date().timeIntervalSince1970)
+    if left <= 0 { return "now" }
+    let d = left / 86400, h = left % 86400 / 3600, m = left % 3600 / 60
+    if d > 0 { return "\(d)d \(h)h" }
+    if h > 0 { return "\(h)h \(m)m" }
+    return "\(m)m"
+}
+
+/// One line per limit: name, meter, percent, time to reset.
 struct LimitRow: View {
     let limit: Limit
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(limit.title).font(.system(size: 12))
-                Spacer()
-                Text(pct(limit.fraction))
-                    .font(.system(size: 12, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(limit.exhausted || limit.fraction >= 0.9 ? levelColor(1) : .primary)
-            }
-            Meter(fraction: limit.fraction)
-            let extra = [limit.detail, resetText(limit.resetsAt)].filter { !$0.isEmpty }.joined(separator: " · ")
-            if !extra.isEmpty { Text(extra).font(.system(size: 10.5)).foregroundStyle(.secondary) }
+        HStack(spacing: 8) {
+            Text(shortTitle(limit.title)).font(.system(size: 11.5)).lineLimit(1)
+                .frame(width: 112, alignment: .leading)
+                .help(limit.title + (limit.detail.isEmpty ? "" : " · " + limit.detail))
+            Meter(fraction: limit.current, height: 5)
+            Text(pct(limit.current))
+                .font(.system(size: 11.5, weight: .semibold).monospacedDigit())
+                .foregroundStyle(limit.exhausted || limit.current >= 0.9 ? levelColor(1) : .primary)
+                .frame(width: 36, alignment: .trailing)
+            Text(shortReset(limit.resetsAt)).font(.system(size: 10.5).monospacedDigit()).foregroundStyle(.secondary)
+                .frame(width: 44, alignment: .trailing)
         }
     }
 }
@@ -391,7 +416,7 @@ struct AccountCard: View {
     @ObservedObject var store: UsageStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 Text(account.shortLabel).font(.system(size: 12.5, weight: .medium))
                     .foregroundStyle(account.enabled ? .primary : .secondary)
@@ -417,22 +442,48 @@ struct AccountCard: View {
                 }
             }
         }
-        .padding(10)
+        .padding(.horizontal, 10).padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+    }
+}
+
+struct HeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+struct ProvidersList: View {
+    @ObservedObject var store: UsageStore
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ForEach(store.providers) { p in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(p.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                        Spacer()
+                        if let level = p.level { Text(pct(level)).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary) }
+                    }
+                    ForEach(p.accounts) { AccountCard(account: $0, store: store) }
+                }
+            }
+            if store.providers.isEmpty && !store.loading {
+                Text("omp has no provider usage to report.").foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 14).padding(.bottom, 10)
+        .frame(width: 360, alignment: .leading)
     }
 }
 
 struct UsagePanel: View {
     @ObservedObject var store: UsageStore
     @ObservedObject var sys: SysStore
+    @State private var listHeight: CGFloat = 300
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("AI usage").font(.system(size: 14, weight: .semibold))
-                if let host = Env.brokerHost {
-                    Text("via \(host)").font(.system(size: 11)).foregroundStyle(.secondary)
-                }
                 Spacer()
                 if store.loading { ProgressView().controlSize(.small) }
                 Button { store.refresh() } label: { Image(systemName: "arrow.clockwise") }
@@ -445,25 +496,14 @@ struct UsagePanel: View {
                     .padding(.horizontal, 14).padding(.bottom, 6).lineLimit(3)
             }
 
+            // A ScrollView has no height of its own inside a menu bar window, so it
+            // collapses unless sized to its measured content (capped).
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(store.providers) { p in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text(p.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
-                                Spacer()
-                                if let pk = p.peak { Text(pct(pk.fraction)).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary) }
-                            }
-                            ForEach(p.accounts) { AccountCard(account: $0, store: store) }
-                        }
-                    }
-                    if store.providers.isEmpty && !store.loading {
-                        Text("omp has no provider usage to report.").foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.horizontal, 14).padding(.bottom, 10)
+                ProvidersList(store: store)
+                    .background(GeometryReader { g in Color.clear.preference(key: HeightKey.self, value: g.size.height) })
             }
-            .frame(maxHeight: 560)
+            .frame(height: min(max(listHeight, 40), 620))
+            .onPreferenceChange(HeightKey.self) { listHeight = $0 }
 
             Divider()
             HStack(spacing: 14) {
@@ -490,15 +530,17 @@ struct UsagePanel: View {
 struct MiniGauge: View {
     let symbol: String
     let fraction: Double
+    var text: String? = nil
     var body: some View {
-        HStack(spacing: 2) {
-            Image(systemName: symbol).font(.system(size: 12, weight: .medium))
+        HStack(spacing: 3) {
+            Image(systemName: symbol).font(.system(size: 13, weight: .semibold))
             ZStack(alignment: .bottom) {
-                RoundedRectangle(cornerRadius: 1).fill(.black.opacity(0.28))
-                RoundedRectangle(cornerRadius: 1).fill(.black)
-                    .frame(height: max(1.5, 14 * min(max(fraction, 0), 1)))
+                RoundedRectangle(cornerRadius: 1.5).fill(.black.opacity(0.35))
+                RoundedRectangle(cornerRadius: 1.5).fill(.black)
+                    .frame(height: max(2, 15 * min(max(fraction, 0), 1)))
             }
-            .frame(width: 3.5, height: 14)
+            .frame(width: 5, height: 15)
+            if let text { Text(text).font(.system(size: 12, weight: .semibold).monospacedDigit()) }
         }
     }
 }
@@ -512,7 +554,7 @@ struct BarLabel: View {
             MiniGauge(symbol: "cpu", fraction: Double(sys.cpu) / 100)
             MiniGauge(symbol: "memorychip", fraction: Double(sys.mem) / 100)
             MiniGauge(symbol: store.error.isEmpty ? "sparkle" : "exclamationmark.triangle",
-                      fraction: store.overall?.limit.fraction ?? 0)
+                      fraction: store.overall ?? 0, text: store.overall.map(pct))
         }
         .foregroundStyle(.black)
         .padding(.vertical, 2)
@@ -533,8 +575,22 @@ func dumpAndExit() async -> Never {
     if !c.err.isEmpty { print("accounts stderr:", c.err.suffix(400)) }
     let data = (try? JSONSerialization.jsonObject(with: u.out) as? [String: Any]) ?? [:]
     let creds = (try? JSONSerialization.jsonObject(with: c.out) as? [[String: Any]]) ?? []
-    for p in buildProviders(data, credentials: creds) {
-        print(p.name, p.peak.map { pct($0.fraction) } ?? "-")
+    let providers = buildProviders(data, credentials: creds)
+    if let i = CommandLine.arguments.firstIndex(of: "--render"), i + 1 < CommandLine.arguments.count {
+        await MainActor.run {
+            let store = UsageStore(autoRefresh: false)
+            store.providers = providers
+            let view = ProvidersList(store: store).padding(.top, 10).background(Color(nsColor: .windowBackgroundColor))
+            let r = ImageRenderer(content: view)
+            r.scale = 2
+            if let cg = r.cgImage, let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) {
+                try? png.write(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
+                print("rendered \(cg.width)x\(cg.height)")
+            }
+        }
+    }
+    for p in providers {
+        print(p.name, p.level.map(pct) ?? "-")
         for a in p.accounts {
             print("  \(a.shortLabel) plan=\(a.plan) enabled=\(a.enabled) switchable=\(a.switchable) creds=\(a.credentialIds)")
             for l in a.limits { print("    \(pct(l.fraction)) \(l.title) \(resetText(l.resetsAt))") }
