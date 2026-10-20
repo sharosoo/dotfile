@@ -12,6 +12,15 @@ systemctl --user daemon-reload
 
 이미 일반 파일이 있으면 `skip (not symlink)` — 백업 후 삭제하고 다시 실행.
 
+## macOS
+
+```bash
+cd ~/workspaces/sharosoo/dotfile
+brew bundle
+./scripts/link-macos.sh          # fish, ghostty, starship, nvim, tmux
+./scripts/link-macos.sh --adopt  # 기존 일반 파일을 .bak.*로 옮기고 링크
+```
+
 ## Fish
 
 [fish.md](fish.md)
