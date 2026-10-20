@@ -485,13 +485,42 @@ struct UsagePanel: View {
     }
 }
 
+/// Symbol plus a thin vertical level bar; drawn into a template image so the
+/// menu bar tints it like any other status item.
+struct MiniGauge: View {
+    let symbol: String
+    let fraction: Double
+    var body: some View {
+        HStack(spacing: 2) {
+            Image(systemName: symbol).font(.system(size: 12, weight: .medium))
+            ZStack(alignment: .bottom) {
+                RoundedRectangle(cornerRadius: 1).fill(.black.opacity(0.28))
+                RoundedRectangle(cornerRadius: 1).fill(.black)
+                    .frame(height: max(1.5, 14 * min(max(fraction, 0), 1)))
+            }
+            .frame(width: 3.5, height: 14)
+        }
+    }
+}
+
 /// One menu bar item, like the Omarchy bar: CPU, memory and the highest AI usage.
 struct BarLabel: View {
     @ObservedObject var store: UsageStore
     @ObservedObject var sys: SysStore
     var body: some View {
-        let ai = store.overall.map { pct($0.limit.fraction) } ?? (store.error.isEmpty ? "…" : "!")
-        Text("CPU \(sys.cpu)%  MEM \(sys.mem)%  AI \(ai)").monospacedDigit()
+        let content = HStack(spacing: 7) {
+            MiniGauge(symbol: "cpu", fraction: Double(sys.cpu) / 100)
+            MiniGauge(symbol: "memorychip", fraction: Double(sys.mem) / 100)
+            MiniGauge(symbol: store.error.isEmpty ? "sparkle" : "exclamationmark.triangle",
+                      fraction: store.overall?.limit.fraction ?? 0)
+        }
+        .foregroundStyle(.black)
+        .padding(.vertical, 2)
+        let renderer = ImageRenderer(content: content)
+        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+        let image = renderer.nsImage ?? NSImage()
+        image.isTemplate = true
+        return Image(nsImage: image)
     }
 }
 
