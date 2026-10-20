@@ -475,8 +475,6 @@ struct UsagePanel: View {
             .font(.system(size: 11).monospacedDigit())
             .padding(.horizontal, 14).padding(.vertical, 8)
             HStack {
-                Button("btop") { openInTerminal("/opt/homebrew/bin/btop") }
-                Button("omp usage") { openInTerminal("\(Env.omp) usage") }
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }.keyboardShortcut("q")
             }
@@ -487,38 +485,43 @@ struct UsagePanel: View {
     }
 }
 
-func openInTerminal(_ command: String) {
-    let app = FileManager.default.fileExists(atPath: "/Applications/Ghostty.app") ? "Ghostty" : "Terminal"
-    if app == "Ghostty" {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = ["-na", "Ghostty", "--args", "-e", "/bin/sh", "-c", command + "; exec /opt/homebrew/bin/fish"]
-        try? p.run()
-    } else {
-        let script = "tell application \"Terminal\" to do script \"\(command)\""
-        NSAppleScript(source: script)?.executeAndReturnError(nil)
-    }
-}
-
-struct UsageLabel: View {
+/// One menu bar item, like the Omarchy bar: CPU, memory and the highest AI usage.
+struct BarLabel: View {
     @ObservedObject var store: UsageStore
-    var body: some View {
-        if let o = store.overall {
-            Text("AI \(pct(o.limit.fraction))")
-        } else {
-            Text(store.error.isEmpty ? "AI …" : "AI !")
-        }
-    }
-}
-
-struct SysLabel: View {
     @ObservedObject var sys: SysStore
     var body: some View {
-        Text("CPU \(sys.cpu)%  MEM \(sys.mem)%").monospacedDigit()
+        let ai = store.overall.map { pct($0.limit.fraction) } ?? (store.error.isEmpty ? "…" : "!")
+        Text("CPU \(sys.cpu)%  MEM \(sys.mem)%  AI \(ai)").monospacedDigit()
     }
+}
+
+/// `OmpBar --dump`: fetch once with the app's environment and print what the panel would show.
+func dumpAndExit() async -> Never {
+    let u = await run([Env.omp, "usage", "--json"])
+    let c = await run(accountsCommand(["list"]), timeout: 20)
+    print("omp:", Env.omp, "status:", u.status, "broker:", Env.brokerHost ?? "-", "accounts status:", c.status)
+    if !u.err.isEmpty { print("omp stderr:", u.err.suffix(400)) }
+    if !c.err.isEmpty { print("accounts stderr:", c.err.suffix(400)) }
+    let data = (try? JSONSerialization.jsonObject(with: u.out) as? [String: Any]) ?? [:]
+    let creds = (try? JSONSerialization.jsonObject(with: c.out) as? [[String: Any]]) ?? []
+    for p in buildProviders(data, credentials: creds) {
+        print(p.name, p.peak.map { pct($0.fraction) } ?? "-")
+        for a in p.accounts {
+            print("  \(a.shortLabel) plan=\(a.plan) enabled=\(a.enabled) switchable=\(a.switchable) creds=\(a.credentialIds)")
+            for l in a.limits { print("    \(pct(l.fraction)) \(l.title) \(resetText(l.resetsAt))") }
+        }
+    }
+    exit(0)
 }
 
 @main
+struct OmpBarMain {
+    static func main() async {
+        if CommandLine.arguments.contains("--dump") { await dumpAndExit() }
+        await MainActor.run { OmpBarApp.main() }
+    }
+}
+
 struct OmpBarApp: App {
     @StateObject private var usage = UsageStore()
     @StateObject private var sys = SysStore()
@@ -527,14 +530,7 @@ struct OmpBarApp: App {
         MenuBarExtra {
             UsagePanel(store: usage, sys: sys)
         } label: {
-            UsageLabel(store: usage)
-        }
-        .menuBarExtraStyle(.window)
-
-        MenuBarExtra {
-            UsagePanel(store: usage, sys: sys)
-        } label: {
-            SysLabel(sys: sys)
+            BarLabel(store: usage, sys: sys)
         }
         .menuBarExtraStyle(.window)
     }
