@@ -16,7 +16,6 @@
     "html": true,
     "latex": true,
     "log": true,
-    "opencode": true,
     "sql": true,
     "svelte": true,
     "terraform": true,
@@ -24,9 +23,6 @@
   },
   "cli_default_open_behavior": "new_window",
   "agent_servers": {
-    "opencode": {
-      "type": "registry"
-    },
     "codex-acp": {
       "type": "registry"
     },
