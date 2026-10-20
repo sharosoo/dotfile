@@ -45,6 +45,15 @@ echo "copy $herdr_dest <- $herdr_src (macOS)"
 cp "$ROOT/omarchy/home/.local/bin/herdr-agent-picker" "$HOME/.local/bin/herdr-agent-picker"
 echo "copy $HOME/.local/bin/herdr-agent-picker"
 
+# Zed rewrites settings.json from its settings UI, so it is copied too; the Omarchy
+# copy points context7 at /home/<user>/.local/bin, which becomes $HOME here.
+zed_dest="$HOME/.config/zed/settings.json"
+mkdir -p "$(dirname "$zed_dest")"
+[[ -f "$zed_dest" && ! -f "$zed_dest.pre-dotfile" ]] && cp "$zed_dest" "$zed_dest.pre-dotfile"
+sed -E "s#/home/[^/]+/#$HOME/#g" "$ROOT/omarchy/home/.config/zed/settings.json" >"$zed_dest"
+cp "$ROOT/omarchy/home/.local/bin/context7-mcp" "$HOME/.local/bin/context7-mcp"
+echo "copy $zed_dest, $HOME/.local/bin/context7-mcp"
+
 # Menu bar app (AI usage via omp + CPU/memory), built from source.
 "$ROOT/macos/ompbar/build.sh"
 
