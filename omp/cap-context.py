@@ -33,19 +33,20 @@ EXTRA = ""
 home = os.path.expanduser("~/.omp/agent")
 db = sqlite3.connect(f"{home}/models.db")
 
-# Pin google-antigravity accountAccess: Claude 5.5 + Argon -> yh04060 only; Flash -> zkwmak08 + sharosoo14 only.
-yh_only = {"claude-opus-5-5", "claude-sonnet-5-5", "gemini-4-argon"}
+# Strip non-Gemini models (Claude/GPT) from google-antigravity and pin Argon -> yh04060, Flash -> zk + sh.
+yh_only = {"gemini-4-argon"}
 flash_accts = {"zkwmak08@gmail.com": {}, "sharosoo14@gmail.com": {}}
 for pid, raw in db.execute("SELECT provider_id, models FROM model_cache WHERE provider_id LIKE 'google-antigravity%'").fetchall():
     ms = json.loads(raw)
-    dirty = False
-    for m in ms:
+    kept = [m for m in ms if (m.get("id") or "").startswith("gemini-")]
+    dirty = len(kept) != len(ms)
+    for m in kept:
         want = {"yh04060@gmail.com": {}} if m.get("id") in yh_only else (flash_accts if m.get("accountAccess") is not None else None)
         if want is not None and m.get("accountAccess") != want:
             m["accountAccess"] = want
             dirty = True
     if dirty:
-        db.execute("UPDATE model_cache SET models = ? WHERE provider_id = ?", (json.dumps(ms), pid))
+        db.execute("UPDATE model_cache SET models = ? WHERE provider_id = ?", (json.dumps(kept), pid))
         db.commit()
 
 overrides: dict[str, set[str]] = {}
