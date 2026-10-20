@@ -95,3 +95,5 @@ local/
 !.env.example
 !.gitignore
 !.claude/settings.local.json
+# oh-my-codex state
+.omx/
