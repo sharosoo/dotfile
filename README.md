@@ -36,7 +36,7 @@ Omarchy 기본 제공 패키지와 제외한 항목은 각 파일 주석에 적�
 | **Claude Code** | [.claude/README.md](.claude/README.md) | `.claude/` |
 | **Neovim** | [nvim.md](docs/nvim.md) | `nvim/` |
 | **Tmux** | [tmux.md](docs/tmux.md) | `tmux/` |
-| **설정 링크 방법** | [linking.md](docs/linking.md) | `scripts/link-desktop-config.sh` |
+| **설정 링크 방법** | [linking.md](docs/linking.md) | `scripts/link-desktop-config.sh`, `scripts/link-macos.sh` |
 
 ## 구조
 
