@@ -48,6 +48,14 @@ enum Env {
     }
 }
 
+/// Appends to ~/Library/Logs/OmpBar.log.
+func log(_ message: String) {
+    let line = "\(Date()) \(message)\n"
+    let url = URL(fileURLWithPath: Env.home + "/Library/Logs/OmpBar.log")
+    if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
+    else { try? Data(line.utf8).write(to: url) }
+}
+
 struct RunResult { let status: Int32; let out: Data; let err: String }
 
 func run(_ argv: [String], timeout: TimeInterval = 60) async -> RunResult {
@@ -269,6 +277,7 @@ final class UsageStore: ObservableObject {
             async let creds = run(accountsCommand(["list"]), timeout: 20)
             let (u, c) = await (usage, creds)
             loading = false
+            log("refresh done: omp=\(u.status) out=\(u.out.count)B err=\(u.err.suffix(300))")
             guard let data = try? JSONSerialization.jsonObject(with: u.out) as? [String: Any] else {
                 error = u.err.split(separator: "\n").last.map(String.init) ?? "Could not parse omp output"
                 return
@@ -277,6 +286,7 @@ final class UsageStore: ObservableObject {
             providers = buildProviders(data, credentials: credentials)
             error = ""
             updatedAt = Date()
+            log("refresh ok: \(providers.count) providers, omp=\(u.status) accounts=\(c.status) \(c.err.prefix(200))")
         }
     }
 
@@ -599,11 +609,16 @@ func dumpAndExit() async -> Never {
     exit(0)
 }
 
+// Synchronous entry point: running the app from an async main keeps the main
+// actor occupied by NSApplication's run loop, so @MainActor tasks never start.
 @main
 struct OmpBarMain {
-    static func main() async {
-        if CommandLine.arguments.contains("--dump") { await dumpAndExit() }
-        await MainActor.run { OmpBarApp.main() }
+    static func main() {
+        if CommandLine.arguments.contains("--dump") {
+            Task { await dumpAndExit() }
+            dispatchMain()
+        }
+        OmpBarApp.main()
     }
 }
 
