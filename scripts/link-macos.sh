@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Symlink dotfile configs on macOS (fish, ghostty, starship, nvim, tmux).
+# Symlink dotfile configs on macOS (fish, ghostty, starship, nvim, tmux, mise).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FORCE="${1:-}"
@@ -31,5 +31,6 @@ link "$ROOT/ghostty/config.macos" "$HOME/Library/Application Support/com.mitchel
 link "$ROOT/starship/starship.toml" "$HOME/.config/starship.toml"
 link "$ROOT/nvim" "$HOME/.config/nvim"
 link "$ROOT/tmux/.tmux.conf" "$HOME/.tmux.conf"
+link "$ROOT/mise/config.toml" "$HOME/.config/mise/config.toml"
 
 echo "Done. Packages: brew bundle --file=$ROOT/Brewfile"

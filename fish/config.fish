@@ -56,13 +56,11 @@ set -gx PATH $HOME/.deno/bin $PATH
 set -gx PATH $HOME/.local/share/pnpm $PATH
 set -gx PATH $HOME/.bun/bin $PATH
 set -gx PATH $HOME/go/bin $PATH
-set -gx PATH $HOME/.local/go/bin $PATH
 set -gx PATH $HOME/.npm-global/bin $PATH
 set -gx PATH /usr/local/bin $PATH
 
 # Go
 set -gx GOPATH $HOME/go
-set -gx GOROOT $HOME/.local/go
 
 # Rust
 set -gx CARGO_HOME $HOME/.cargo
