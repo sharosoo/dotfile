@@ -4,7 +4,7 @@
 ## 1. Who reads this
 
 - **Main**, when writing task packets for gpai-monorepo work: copy the relevant section's rules into the packet (or point the agent here).
-- **Subagents** when the packet points here: model agents (`opus`, `sol`, `astra`, `fable`, `luna`, `gemini`, `swe`, `mimo`, `deepseek`) acting in the role their packet's `Role:` line names (`skill://agent-orchestration`), plus `ci`, `committer`, `pr`. Model choice per slot: `skill://model-routing` (backend → GPT family, `web/` → `opus`).
+- **Subagents** when the packet points here: model agents (`opus`, `sonnet`, `haiku`, `sol`, `astra`, `fable`, `luna`, `gemini`, `swe`) acting in the role their packet's `Role:` line names (`skill://agent-orchestration`), plus `ci`, `committer`, `pr`, `reporter`, `naturalizer`. (`muse`, `deepseek`, and `minimax` are never used in gpai-monorepo.) Model choice per slot: `skill://model-routing` — spend Claude (`opus`, `sonnet`, `fable`, `haiku`) and `gemini` (Gemini 4 Argon) actively in parallel waves across **both backend/python-worker and `web/`** alongside the GPT family (`sol`, `astra`, `luna`).
 
 Language: everything addressed to the user — Main's chat replies, progress reports, questions, `ask` options, DECISION prompts, final summaries — is in Korean (identifiers, paths, commands, errors verbatim). Subagent reports that Main relays verbatim follow the same rule. Code, comments, commit subjects and other artifacts keep the conventions in their own sections.
 
@@ -26,7 +26,7 @@ File ownership between FE and BE slices is disjoint. Implement the contract give
 Packet MUST tell the coder to read `skill://gpai-frontend-dev` first.
 - Follow existing patterns exactly: react-kit components, `Trans`/`t` i18n keys with English fallbacks, feature-scoped data modules, shared `ChatSendForm` plugins.
 - Every new i18n key goes into `web/locales/en/*.json` and is mirrored into every other `web/locales/*/` directory (same namespace file) with natural translations, not English copies.
-- Korean a person reads is composed by the `naturalizer` from English intent (one batched call per task), then verified — not polished from a draft. Product register; never leak identifiers like `showDailyUsage` into copy.
+- Korean a person reads is composed by the `naturalizer` from English intent (one batched call per task; or directly if the current agent is `gemini-4-argon`), then verified — not polished from a draft. Product register; never leak identifiers like `showDailyUsage` into copy.
 - Comments in English, only *why*-comments.
 - Focused checks only — no project-wide lint/format/test: `pnpm -F web exec vitest run <file>` for each touched vitest file, and `pnpm -F web type-check` once at the end.
 - Do not touch `backend/`, `python-worker/`, or `config/`.
@@ -41,7 +41,7 @@ Packet MUST tell the coder to read `skill://gpai-backend-dev` first.
 - SQL changes go through PgTyped (`pnpm -F backend pgtyped`, Docker temp DB); the regenerated `*.queries.ts` is part of the change.
 - Focused checks only — no project-wide lint/format/test:
   - `pnpm -F backend exec vitest run <file>` per touched test file
-  - `uv --project python-worker run pytest <file>` per touched test file
+  - Python tests: `pnpm test python` from the repo root (affected selection, result cache, CPU budget). Direct `uv --project python-worker run pytest <file>` only for one or two files, never `-n auto` and never the whole `tests/` tree.
   - `pnpm -F backend build`
   - `python-worker/scripts/check_backend_web_model_contract.py` when model enums are involved
   - `make -C python-worker format lint` on touched python files, so CI's formatter does not reject the branch
@@ -213,7 +213,7 @@ Body contract — written for a reader who must understand background, behaviour
 ```
 Optional when the diff supports them: Mermaid architecture/sequence diagram; security and edge-case matrix; error classification and recovery matrix; migration, secret, rollout or rollback notes.
 
-Body rules: short, concrete prose; quote Mermaid node/edge labels containing punctuation or parentheses; in update mode derive every section from the full `<base>...HEAD` diff and keep checked items only while still valid; compose Korean through the `naturalizer` from intent (no internal planning prose exposed).
+Body rules: short, concrete prose; quote Mermaid node/edge labels containing punctuation or parentheses; in update mode derive every section from the full `<base>...HEAD` diff and keep checked items only while still valid; compose Korean through the `naturalizer` from intent (or directly when running on `gemini-4-argon`; no internal planning prose exposed).
 
 Apply:
 1. `git status -sb`.
