@@ -96,6 +96,7 @@ Omarchy의 `NotificationCard.qml`을 패치하고 Chromium 파비콘을 추출�
 - Tailscale (수동): `sudo systemctl enable --now tailscaled && sudo tailscale up`
 - 블루투스 키보드: `systemctl --user enable --now bt-agent`를 실행하고 키보드를 페어링 모드로 둔 뒤 `bt-keyboard-pair`를 실행합니다. 패스키 알림이 화면에 뜹니다.
 - herdr: Omarchy 기본 포함 프로그램입니다. 설정은 4단계에서 반영됩니다. herdr 알림이 데스크톱으로 전달되고 `notify-send` 래퍼를 통해 에이전트 아이콘이 제대로 표시되려면 `[ui.toast]` 섹션의 `delivery = "system"` 설정을 반드시 유지해야 합니다.
+- Btrfs scratch storage (manual, Linux only): follow [`BTRFS.md`](BTRFS.md) before creating large OMP checkouts. Prepare the pool, create one subvolume per checkout, and confirm deletion permissions. Do not migrate the active pnpm store or apply turing-specific UUIDs on another machine.
 
 ## 10. 정상 동작 확인
 다음 체크리스트를 따라 각 항목이 의도대로 동작하는지 확인합니다.
