@@ -2,6 +2,10 @@
 
 This is a manual runbook, not an automatic disk-tuning installer. Do not apply it to global-turing: its devices, mount layout and workloads differ. Run shell examples inside `bash`; turing's interactive shell is fish.
 
+OMP discovers `~/.omp/agent/rules/storage-btrfs.md` as an `alwaysApply` entrypoint. Its short instruction points here and to workflow §9; the full manual is not injected automatically. This is local rule discovery, independent of auth-broker usage. For an already running session, reopen/resume OMP to reload startup rules; do not assume files added on disk are hot-loaded.
+
+**Reserved-path warning:** never create scratch directories under `~/.local/share/omp`. In omp 18.12.3, an exported `XDG_DATA_HOME` plus the existence of its `omp` child activates XDG data routing. Creating that directory for a worktree pool caused new interactive OMP processes to open an empty `~/.local/share/omp/agent.db`, while the broker without XDG variables continued using `~/.omp/agent/agent.db`. The original credentials and conversation history were intact. Recovery stopped the affected clients, preserved their accidental XDG state under the private `~/.omp/recovery/` directory, and moved the pool outside the reserved namespace. Do not merge live SQLite files or introduce DB symlinks while either side has open WAL connections. A future intentional XDG migration must migrate the canonical data and coordinate the broker, clients, and dotfile restore behavior.
+
 ## Observed configuration (2026-10-20)
 
 - `/`, `/home`, `/var/log` and `/var/cache/pacman/pkg` share Btrfs UUID `65578c34-b42b-4da3-9012-2461dd52cd56`, through `/dev/mapper/root` on a WD Green SN350 1TB.
@@ -9,7 +13,7 @@ This is a manual runbook, not an automatic disk-tuning installer. Do not apply i
 - A metadata DUP-to-single balance was interrupted after 3 of about 79 chunks. The last observed exclusive operation was `none`; do not restart a conversion to make the profiles uniform. Mixed profiles are supported.
 - Existing pnpm store: `/home/sharosoo/.local/share/pnpm/store/v11` (`pnpm store path`). It is not migrated by this runbook.
 - Existing herdr worktrees: `~/.herdr/worktrees/gpai-monorepo`. They are not moved or converted by this runbook.
-- New OMP scratch pool: `~/.local/share/omp/worktrees/gpai-monorepo`. Each checkout must also have its own child subvolume; creating only the pool does not make ordinary children independently deletable.
+- New OMP scratch pool: `~/.local/share/omp-worktrees/gpai-monorepo`. Each checkout must also have its own child subvolume; creating only the pool does not make ordinary children independently deletable.
 
 ## Read-only diagnosis
 
@@ -40,20 +44,20 @@ btrfs quota status /
 Do not move existing worktrees, replace populated directories, or pre-create anonymous checkouts. Create each child subvolume when a session claims a unique job name. Subvolumes share the filesystem's free space; creation does not reserve capacity. A pool is also a snapshot boundary: parent snapshots do not recursively back up its contents.
 
 ```bash
-mkdir -p "$HOME/.local/share/omp/worktrees"
+mkdir -p "$HOME/.local/share/omp-worktrees"
 ```
 
 Only if this path does not already exist:
 
 ```bash
-btrfs subvolume create "$HOME/.local/share/omp/worktrees/gpai-monorepo"
+btrfs subvolume create "$HOME/.local/share/omp-worktrees/gpai-monorepo"
 ```
 
 For a new session, choose an unused job name. Run these in the same bash shell:
 
 ```bash
 REPO="$HOME/workspaces/weareteamturing/gpai-monorepo"
-POOL="$HOME/.local/share/omp/worktrees/gpai-monorepo"
+POOL="$HOME/.local/share/omp-worktrees/gpai-monorepo"
 JOB="$POOL/task-unique-name"
 BRANCH="feat/unique-name"
 test ! -e "$JOB"
