@@ -1,0 +1,12 @@
+[tools]
+go = "1.26"
+golangci-lint = "latest"
+node = "22"
+pnpm = "latest"
+python = "3.12"
+ruby = "4.0"
+rust = "stable"
+uv = "latest"
+
+[settings]
+idiomatic_version_file_enable_tools = ["node"]

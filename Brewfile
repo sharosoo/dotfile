@@ -37,12 +37,8 @@ brew "tig"          # Text interface for git
 brew "git-delta"    # Better git diffs
 
 # Language Support
-brew "python@3.12"
-brew "go"
-brew "rust"
-brew "mise"         # Runtime manager (node, etc.)
-brew "luajit"
-brew "ruby"
+# Runtimes (node, go, rust, python, ruby, uv, pnpm) live in mise: mise/config.toml
+brew "mise"
 
 # Database Tools
 brew "postgresql@16", restart_service: false
