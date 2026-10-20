@@ -98,6 +98,7 @@ cask "sol"            # Launcher
 cask "podman-desktop"
 cask "ente-auth"
 cask "upic"           # Image upload
+cask "swiftbar"       # Menu bar plugins (macos/swiftbar)
 
 # Optional applications
 # cask "visual-studio-code"
