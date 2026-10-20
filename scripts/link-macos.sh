@@ -33,4 +33,16 @@ link "$ROOT/nvim" "$HOME/.config/nvim"
 link "$ROOT/tmux/.tmux.conf" "$HOME/.tmux.conf"
 link "$ROOT/mise/config.toml" "$HOME/.config/mise/config.toml"
 
+# herdr rewrites its config, so it is copied (like omarchy/sync.sh) from the Omarchy
+# source with the Linux-only bits swapped: fish path, and the `omarchy launch` binding.
+herdr_src="$ROOT/omarchy/home/.config/herdr/config.toml"
+herdr_dest="$HOME/.config/herdr/config.toml"
+mkdir -p "$(dirname "$herdr_dest")" "$HOME/.local/bin"
+sed -e 's#^default_shell = "/usr/bin/fish"#default_shell = "/opt/homebrew/bin/fish"#' \
+    -e '/^\[\[keys.command\]\]$/{N;/prefix+alt+c/{N;N;d;};}' \
+    "$herdr_src" >"$herdr_dest"
+echo "copy $herdr_dest <- $herdr_src (macOS)"
+cp "$ROOT/omarchy/home/.local/bin/herdr-agent-picker" "$HOME/.local/bin/herdr-agent-picker"
+echo "copy $HOME/.local/bin/herdr-agent-picker"
+
 echo "Done. Packages: brew bundle --file=$ROOT/Brewfile"
