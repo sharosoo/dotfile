@@ -45,8 +45,7 @@ echo "copy $herdr_dest <- $herdr_src (macOS)"
 cp "$ROOT/omarchy/home/.local/bin/herdr-agent-picker" "$HOME/.local/bin/herdr-agent-picker"
 echo "copy $HOME/.local/bin/herdr-agent-picker"
 
-# SwiftBar menu bar plugins (omp usage) run straight from the repo.
-defaults write com.ameba.SwiftBar PluginDirectory -string "$ROOT/macos/swiftbar"
-echo "swiftbar plugins -> $ROOT/macos/swiftbar"
+# Menu bar app (AI usage via omp + CPU/memory), built from source.
+"$ROOT/macos/ompbar/build.sh"
 
 echo "Done. Packages: brew bundle --file=$ROOT/Brewfile"
