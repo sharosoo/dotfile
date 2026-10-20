@@ -17,7 +17,7 @@ systemctl --user daemon-reload
 ```bash
 cd ~/workspaces/sharosoo/dotfile
 brew bundle
-./scripts/link-macos.sh          # fish, ghostty, starship, nvim, tmux
+./scripts/link-macos.sh          # fish, ghostty, starship, nvim, tmux, mise 링크 + herdr 설정 복사
 ./scripts/link-macos.sh --adopt  # 기존 일반 파일을 .bak.*로 옮기고 링크
 ```
 
