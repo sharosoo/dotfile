@@ -153,7 +153,6 @@ vim.api.nvim_create_autocmd("BufWritePre", {
 -- Plugin configuration
 require("lazy").setup({
   { import = "plugins.ui" },
-  { import = "plugins.ferrite" },
   -- Colorscheme
   {
     "folke/tokyonight.nvim",

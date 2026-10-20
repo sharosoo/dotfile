@@ -7,10 +7,6 @@ return {
       vim.o.timeout = true
       vim.o.timeoutlen = 300
     end,
-    opts = {
-      spec = {
-        { "<leader>m", group = "ferrite" },
-      },
-    },
+    opts = {},
   },
 }

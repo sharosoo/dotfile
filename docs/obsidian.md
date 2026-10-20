@@ -1,7 +1,7 @@
 # Obsidian (앱)
 
 Obsidian **데스크톱 앱**(AppImage)만 사용한다. Neovim ↔ Obsidian 플러그인 연동
-(`obsidian.nvim`)은 **제거**했고, Neovim의 마크다운 GUI는 [Ferrite](https://github.com/OlaProeis/Ferrite)로 대체했다 (→ `docs/nvim.md` § Markdown / Ferrite GUI 연동).
+(`obsidian.nvim`)은 **제거**했다.
 
 ## Vault
 
@@ -25,4 +25,4 @@ cd ~/workspaces/sharosoo/dotfile/scripts
 ## 관련
 
 - `dotfile/desktop/obsidian.desktop`, `dotfile/scripts/install-obsidian.sh`
-- Neovim 마크다운: `dotfile/docs/nvim.md` (Ferrite)
+- Neovim: `dotfile/docs/nvim.md`
