@@ -25,24 +25,22 @@ brew "duf"          # Modern df
 brew "procs"        # Modern ps
 brew "sd"           # Modern sed
 brew "httpie"       # Modern curl
+brew "starship"     # Shell prompt
 
 # Development Tools
 brew "neovim"
 brew "tmux"
 brew "gh"           # GitHub CLI
 brew "glab"         # GitLab CLI
-brew "hub"          # Another GitHub CLI tool
 brew "lazygit"      # Terminal UI for git
 brew "tig"          # Text interface for git
-brew "diff-so-fancy" # Better git diffs
+brew "git-delta"    # Better git diffs
 
 # Language Support
 brew "python@3.12"
-brew "pypy3"
-brew "node"
-brew "volta"
 brew "go"
 brew "rust"
+brew "mise"         # Runtime manager (node, etc.)
 brew "luajit"
 brew "ruby"
 
@@ -54,15 +52,11 @@ brew "sqlite"
 
 # Cloud Tools
 brew "awscli"
-brew "azure-cli"
-brew "doctl"        # DigitalOcean CLI
 
 # Container Tools
-brew "docker"
 brew "docker-compose"
 brew "kubectl"
 brew "helm"
-brew "minikube"
 
 # Security Tools
 brew "gnupg"
@@ -94,7 +88,7 @@ brew "unzip"
 # Media Tools
 brew "ffmpeg"
 brew "imagemagick"
-brew "youtube-dl"
+brew "yt-dlp"
 
 # Fonts
 cask "font-d2coding-nerd-font"
@@ -102,7 +96,15 @@ cask "font-jetbrains-mono-nerd-font"
 cask "font-fira-code-nerd-font"
 cask "font-hack-nerd-font"
 
-# Applications (Optional - Comment out if not needed)
+# Applications
+cask "ghostty"
+cask "sol"            # Launcher
+cask "rectangle"      # Window manager
+cask "podman-desktop"
+cask "ente-auth"
+cask "upic"           # Image upload
+
+# Optional applications
 # cask "visual-studio-code"
 # cask "iterm2"
 # cask "warp"
