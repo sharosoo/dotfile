@@ -4,7 +4,7 @@
   "name": "System stats",
   "version": "1.0.0",
   "author": "sharosoo",
-  "description": "CPU and memory usage in the bar",
+  "description": "CPU, memory and disk I/O in the bar",
   "kinds": [
     "bar-widget"
   ],
@@ -13,7 +13,7 @@
   },
   "barWidget": {
     "displayName": "System stats",
-    "description": "CPU and memory usage; click opens btop",
+    "description": "CPU, memory and disk I/O; click opens btop",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right",
