@@ -166,6 +166,20 @@ echo none | sudo tee /sys/block/nvme0n1/queue/scheduler
 
 No udev rule or boot-time tuning service is installed by this runbook. Measure one change at a time under the same workload before making it persistent.
 
+## omp state directory: NOCOW
+
+`~/.omp/agent` holds SQLite databases in WAL mode (`agent.db`, `history.db`, `models.db`, `skill-descriptions.db`), rewritten in place on every agent turn. On a CoW path each in-place page write allocates new extents and updates metadata, so with many parallel subagents the WAL/checkpoint churn fragments the files and adds metadata I/O well beyond the bytes SQLite writes. This is the same reason database data directories get `+C`, and it is the one deliberate exception to "no global NOCOW" above.
+
+Incident (turing, 2026-10-21): with one omp session driving ~12 subagents and 4 eval runners, the whole machine sat at high I/O pressure (PSI `io some` avg10 15-28). `lsattr` showed the omp DBs without `C`. After moving them to NOCOW files at the same paths, PSI dropped to about 1 with the same workload running. Another session's database container (`mathking-pg-local`) was a co-contributor at the time; it was already `+C`.
+
+Keep `~/.omp/agent` and its DBs `+C`:
+
+```bash
+lsattr -d ~/.omp/agent; lsattr ~/.omp/agent/*.db*   # expect C on all
+```
+
+`chattr +C` only takes effect on empty files, so existing DBs must be recreated. Use `omarchy/bin/omp-nocow-migrate.sh` (installed copy: `~/.omp/nocow-migrate.sh`): it detaches via `systemd-run`, runs `herdr server stop`, stops every omp process, checks that no DB is still open, checkpoints each WAL, writes a new `+C` copy at the same path, verifies `PRAGMA integrity_check` (restoring the original on failure), and sets `+C` on the directory so later WAL/SHM files inherit it. Reopening `herdr` resumes every omp pane through native session restore (`omp --resume=<session>`). Run it once: a second concurrent run hit `database is locked` during checkpoint.
+
 ## Smoke verification on turing (2026-10-20)
 
 Created the pool as a user-owned subvolume (inode 256). In an isolated fixture, created a child subvolume and a detached Git worktree; cross-subvolume hardlinking failed with `Invalid cross-device link`, while `cp --reflink=always` succeeded and the copied bytes matched. Non-empty subvolume deletion failed with `EPERM`, so passwordless deletion is not configured. The tiny fixture was removed without leaving a checkout behind. No production pnpm install or large-delete performance comparison was run; the smoke does not establish a speedup.
