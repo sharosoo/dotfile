@@ -1,0 +1,12 @@
+[Unit]
+Description=Context7 MCP proxy rotating API keys by remaining quota
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bun %h/.omp/agent/context7-rotate/proxy.ts
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

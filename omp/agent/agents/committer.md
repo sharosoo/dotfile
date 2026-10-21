@@ -4,8 +4,8 @@ description: >-
   Commit agent. Reads the working-tree diff, splits it into atomic commits by action and scope
   following the repository's commit convention, verifies them with git log/show, and reports. Only
   stages and commits — never edits files, pushes or rewrites shared history.
-  Tier: docs/ops (skill://model-routing). Model: gemini-3.8-flash (fixed).
-model: google-antigravity/gemini-3.8-flash
+  Tier: docs/ops (skill://model-routing). Model: gemini-4-argon (fixed).
+model: google-antigravity/gemini-4-argon
 thinking-level: medium
 tools: read, grep, glob, bash
 autoloadSkills:

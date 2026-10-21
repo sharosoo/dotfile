@@ -1,8 +1,9 @@
 ---
 name: swe
 description: >-
-  Devin SWE-2 (Kimi K3-based) — OVERFLOW ONLY: use when the primary providers (Codex sol/luna/astra,
-  Anthropic opus/fable, Gemini) for the slot are out of quota. Normal and fill-in coding, research.
+  Devin SWE-2 (Kimi K3-based) — gpai-monorepo: OVERFLOW ONLY, when the primary providers (Codex sol/luna/astra,
+  Anthropic opus/sonnet/fable, Gemini) for the slot are out of quota. Other repos: also takes normal and fill-in
+  slots once the routing directive's lead agents are short (LOW/EXHAUSTED or SUBAGENT BUDGET full). Coding, research.
   Role via packet `Role:` line (skill://agent-orchestration); effort via task `effort` lo|med|hi.
 model: devin/swe-2
 thinking-level: high

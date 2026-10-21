@@ -10,8 +10,10 @@ omp usage --json -r 2>/dev/null | jq -r '
     | { provider,
         account: (.metadata.accountId // .metadata.email // "?"),
         email: (.metadata.email // "?"),
-        windows: [ .limits[]? | select(.amount.remainingFraction != null)
-                   | {label, rem: (.amount.remainingFraction * 100 | floor), reset: .window.resetsAt} ] } ]
+        windows: [ .limits[]?
+                   | (.amount.remainingFraction // (if .amount.usedFraction != null then 1 - .amount.usedFraction else null end)) as $rf
+                   | select($rf != null)
+                   | {label, rem: ($rf * 100 | floor), reset: .window.resetsAt} ] } ]
   | unique_by([.provider, .account])
   | map(. + { worst: (.windows | min_by(.rem) // null) })
   | group_by(.provider)
@@ -22,13 +24,13 @@ omp usage --json -r 2>/dev/null | jq -r '
     ( .[] | "\t  \(.email)\t\(.worst.rem // "-")% \(.worst.label // "no % reported")\treset \(.worst.reset | hours)\t[\(.windows | map("\(.label)=\(.rem)%") | unique | join(", "))]" )
 ' | column -t -s $'\t'
 echo
-echo "LOW primaries are still used; EXHAUSTED (<5%) → next primary, overflow (devin/commandcode) only when all primaries are exhausted."
-echo "UNMETERED = no percentage (commandcode credits): a 429 closes that account until its reset header."
+echo "LOW primaries are still used; EXHAUSTED (<5%) → next candidate. Outside gpai-monorepo, swe (devin) and deepseek (commandcode) are active workers alongside sol."
 B=~/.omp/agent/rotate-budget.json
 if [[ -f $B ]]; then
   echo
-  jq -r '"SUBAGENT BUDGET (rotate-accounts, \((now - .updatedAt) / 60 | floor) min old, \(.workingSessions) working omp session(s)) — obey per spawn wave:",
-    (.perSession | to_entries[] | "  \(.key): max \(.value.cap) concurrent subagents on this family (\(.value.phase))"),
+  jq -r --arg pane "${HERDR_PANE_ID:-}" '(.panes[$pane] // .perSession) as $caps |
+    "SUBAGENT BUDGET (rotate-accounts, \((now - .updatedAt) / 60 | floor) min old, \(.workingSessions) working omp session(s)\(if .panes[$pane] then ", this pane exempt from save mode" else "" end)) — obey per spawn wave:",
+    ($caps | to_entries[] | "  \(.key): max \(.value.cap) concurrent subagents on this family (\(.value.phase))"),
     "  hard cap task.maxConcurrency = \(.maxConcurrency)",
     (if .steer then "ROUTING STEER: \(.steer)" else empty end)' "$B"
 fi

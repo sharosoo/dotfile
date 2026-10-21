@@ -67,7 +67,10 @@ Proceed only if the absence check succeeds:
 
 ```bash
 btrfs subvolume create "$JOB"
+chattr +C "$JOB"
 ```
+
+The pool is a NOCOW subvolume (`@nocow-omp-worktrees`), but a new child subvolume does not inherit `+C` from its parent directory (verified on turing, 2026-10-20). Set it on the empty job subvolume before `git worktree add`; files created afterwards inherit it. Plain directories created in the pool inherit it automatically.
 
 ```bash
 git -C "$REPO" worktree add -b "$BRANCH" "$JOB/repo" HEAD

@@ -4,8 +4,8 @@ description: >-
   Local CI preflight runner. Runs the repository's full required check/test chains (from the packet
   or the repo's documented preflight), verifies exit codes and that the working tree, branch and
   remote refs are unchanged, and returns only a verdict with the blocking error. Never edits code.
-  Tier: docs/ops (skill://model-routing). Model: gemini-3.8-flash (fixed).
-model: google-antigravity/gemini-3.8-flash
+  Tier: docs/ops (skill://model-routing). Model: gemini-4-argon (fixed).
+model: google-antigravity/gemini-4-argon
 thinking-level: medium
 tools: read, grep, glob, bash
 ---

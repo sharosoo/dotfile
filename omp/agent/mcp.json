@@ -7,6 +7,21 @@
       "headers": {
         "Authorization": "Bearer ${ARTIFACT_HUB_TOKEN}"
       }
+    },
+    "context7": {
+      "type": "http",
+      "url": "http://127.0.0.1:18170/mcp"
+    },
+    "deepwiki": {
+      "type": "http",
+      "url": "https://mcp.deepwiki.com/mcp"
+    },
+    "devin": {
+      "type": "http",
+      "url": "https://mcp.devin.ai/mcp",
+      "headers": {
+        "Authorization": "Bearer ${DEVIN_TOKEN}"
+      }
     }
   },
   "disabledServers": [

@@ -6,11 +6,11 @@ description: "Use when acting as Main orchestrating subagents or as a subagent g
 # Agent orchestration
 
 Agents are **models**, not roles. Main picks, per task item:
-- `agent`: which model (`opus`, `sonnet`, `haiku`, `sol`, `astra`, `fable`, `luna`, `gemini`, `swe`, `mimo`, `deepseek`, `muse`). Grok is disabled (2026-10-07).
+- `agent`: which model (`opus`, `sonnet`, `haiku`, `sol`, `astra`, `fable`, `luna`, `gemini`, `swe`, `deepseek`, `minimax`, `muse`). Grok is disabled (2026-10-07); MiMo (`mimo`) is retired (2026-10-18).
 - `effort`: `lo` | `med` | `hi`, mapped to the model's lowest/middle/highest effort (capped at xhigh)
 - a `Role:` line in the packet: `planner` | `researcher` | `advisor` | `coder` | `reviewer` | `verifier` | `blind-reader`
 
-The fixed-purpose agents (`ci`, `committer`, `pr`, `reporter`, `naturalizer`) are Gemini Flash and take no role.
+The fixed-purpose agents (`ci`, `committer`, `pr`, `reporter`, `naturalizer`) are Gemini 4 Argon and take no role.
 
 Model facts, quota and the routing tables are in `skill://model-routing`. Read that first as Main. Repo rules come from the project skill (gpai-monorepo: `~/.omp/agent/rules/projects/gpai-monorepo/workflow.md`).
 
@@ -23,12 +23,12 @@ Model facts, quota and the routing tables are in `skill://model-routing`. Read t
      - **critical**: decides structure; touches money, auth, data integrity, migrations or concurrency; is cross-cutting; has an open-ended design; or follows a failed attempt. Use top intelligence and `hi` effort.
      - **normal**: real judgement inside a fixed contract. Use a high-intelligence model and `med` effort.
      - **fill-in**: the plan fixed everything and the work is filling it in (wiring, mechanical edits, i18n propagation, boilerplate, a fix with a reproducer). Use a cheap primary model (`luna`, `gemini`).
-3. **Pick** from the matrix in `skill://model-routing` §2. Take the first primary candidate with quota; overflow (`devin`/`commandcode`: `swe`, `mimo`, `deepseek`, `muse`) only when every primary candidate is exhausted.
+3. **Pick** from the matrix in `skill://model-routing` §2. Take the first primary candidate with quota; `gemini` (Gemini 4 Argon, index 53, DeepSWE 77.9%) is also a frontier implementation worker, and outside gpai-monorepo `swe`, `deepseek` (V4.1-Flash-1017), and `minimax` (M3.1-Flash, index 42) take normal/fill-in slots alongside `sol` and `gemini`. In gpai-monorepo, `swe` is overflow only and `deepseek`/`minimax`/`muse` are never used.
 4. **Independence**: reviewers and verifiers must not share a family with the author or Main.
 5. Write the routing decision into the todo or plan: `slot → agent/effort (reason, quota state)`.
 
 Defaults that encode the user's preference:
-- **Primary providers first.** `sol`/`astra`/`luna` (Codex), `opus`/`fable` (Anthropic), `gemini` (Antigravity) take every slot while they have quota. `swe` (Devin) and `mimo`/`deepseek`/`muse` (CommandCode) are overflow only, used when the primaries are out of quota — never because they are free or cheap. `muse` stays contributor-safe repos only, never gpai or company code.
+- **Primary providers first.** `sol`/`astra`/`luna` (Codex), `opus`/`fable` (Anthropic), `gemini` (Antigravity Gemini 4 Argon) take every slot while they have quota. Outside gpai-monorepo, `gemini` (Argon), `swe` (Devin), `deepseek` (CommandCode V4.1-Flash-1017), and `minimax` (CommandCode M3.1-Flash) are active workers alongside `sol` for fill-in and normal implementation slots (and when the user asks for Argon-heavy execution or Codex is conserving quota, `gemini`/`swe`/`deepseek`/`minimax` carry implementation while `sol`/`astra`/`opus` handle verification, reviews, and top-intelligence work). In gpai-monorepo `swe` is overflow only and `deepseek`/`minimax`/`muse` are never used. `muse` stays contributor-safe repos only, never gpai or company code.
 - Premium models only for critical slots and judgement: backend, logic and inductive reasoning → `sol` with no `effort` = high (`astra`, default medium, for security or concurrency; Sol needs high effort to reason well, and `hi` would clamp to xhigh); frontend → `opus` with no `effort` (= medium). `opus` hi (= xhigh) only for the hardest problems or after a medium attempt failed.
 - Search and research: always cheap primary models, fanned out in parallel (`gemini`, `luna`, `scout`). Main delegates broad searching instead of doing it on its own premium model.
 - Planning a critical ticket: `sol` (high) + `opus` (medium) as two independent plans, both with `effort` omitted. For a normal ticket: one primary of the ticket's kind + `gemini`.
@@ -96,7 +96,7 @@ For a plan or contract review, check: every cross-layer field, error and orderin
 - Edit only the owned paths. An ambiguous or wrong contract is a `cross-layer` decision: ask, don't improvise.
 - Once the sources and one existing pattern are enough, stop researching and edit. A packet naming several sites is one deliverable: finish every site. If the packet cannot be implemented, return the exact blocker.
 - During an editing wave, run no project-wide format/lint/build/test. Run only the focused checks the packet names.
-- Comments are English and explain *why*. Korean that a person reads is composed by `naturalizer` from an English intent, in one batched call.
+- Comments are English and explain *why*. Korean that a person reads is composed by `naturalizer` from an English intent, in one batched call (unless the current agent itself is `gemini-4-argon`, in which case write it directly).
 - Update the docs for the behaviour you changed, in the same patch.
 - Report every packet field, including `decisions` and `effectiveModel`.
 

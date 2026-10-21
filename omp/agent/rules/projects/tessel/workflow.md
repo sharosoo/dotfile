@@ -17,9 +17,9 @@ Tessel is **contributor-safe**: `muse` (Muse Spark 1.3 Contributor) may receive 
 | old Tessel agent | now |
 |---|---|
 | `tessel-orchestrator` / `-opus` | Main itself (Sol or Opus), chosen before the ticket from `headroom.sh`; never switched mid-ticket |
-| `swe2-coder`, `tessel-luna-contributor`, `tessel-muse-contributor`, `tessel-mimo-coder` | `swe` (default), overflow `luna` / `muse` / `mimo`, with `Role: coder` |
+| `swe2-coder`, `tessel-luna-contributor`, `tessel-muse-contributor`, `tessel-mimo-coder` | `swe` or `deepseek` (default), overflow `luna` / `muse`, with `Role: coder` |
 | `tessel-sol-coder`, `tessel-opus-coder` | `sol` / `opus` with `Role: coder`, critical slots only. Never the same family as Main when that slot will need independent review |
-| `tessel-glm-mechanical`, `tessel-deepseek-mechanical` | `deepseek` (or `mimo`) with `Role: coder`, fill-in only |
+| `tessel-glm-mechanical`, `tessel-deepseek-mechanical` | `deepseek` (`lo` effort for mechanical/fill-in, omit effort for normal coding) with `Role: coder` |
 | `tessel-advisor-fable` / `-astra` | `fable` / `astra` with `Role: advisor` |
 | `tessel-reviewer`, `tessel-sol-verifier` | review panel / `verifier` per `skill://model-routing` §5. `tessel-grok-reviewer` is retired: Grok is disabled (2026-10-07); give its seat to `gemini`. |
 | `tessel-gemini-routine`, `tessel-mimo-routine` | `reporter` / `gemini` with `Role: researcher` (docs, summaries, QA evidence) |

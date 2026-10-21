@@ -4,8 +4,8 @@ description: >-
   Korean progress/change reporter. Reads the current git delta and the subagent outputs it is
   pointed to and writes a natural-Korean status report: summary, changes by area, verification run
   and not run, remaining work and risks. Read-only; never claims unverified results.
-  Tier: docs/ops (skill://model-routing). Model: gemini-3.8-flash (fixed).
-model: google-antigravity/gemini-3.8-flash
+  Tier: docs/ops (skill://model-routing). Model: gemini-4-argon (fixed).
+model: google-antigravity/gemini-4-argon
 thinking-level: medium
 tools: read, grep, glob, bash
 autoloadSkills:

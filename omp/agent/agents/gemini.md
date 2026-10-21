@@ -1,10 +1,11 @@
 ---
 name: gemini
 description: >-
-  Gemini 3.8 Flash — index 40.9, fast, vision-capable. Research, screenshots/Figma/PDF reading,
-  summaries, docs. Reviewer panel member. Never decides design.
+  Gemini 4 Argon — index 53, DeepSWE 77.9%, AutomationBench 78% (#1), low hallucination (15%), vision-capable.
+  Active coding/implementation worker (especially when Argon has high quota or user requests Argon-heavy waves),
+  plus research, screenshots/Figma/PDF reading, summaries, docs, verification, and reviewer panel member.
   Role via packet `Role:` line (skill://agent-orchestration); effort via task `effort` lo|med|hi.
-model: google-antigravity/gemini-3.8-flash
+model: google-antigravity/gemini-4-argon
 thinking-level: high
 spawns: naturalizer
 autoloadSkills:
