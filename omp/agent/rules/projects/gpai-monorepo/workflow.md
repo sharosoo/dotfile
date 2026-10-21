@@ -28,7 +28,7 @@ Packet MUST tell the coder to read `skill://gpai-frontend-dev` first.
 - Every new i18n key goes into `web/locales/en/*.json` and is mirrored into every other `web/locales/*/` directory (same namespace file) with natural translations, not English copies.
 - Korean a person reads is composed by the `naturalizer` from English intent (one batched call per task; or directly if the current agent is `gemini-4-argon`), then verified — not polished from a draft. Product register; never leak identifiers like `showDailyUsage` into copy.
 - Comments in English, only *why*-comments.
-- Focused checks only — no project-wide lint/format/test: `pnpm -F web exec vitest run <file>` for each touched vitest file, and `pnpm -F web type-check` once at the end.
+- Focused checks only — affected selection through the test CLI, never `--full`, `--coverage` or the `all`/`repo` scopes: `pnpm -F web exec vitest run <file>` for each touched vitest file (the test CLI has no per-file filter), and `pnpm run check web --task web.type-check` once at the end. Normal path for everything else: `pnpm test web` / `pnpm check web` (result cache; options go through `pnpm run`).
 - Do not touch `backend/`, `python-worker/`, or `config/`.
 - `product` forks (copy, visibility, ordering, fallback behaviour, deviations from Figma/brief) go to Main and wait before implementing.
 
@@ -39,12 +39,12 @@ Packet MUST tell the coder to read `skill://gpai-backend-dev` first.
 - `python-worker/` follows `python-worker/CLAUDE.md` and `python-worker/tests/test_guide.md`.
 - Keep backend, python-worker and `config/billing.json` in sync; fallback constants that mirror config are updated together.
 - SQL changes go through PgTyped (`pnpm -F backend pgtyped`, Docker temp DB); the regenerated `*.queries.ts` is part of the change.
-- Focused checks only — no project-wide lint/format/test:
-  - `pnpm -F backend exec vitest run <file>` per touched test file
+- Focused checks only — affected selection through the test CLI, never `--full`, `--coverage` or the `all`/`repo` scopes:
+  - `pnpm -F backend exec vitest run <file>` per touched test file (no per-file filter in the test CLI); otherwise `pnpm test backend`
   - Python tests: `pnpm test python` from the repo root (affected selection, result cache, CPU budget). Direct `uv --project python-worker run pytest <file>` only for one or two files, never `-n auto` and never the whole `tests/` tree.
-  - `pnpm -F backend build`
+  - `pnpm run check backend --task backend.type-check` (the old `pnpm -F backend build` is not a CLI task; type-check is the gate)
   - `python-worker/scripts/check_backend_web_model_contract.py` when model enums are involved
-  - `make -C python-worker format lint` on touched python files, so CI's formatter does not reject the branch
+  - `pnpm check python` on touched python files (format, lint, mypy, pyright), so CI's formatter does not reject the branch
 - Do not touch `web/` except the single type file named in the packet.
 - New or edited comments in `backend/`, `python-worker/`, `config/` are English; otherwise match file style (do not mass-translate untouched Korean comments).
 - Contract shape, nullability, error codes and data ownership are `cross-layer`; anything user-visible is `product` (to Main, wait).
@@ -115,7 +115,7 @@ Chains, from `$REPO`, in order, stop at first failure:
 0. `$REPO/node_modules` missing (fresh worktree) → `pnpm install --frozen-lockfile` (setup, but failure is a failure).
 1. `pnpm check all` — affected format, lint, type-check, build for web + backend + python. **Always required.**
 2. `pnpm test all` — web + backend + python tests. **Always required.**
-3. Only when `functions/**` is touched: `pnpm type-check` inside each changed function directory.
+3. Only when `functions/**` is touched: `pnpm run check repo` (affected function and package type-checks; add `pnpm run test repo` when a changed function has a CLI test task). A changed function directory with no CLI task (`pnpm run check repo --plan` reports its paths as read by no task) falls back to `pnpm type-check` inside that directory.
 
 Pass options via `pnpm run check …` (`pnpm check` may swallow flags). Never substitute a narrower command (`pnpm check python`, `pnpm --filter …`, `make -C python-worker …`) and never add `--task` or other selection-narrowing flags. Record command, cwd, exit code; on failure keep only the error tail identifying file:line, rule id, test name or assertion diff.
 
@@ -236,7 +236,7 @@ Every checkout a session creates for gpai-monorepo — `git worktree add` anywhe
 
 - Before removing: preserve tracked, untracked and valuable ignored files; verify commit reachability, worktree locks, and that agents/tests/servers/watchers no longer use the checkout. A clean `git status` alone is insufficient. Keep anything uncertain and name it in the report.
 - Ordinary directories: use `ionice -c3 git worktree remove <path>` (disposable scratch dirs: `ionice -c3 rm -rf -- <path>`), one at a time. Never force-remove unreviewed changes or delete checkouts concurrently. `ionice` does not guarantee desktop responsiveness: the scheduler and Btrfs/kernel writeback affect priority handling.
-- On Btrfs hosts, create each session-owned checkout inside its own subvolume. On turing use `~/.local/share/omp-worktrees/gpai-monorepo/<unique-job>/repo`: create `<unique-job>` with `btrfs subvolume create`, then `git worktree add` its `repo` child. Never create scratch directories under `~/.local/share/omp`: its existence activates OMP's XDG data routing and can split clients from the broker's canonical vault. The pool alone does not make child directories subvolumes. Do not move existing herdr worktrees or assume herdr automatically creates subvolumes.
+- On Btrfs hosts, create each session-owned checkout inside its own subvolume. On turing use `~/.local/share/omp-worktrees/gpai-monorepo/<unique-job>/repo`: create `<unique-job>` with `btrfs subvolume create`, run `chattr +C <unique-job>` while it is still empty (the pool is NOCOW, but child subvolumes do not inherit `+C`), then `git worktree add` its `repo` child. Never create scratch directories under `~/.local/share/omp`: its existence activates OMP's XDG data routing and can split clients from the broker's canonical vault. The pool alone does not make child directories subvolumes. Do not move existing herdr worktrees or assume herdr automatically creates subvolumes.
 - After preservation checks, delete only the completed job's subvolume, not its pool. `btrfs subvolume delete` needs sudo or owner permission via `user_subvol_rm_allowed`; on `EPERM`, report the prerequisite rather than silently launching a massive per-file deletion. Do not call `git worktree remove` before subvolume deletion. Review `git worktree prune --dry-run --verbose --expire now` before pruning stale registrations. Space reclamation still runs in the background and can cause heavy I/O; delete one job at a time and observe pressure.
 - Keep the shared pnpm store separate from job lifetimes. Do not migrate/reset it during active installs. Hardlinks cannot cross subvolumes; verify reflink/package-import behavior in one new checkout before large installs. Runbook: `~/workspaces/sharosoo/dotfile/omarchy/BTRFS.md` on turing. It documents privileges, pnpm tradeoffs and optional tuning; do not treat tuning suggestions as established fixes.
 - Keep a checkout only when the user asked for it or a draft PR in this conversation is still being iterated; list each kept path in the final report.

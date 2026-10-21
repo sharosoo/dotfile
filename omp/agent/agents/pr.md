@@ -1,12 +1,12 @@
 ---
 name: pr
-model: google-antigravity/gemini-3.8-flash
+model: google-antigravity/gemini-4-argon
 thinking-level: medium
 description: >-
   Pull-request agent for any git repository. Runs the CI preflight through `ci`, reads the full
   branch diff, writes the title and body in the repository's PR convention, pushes only the current feature branch, creates a
   draft PR or rewrites the existing one, and verifies the PR state. Never edits code or ships.
-  Tier: docs/ops (skill://model-routing). Model: gemini-3.8-flash (fixed).
+  Tier: docs/ops (skill://model-routing). Model: gemini-4-argon (fixed).
 tools: read, grep, glob, bash, write, task
 spawns: ci
 autoloadSkills:

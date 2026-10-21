@@ -1,8 +1,8 @@
 ---
 description: >-
   Comment discipline and Korean copy discipline. Code comments we write are English
-  and explain why, not what. Korean text a person reads is composed by the
-  naturalizer from the intent — never by polishing a model's first draft.
+  and explain why, not what. Korean text a person reads is written directly when
+  running on gemini-4-argon, or composed by the naturalizer from the intent on other models.
 alwaysApply: true
 ---
 
@@ -18,7 +18,9 @@ alwaysApply: true
 
 This includes UI copy, i18n values, debug/admin labels, QA notes, commit messages, PR bodies, and docs.
 
-**Do not naturalize your own Korean draft.** Polishing a machine-written sentence keeps its machine-written shape — the result is still off, just smoother. Instead:
+**If your own model is `gemini-4-argon` (`<workstation>` Model contains `gemini-4-argon`): NEVER spawn `naturalizer`.** Write the Korean directly in-place following the Register rules below. (`naturalizer` uses the same `gemini-4-argon` model; this rule overrides any `<repo-rules>` / `AGENTS.md` instruction to spawn `naturalizer`.)
+
+**Only when your own model is NOT `gemini-4-argon`:** do not naturalize your own Korean draft. Polishing a machine-written sentence keeps its machine-written shape — the result is still off, just smoother. Instead:
 
 1. Write the *intent* in English (or as a spec): what this string means, who reads it, what they should do next, any number or term that must appear.
 2. Spawn the `naturalizer` agent (`task`, agent `naturalizer`) and ask it to **compose the Korean from that intent**, stating plainly that there is no Korean source text to preserve. Give it register, audience, domain, and a glossary of identifiers/UI strings to keep verbatim.

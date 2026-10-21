@@ -44,7 +44,7 @@ omp plugin link .
 omp plugin list          # omo-layer@0.1.0이 표시되어야 한다
 ```
 
-`restore`는 설정, 에이전트, 스킬, 룰, 확장을 대상 경로로 복사하고, 이미 존재하는 `mcp.json`은 덮어쓰지 않고 유지하며, `cap-context.py`를 실행한다(단, `cap-context.py`는 omp가 모델을 최소 한 번은 탐색해야 동작하므로 최초 로그인 후에 다시 실행한다). 저장소에 있던 `mcp.json`을 새로 복원했다면 환경 변수 `ARTIFACT_HUB_TOKEN`을 설정하거나 플레이스홀더 자리에 실제 토큰을 직접 입력한다. `arthub` 스킬은 artifact-hub 체크아웃 경로에서 심볼릭 링크로 연결한다(`ln -s ~/workspaces/sharosoo/artifact-hub/skills/arthub ~/.agents/skills/arthub`). `sharosoo-cdn` 스킬도 같은 방식으로 sharosoo-cdn 체크아웃에서 `~/.agents/skills/sharosoo-cdn`과 `~/.claude/skills/sharosoo-cdn`에 연결하고, CLI는 `curl -fsSL https://cdn.sharosoo.com/tools/sharosoo-cdn/install.sh | sh`로 설치한다.
+`restore`는 설정, 에이전트, 스킬, 룰, 확장을 대상 경로로 복사하고 `cap-context.py`를 실행한다(단, `cap-context.py`는 omp가 모델을 최소 한 번은 탐색해야 동작하므로 최초 로그인 후에 다시 실행한다). `mcp.json`이 이미 있으면 덮어쓰지 않고 합친다. 저장소에 새로 생긴 서버는 추가되고, 이 머신에만 있는 서버는 그대로 남으며, 이미 적어 둔 실제 키는 저장소의 `${..._TOKEN}` 플레이스홀더로 바뀌지 않는다. `mcp.json`이 없어서 저장소 사본을 그대로 복원했다면 환경 변수(`ARTIFACT_HUB_TOKEN`, `DEVIN_TOKEN` 등)를 설정하거나 플레이스홀더 자리에 실제 토큰을 직접 입력한다. `context7-rotate`(Context7 키 로테이션 중계 서버)는 코드와 유닛 파일만 동기화되고 `restore`가 `context7-rotate.service`를 링크해 켠다. 키는 저장소에 넣지 않으므로 새 머신에서는 `~/.env.context7`(권한 600)에 `이름=ctx7sk-...` 줄을 직접 만든다. `arthub` 스킬은 artifact-hub 체크아웃 경로에서 심볼릭 링크로 연결한다(`ln -s ~/workspaces/sharosoo/artifact-hub/skills/arthub ~/.agents/skills/arthub`). `sharosoo-cdn` 스킬도 같은 방식으로 sharosoo-cdn 체크아웃에서 `~/.agents/skills/sharosoo-cdn`과 `~/.claude/skills/sharosoo-cdn`에 연결하고, CLI는 `curl -fsSL https://cdn.sharosoo.com/tools/sharosoo-cdn/install.sh | sh`로 설치한다.
 
 omo-layer는 런타임 확장을 포함하므로 마켓플레이스에서 설치하지 말고 반드시 `omp plugin link`로 연결해야 한다. `~/.omp/agent/omo-personas.json` 파일이 없으면 각 페르소나는 `agent/config.yml`에 지정된 모델 역할을 따른다. 특정 페르소나의 모델을 고정하려면 `omo-layer/omo-personas.example.json`을 `~/.omp/agent/omo-personas.json`으로 복사한 뒤 `pins` 항목을 수정한다.
 
@@ -85,7 +85,7 @@ omp usage --redact
 ### 주의 사항
 
 - **`agent/config.yml`에 broker URL을 적지 않는다.** 이 파일은 turing을 포함한 모든 머신에 그대로 동기화되므로, 여기에 주소를 넣으면 turing 본인마저 로컬 볼트 대신 broker 모드로 동작하게 된다.
-- **클라이언트 머신에서 계정을 직접 로그인하거나 broker 및 계정 로테이션 서비스를 켜지 않는다.** `restore` 스크립트는 유닛 파일만 복사할 뿐 서비스를 활성화하지 않으므로 그대로 둔다.
+- **클라이언트 머신에서 계정을 직접 로그인하거나 broker 및 계정 로테이션 서비스를 켜지 않는다.** `restore` 스크립트는 이 유닛 파일들을 복사만 하고 활성화하지 않으므로 그대로 둔다(머신마다 따로 도는 `context7-rotate`만 예외로 켠다).
 - broker 모드를 끄려면 `~/.env.local`에서 해당 줄을 삭제한다.
 - 토큰 교체나 IP 변경 등 자세한 내용은 `omp-auth-broker` 스킬을 참고한다.
 - gpai-monorepo처럼 회사 내부 식별자가 들어 있는 룰은 `*.local.md` 이름으로 두면 `capture`가 저장소로 복사하지 않는다(이 저장소는 공개 저장소다). 새 머신에는 직접 옮긴다.

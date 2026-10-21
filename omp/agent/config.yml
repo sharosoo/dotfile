@@ -1,14 +1,14 @@
 modelRoles:
   slow: openai-codex/gpt-6.1-sol:high
   vision: google-antigravity/gemini-3.7-flash:auto
-  smol: google-antigravity/gemini-3.8-flash:high
-  plan: google-antigravity/gemini-3.8-flash
+  smol: google-antigravity/gemini-4-argon:medium
+  plan: google-antigravity/gemini-4-argon
   advisor: openai-codex/gpt-6-astra:high
   tiny: openai-codex/gpt-5.6-luna
   commit: google-antigravity/gemini-3.7-flash:auto
-  web: openai-codex/gpt-5.6-luna
+  web: anthropic/claude-haiku-5-5
   image: openai/gpt-image-1
-  default: anthropic/claude-opus-5-5:medium
+  default: anthropic/claude-opus-5-5:low
 symbolPreset: nerd
 composer:
   shape: band
@@ -30,7 +30,7 @@ retry:
       - devin/gpt-6-1-sol
       - devin/kimi-k3
       - openai-codex/gpt-6-luna
-      - commandcode/xiaomi/mimo-v2.6-pro
+      - commandcode/deepseek/deepseek-v4.1-flash
     openai-codex/gpt-6.1-sol:
       - devin/gpt-6-1-sol
     openai-codex/gpt-5.6-sol:
@@ -42,12 +42,17 @@ retry:
       - commandcode/deepseek/deepseek-v4-pro
     kimi-code/k3:
       - commandcode/deepseek/deepseek-v4-pro
-    google-antigravity/gemini-3.8-flash:
-      - commandcode/google/gemini-3.8-flash
+    google-antigravity/gemini-4-argon:
+      - google-antigravity/gemini-3.8-flash
+    google-antigravity/claude-opus-5-5:
+      - anthropic/claude-opus-5-5
+    google-antigravity/claude-sonnet-5-5:
+      - anthropic/claude-sonnet-5-5
     web:
+      - openai-codex/gpt-6-luna
+      - web/parallel
       - web/perplexity
-      - google/gemini-2.5-flash
-      - anthropic/claude-haiku-4-5
+      - google-antigravity/gemini-3.8-flash
       - xai/grok-4.5
       - web/exa
       - web/tinyfish
@@ -57,7 +62,6 @@ retry:
       - web/firecrawl
       - web/brave
       - web/kimi
-      - web/parallel
       - web/synthetic
       - web/searxng
       - web/startpage
@@ -66,7 +70,6 @@ retry:
       - web/google
       - web/mojeek
       - web/public
-      - google-antigravity/gemini-2.5-flash
       - openai-codex/gpt-5.6
       - openai-codex/gpt-5.5
       - web/zai
@@ -192,18 +195,18 @@ skills:
     - working-with-skills
 codexResets:
   autoRedeem: "yes"
-  keepCredits: 1
+  keepCredits: 0
 task:
   enableEffort: true
   maxEffort: xhigh
-  agentServiceTierOverrides:
-    {}
+  agentServiceTierOverrides: {}
   agentModelOverrides:
-    task: "devin/swe-2, openai-codex/gpt-6-luna, commandcode/xiaomi/mimo-v2.6-pro"
+    task: "devin/swe-2, openai-codex/gpt-6-luna, commandcode/deepseek/deepseek-v4.1-flash"
     sonic: "devin/swe-2:medium, commandcode/deepseek/deepseek-v4.1-flash"
-    scout: "google-antigravity/gemini-3.8-flash:medium, devin/swe-2:medium, openai-codex/gpt-6-luna:low"
-    reviewer: "devin/swe-2, google-antigravity/gemini-3.8-flash"
+    scout: "google-antigravity/gemini-4-argon:medium, devin/swe-2:medium, openai-codex/gpt-6-luna:low"
+    reviewer: "devin/swe-2, google-antigravity/gemini-4-argon"
     security-reviewer: "openai-codex/gpt-6-astra:high, devin/gpt-6-astra:high"
+  maxConcurrency: 12
 tier:
   openai: none
   anthropic: none
