@@ -250,14 +250,14 @@ Three MCP servers are mounted (tools appear as `xd://mcp__<server>_<tool>`). Pic
 |---|---|---|
 | How do I call library X (API signature, config, version migration)? | `context7` (key-rotating local proxy) | `resolve-library-id` → `query-docs` |
 | How does a public library work inside (internals, control flow, why it behaves so)? | `deepwiki` (no auth, public GitHub repos) | `read_wiki_structure`, `read_wiki_contents`, `ask_question` |
-| How is gpai-monorepo itself wired (cross-layer architecture, where X lives)? | `devin` (Devin API key, private indexed repos) | `list_available_repos`, `ask_question` (up to 10 repos at once) |
+| How is gpai-monorepo itself wired (cross-layer architecture, where X lives)? | `devin` (Devin API key, private indexed repos) | `list_wiki_repos`, `ask_wiki_question`, `read_wiki_structure`, `read_wiki_contents` |
 
 - Use Context7 before writing code against any third-party API, even well-known ones (Next.js, React Query, FastAPI, SQLAlchemy, Pydantic, LangGraph, Restate). Version-specific: put the version from `package.json`/`pyproject.toml` in the query.
 - DeepWiki/Devin answers are generated summaries: cite them as leads, then confirm in the actual source (`read`/`grep`, or the library's checked-out code) before relying on a behavior. Never use them for code that changed after the last index.
-- `devin` only sees `weareteamturing/gpai-monorepo` after it is indexed at `https://app.devin.ai/wiki/weareteamturing/gpai-monorepo`; until `list_available_repos` lists it, explore locally (scout).
+- `devin` answers only for repos `list_wiki_repos` lists; until gpai-monorepo appears there, explore locally (scout). `generate_wiki` (re)builds a wiki and spends Devin ACUs: call it only when the user asks. The `devin_*` tools (sessions, automations, playbooks, settings) act on the Devin org: never call them unless the user asks.
 - Never pass credentials, customer data or `.local.md` contents in a question.
 
 Examples:
 - Context7: `resolve-library-id {"libraryName":"tanstack query"}` → `query-docs {"libraryId":"/tanstack/query","query":"v5 useSuspenseQuery invalidation after mutation"}`.
 - DeepWiki: `ask_question {"repoName":"restatedev/restate","question":"How does the journal replay a handler after a crash?"}`.
-- Devin: `ask_question {"repoName":["weareteamturing/gpai-monorepo","restatedev/sdk-python"],"question":"Where does python-worker register Restate services and how are retries configured?"}`.
+- Devin: `ask_wiki_question {"repoName":"weareteamturing/gpai-monorepo","question":"Where does python-worker register Restate services and how are retries configured?"}`.
