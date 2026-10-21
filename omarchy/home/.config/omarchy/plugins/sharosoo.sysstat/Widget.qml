@@ -14,6 +14,9 @@ BarWidget {
   property string memDetail: ""
   property real readBps: 0
   property real writeBps: 0
+  property int temp: 0
+  property int disk: 0
+  property string diskDetail: ""
   property var prevIdle: 0
   property var prevIowait: 0
   property var prevTotal: 0
@@ -53,6 +56,11 @@ BarWidget {
         memTotal = Number(f[1])
       } else if (f[0] === "MemAvailable:") {
         memAvail = Number(f[1])
+      } else if (f[0] === "TEMP") {
+        root.temp = Math.round(Number(f[1]) / 1000)
+      } else if (f[0] === "DISK") {
+        root.disk = Math.round(100 * Number(f[1]) / Number(f[2]))
+        root.diskDetail = (Number(f[1]) / 1e12).toFixed(2) + " / " + (Number(f[2]) / 1e12).toFixed(2) + " TB, " + (Number(f[3]) / 1e12).toFixed(2) + " TB free"
       } else if (f.length > 9 && diskPattern.test(f[2])) {
         rd += Number(f[5]) * 512
         wr += Number(f[9]) * 512
@@ -76,7 +84,8 @@ BarWidget {
 
   Process {
     id: statProc
-    command: ["sh", "-c", "head -1 /proc/stat; grep -E '^Mem(Total|Available):' /proc/meminfo; cat /proc/diskstats"]
+    // k10temp temp1 = Tctl (CPU package); hwmon index is not stable across boots, so match by name.
+    command: ["sh", "-c", "head -1 /proc/stat; grep -E '^Mem(Total|Available):' /proc/meminfo; cat /proc/diskstats; for h in /sys/class/hwmon/hwmon*; do [ \"$(cat $h/name)\" = k10temp ] && echo TEMP $(cat $h/temp1_input); done; df -B1 --output=used,size,avail / | tail -1 | sed 's/^/DISK /'"]
     stdout: StdioCollector {
       onStreamFinished: root.parse(text)
     }
@@ -95,8 +104,8 @@ BarWidget {
     anchors.centerIn: parent
     textFormat: Text.PlainText
     text: root.vertical
-      ? root.cpu + "\n" + root.mem + "\n" + root.rate(root.readBps + root.writeBps)
-      : " " + root.cpu + "%   " + root.mem + "%   " + root.rate(root.readBps) + "↓ " + root.rate(root.writeBps) + "↑"
+      ? root.cpu + "\n" + root.temp + "°\n" + root.mem + "\n" + root.disk + "\n" + root.rate(root.readBps + root.writeBps)
+      : " " + root.cpu + "% " + root.temp + "°C   " + root.mem + "%  󰋊 " + root.disk + "%   " + root.rate(root.readBps) + "↓ " + root.rate(root.writeBps) + "↑"
     horizontalAlignment: Text.AlignHCenter
     color: root.bar ? root.bar.barForeground : Color.foreground
     font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -108,7 +117,7 @@ BarWidget {
     hoverEnabled: true
     cursorShape: Qt.PointingHandCursor
     onClicked: if (root.bar) root.bar.run("omarchy-launch-or-focus-tui btop")
-    onEntered: if (root.bar) root.bar.showTooltip(root, "CPU " + root.cpu + "% (I/O wait " + root.iowait + "%)\nMemory " + root.mem + "% (" + root.memDetail + ")\nDisk read " + root.rate(root.readBps) + "B/s, write " + root.rate(root.writeBps) + "B/s")
+    onEntered: if (root.bar) root.bar.showTooltip(root, "CPU " + root.cpu + "% (I/O wait " + root.iowait + "%), " + root.temp + "°C\nMemory " + root.mem + "% (" + root.memDetail + ")\nDisk " + root.disk + "% (" + root.diskDetail + ")\nDisk read " + root.rate(root.readBps) + "B/s, write " + root.rate(root.writeBps) + "B/s")
     onExited: if (root.bar) root.bar.hideTooltip(root)
   }
 }
