@@ -17,8 +17,9 @@ if [[ ! -f $DROPIN || $(sudo cat "$DROPIN") != "$want" ]]; then
   echo "wrote $DROPIN"
 fi
 
-# The docker CLI sends a pids limit Podman applies literally, which blocks every fork in
-# `docker run` containers; a containers.conf default overrides it.
+# Default limit for Podman-native runs. It does not fix `docker run`: the Docker API sends
+# PidsLimit=0, which Podman maps to pids.max=1. ~/.local/bin/docker (linked by sync.sh)
+# adds --pids-limit 4096 for that path.
 PIDS=/etc/containers/containers.conf.d/pids.conf
 want=$'[containers]\npids_limit = 4096'
 if [[ ! -f $PIDS || $(sudo cat "$PIDS") != "$want" ]]; then

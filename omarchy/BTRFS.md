@@ -195,7 +195,7 @@ Container storage gets `+C`, like the Docker data dir did: image layers and data
 
 Install with `omarchy/bin/podman-docker-setup.sh` (idempotent, uses sudo). It writes `/etc/systemd/system/podman.socket.d/group.conf` (`SocketGroup=docker`, `SocketMode=0660`), adds the user to `docker`, runs `daemon-reload` and `enable --now podman.socket`, disables the rootless user socket, sets `+C` on the storage dirs only when they are empty, and appends `DOCKER_HOST` to `~/.bashrc`. The fish (`.config/fish/conf.d/podman-docker.fish`) and `environment.d` (`.config/environment.d/podman-docker.conf`) files are linked by `omarchy/sync.sh`.
 
-`/etc/containers/containers.conf.d/pids.conf` sets `[containers]` `pids_limit = 4096`. Without it, containers started with `docker run` against Podman get a pids limit that blocks every fork. The script writes it only when the content differs and then runs `try-restart podman.service`, because the API service reads `containers.conf` at startup.
+`docker run` against Podman fails every fork: the Docker API sends `PidsLimit=0`, and Podman maps it to `pids.max=1`. `/etc/containers/containers.conf.d/pids.conf` (`[containers]` `pids_limit = 4096`, written by the script) does not fix this, because the API value overrides it; it stays as the default for Podman-native runs. The fix is the wrapper `omarchy/home/.local/bin/docker`, linked to `~/.local/bin/docker` by `omarchy/sync.sh` (ahead of `/usr/bin/docker` on `PATH`): for `run`, `create`, `container run` and `container create` it adds `--pids-limit 4096` unless the caller passed `--pids-limit`. Verified on turing (2026-10-23): `docker run --rm alpine` shows `pids.max` 4096 and can fork.
 
 ## Smoke verification on turing (2026-10-20)
 

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Rootful Podman behind the docker CLI: the Docker API sends PidsLimit=0, which
+# Podman turns into pids.max=1, so every fork fails. Give run/create an explicit
+# limit unless the caller set one.
+set -euo pipefail
+real=/usr/bin/docker
+if [[ ${1:-} == run || ${1:-} == create || ( ${1:-} == container && ( ${2:-} == run || ${2:-} == create ) ) ]]; then
+  for arg in "$@"; do
+    [[ $arg == --pids-limit* ]] && exec "$real" "$@"
+  done
+  if [[ $1 == container ]]; then
+    exec "$real" "$1" "$2" --pids-limit 4096 "${@:3}"
+  fi
+  exec "$real" "$1" --pids-limit 4096 "${@:2}"
+fi
+exec "$real" "$@"
