@@ -195,6 +195,8 @@ Container storage gets `+C`, like the Docker data dir did: image layers and data
 
 Install with `omarchy/bin/podman-docker-setup.sh` (idempotent, uses sudo). It writes `/etc/systemd/system/podman.socket.d/group.conf` (`SocketGroup=docker`, `SocketMode=0660`), adds the user to `docker`, runs `daemon-reload` and `enable --now podman.socket`, disables the rootless user socket, sets `+C` on the storage dirs only when they are empty, and appends `DOCKER_HOST` to `~/.bashrc`. The fish (`.config/fish/conf.d/podman-docker.fish`) and `environment.d` (`.config/environment.d/podman-docker.conf`) files are linked by `omarchy/sync.sh`.
 
+`/etc/containers/containers.conf.d/pids.conf` sets `[containers]` `pids_limit = 4096`. Without it, containers started with `docker run` against Podman get a pids limit that blocks every fork. The script writes it only when the content differs and then runs `try-restart podman.service`, because the API service reads `containers.conf` at startup.
+
 ## Smoke verification on turing (2026-10-20)
 
 Created the pool as a user-owned subvolume (inode 256). In an isolated fixture, created a child subvolume and a detached Git worktree; cross-subvolume hardlinking failed with `Invalid cross-device link`, while `cp --reflink=always` succeeded and the copied bytes matched. Non-empty subvolume deletion failed with `EPERM`, so passwordless deletion is not configured. The tiny fixture was removed without leaving a checkout behind. No production pnpm install or large-delete performance comparison was run; the smoke does not establish a speedup.
