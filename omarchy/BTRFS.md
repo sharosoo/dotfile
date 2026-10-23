@@ -180,6 +180,21 @@ lsattr -d ~/.omp/agent; lsattr ~/.omp/agent/*.db*   # expect C on all
 
 `chattr +C` only takes effect on empty files, so existing DBs must be recreated. Use `omarchy/bin/omp-nocow-migrate.sh` (installed copy: `~/.omp/nocow-migrate.sh`): it detaches via `systemd-run`, runs `herdr server stop`, stops every omp process, checks that no DB is still open, checkpoints each WAL, writes a new `+C` copy at the same path, verifies `PRAGMA integrity_check` (restoring the original on failure), and sets `+C` on the directory so later WAL/SHM files inherit it. Reopening `herdr` resumes every omp pane through native session restore (`omp --resume=<session>`). Run it once: a second concurrent run hit `database is locked` during checkpoint.
 
+## Podman as Docker: NOCOW
+
+Docker is gone on turing (all containers removed, 2026-10-23). Podman 6.1.1 is the runtime; the `docker` CLI talks to **rootful** Podman via `DOCKER_HOST=unix:///run/podman/podman.sock`. Rootful is required: Dori's sandbox bridge needs it for FUSE, so the rootless user `podman.socket` stays disabled.
+
+Container storage gets `+C`, like the Docker data dir did: image layers and database volumes are rewritten in place.
+
+| Path | Role | Attr |
+|---|---|---|
+| `/var/lib/containers` | rootful storage | `+C` |
+| `~/.local/share/containers` | rootless storage (own subvolume) | `+C` |
+
+`chattr +C` only takes effect on empty directories; files created afterwards inherit it. A populated store must be emptied (or recreated) before applying it.
+
+Install with `omarchy/bin/podman-docker-setup.sh` (idempotent, uses sudo). It writes `/etc/systemd/system/podman.socket.d/group.conf` (`SocketGroup=docker`, `SocketMode=0660`), adds the user to `docker`, runs `daemon-reload` and `enable --now podman.socket`, disables the rootless user socket, sets `+C` on the storage dirs only when they are empty, and appends `DOCKER_HOST` to `~/.bashrc`. The fish (`.config/fish/conf.d/podman-docker.fish`) and `environment.d` (`.config/environment.d/podman-docker.conf`) files are linked by `omarchy/sync.sh`.
+
 ## Smoke verification on turing (2026-10-20)
 
 Created the pool as a user-owned subvolume (inode 256). In an isolated fixture, created a child subvolume and a detached Git worktree; cross-subvolume hardlinking failed with `Invalid cross-device link`, while `cp --reflink=always` succeeded and the copied bytes matched. Non-empty subvolume deletion failed with `EPERM`, so passwordless deletion is not configured. The tiny fixture was removed without leaving a checkout behind. No production pnpm install or large-delete performance comparison was run; the smoke does not establish a speedup.
