@@ -16,6 +16,18 @@ if [[ ! -f $DROPIN || $(sudo cat "$DROPIN") != "$want" ]]; then
   sudo systemctl daemon-reload
   echo "wrote $DROPIN"
 fi
+
+# The docker CLI sends a pids limit Podman applies literally, which blocks every fork in
+# `docker run` containers; a containers.conf default overrides it.
+PIDS=/etc/containers/containers.conf.d/pids.conf
+want=$'[containers]\npids_limit = 4096'
+if [[ ! -f $PIDS || $(sudo cat "$PIDS") != "$want" ]]; then
+  sudo install -d -m 0755 "$(dirname "$PIDS")"
+  printf '%s\n' "$want" | sudo tee "$PIDS" >/dev/null
+  # The API service reads containers.conf at startup.
+  sudo systemctl try-restart podman.service
+  echo "wrote $PIDS"
+fi
 getent group docker >/dev/null || sudo groupadd docker
 id -nG "$USER" | tr ' ' '\n' | grep -qx docker || { sudo usermod -aG docker "$USER"; echo "added $USER to docker (re-login)"; }
 sudo systemctl enable --now podman.socket
