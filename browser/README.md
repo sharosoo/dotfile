@@ -74,6 +74,10 @@ browser-vault forget google              # 사이트 및 소속 계정 전체 �
 
 로컬 웹앱 QA에서는 사용자가 herdr 오른쪽 패널에서 실행 화면을 볼 수 있도록 에이전트가 herdr 브라우저(`herdr-browser.service`, CDP `127.0.0.1:9333`, 영구 프로필)를 쓰며, 해당 서비스 파일은 `omarchy/` 아래에, 로그인 순서(기존 세션 → 저장된 세션 → `browser-vault` 자격 증명/OTP → 세션 저장)를 포함한 에이전트 측 규칙은 `skill://browser-agent`에 있다.
 
+herdr 에이전트 브라우저는 `herdr-browser-sync`를 통해 평소 쓰는 Chromium(`~/.config/chromium/Default`)의 환경을 사용자에서 에이전트 쪽으로만 단방향 공유한다. 쿠키 파일이 바뀌면 `herdr-browser-sync.path`가 이를 감지해 약 10초 뒤 CDP(`Storage.setCookies`)로 실시간 반영하며, 원래 브라우저에서 로그아웃하면 이 도구가 복사해 간 쿠키도 에이전트 쪽에서 함께 지우지만 에이전트 브라우저에서 따로 로그인한 세션은 그대로 유지한다. 방문 기록(병합), 사이트별 IndexedDB, 확장 프로그램과 그 저장 데이터는 에이전트 브라우저 서비스가 시작될 때마다(`herdr-browser.service.d/sync.conf`) 복사하므로 확장 프로그램을 추가하거나 지우면 다음 시작 때 반영되며, 모든 사이트가 하나의 데이터베이스를 쓰는 Local Storage는 서비스를 멈춘 상태에서 `herdr-browser-sync local-storage`로 요청할 때 한 번만 복사한다. 저장된 비밀번호는 절대 복사하지 않고 로그인할 때 계속 `browser-vault`를 쓰며, 에이전트 브라우저의 데이터가 원래 브라우저로 역류하는 일도 없고, `sharosoo Browser Relay` 확장 프로그램은 에이전트 브라우저에 의도적으로 불러오지 않는다. 에이전트 브라우저도 사용자 본인의 계정으로 로그인된 상태이므로 `skill://browser-agent`의 확인 규칙을 그대로 따른다.
+
+쿠키 동기화(`herdr-browser-sync.service`)만 실패했을 때 자동으로 재시도하며, 방문 기록, IndexedDB, 확장 프로그램 복사는 에이전트 브라우저 서비스가 시작될 때만 실행되고 실패하면 로그만 남긴 뒤 다음 시작 때 다시 시도한다. 이 도구는 원래 Chromium 프로필과 `~/.local/share/herdr-browser`가 같은 사용자 소유라고 전제하므로, 경로 검사로 심볼릭 링크가 복사 대상을 다른 곳으로 빼돌리는 일은 막아주지만 같은 사용자 권한으로 실행되는 다른 프로그램까지는 방어하지 않는다.
+
 ## 확장 프로그램 업데이트 시 (omp 공식 확장이 변경되었을 때)
 
 `omp browser-relay install` 실행 후 `~/.omp/browser-relay/extension/background.js`와 `relay-extension/background.js`를 비교한다. `Local patch`로 표시된 세 가지 변경 사항을 새 버전에 다시 적용하고, `manifest.json`의 `version`을 올린 뒤 `chrome://extensions`에서 확장을 다시 로드한다.
