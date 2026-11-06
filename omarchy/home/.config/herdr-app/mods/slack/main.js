@@ -149,6 +149,11 @@ function parseSections(text) {
   throw say(lineAt(near), `${p.where} ${p.problem}`);
 }
 const sleep = (cx, ms) => new Promise((done) => cx.timer.after(ms, () => done()));
+// conversations.info's answer: a conversation you are in. Slack answers about a public channel
+// you never joined as well, with is_member false; a DM or group DM it shows you is yours.
+const isMember = (ch) => Boolean(ch && (ch.is_im || ch.is_mpim || ch.is_member === true));
+// Slack's errors for a conversation you aren't in (or that isn't there for you).
+const NOT_MEMBER = new Set(["channel_not_found", "not_in_channel", "is_archived"]);
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 function clock(ms) {
@@ -878,6 +883,9 @@ export default class Slack extends View {
     this.handles = new Map();
     this.short = null;
     this.counted = new Map(); // "<channel>:<thread ts>" → reply ts counted on that thread's first message
+    this.notMember = new Map(); // channel id → when Slack said you aren't in it
+    this.memberAsk = new Map(); // channel id → the membership question in flight (memberOf)
+    this.memberNext = 0; // when memberOf may ask Slack next
     if (this.note?.sections) this.note = null;
   }
 
@@ -942,8 +950,9 @@ export default class Slack extends View {
   // only its own clients), so what shows unread here is asked about again every minute, the
   // newest ten: read up to its newest message in Slack clears it here as well.
   async unreadLoop(cx, gen) {
-    while (gen === this.gen) {
+    for (let round = 1; gen === this.gen; round++) {
       await sleep(cx, 60000);
+      if (round % 15 === 0) await this.syncMembership(gen).catch(() => {});
       // Marks that failed for a passing reason first, five at most; the rest of the ten are
       // the newest unread. One refused for permissions can't succeed until they change
       // (rescope or reload empty pendingMark), so it is only asked about as an unread one.
@@ -955,6 +964,7 @@ export default class Slack extends View {
       for (const c of todo) {
         if (gen !== this.gen) return;
         const j = await this.api("conversations.info", { channel: c.id }).catch(() => null);
+        if (j && (j.ok ? !isMember(j.channel) : NOT_MEMBER.has(j.error))) { this.dropConv(c.id); continue; }
         const lastRead = j?.ok ? j.channel.last_read : null, left = j?.ok ? j.channel.unread_count_display : null;
         if (lastRead && Number(lastRead) >= Number(c.lastTs)) {
           this.pendingMark.delete(c.id);
@@ -1146,6 +1156,26 @@ export default class Slack extends View {
     }
   }
 
+  // The list again from users.conversations, after a dropped connection and every quarter
+  // hour: a channel left elsewhere goes, one joined comes. DMs aren't left, so stay. Nothing is
+  // dropped unless Slack's whole list was read.
+  async syncMembership(gen) {
+    const got = [];
+    let cursor = "";
+    for (let page = 0; page < 10; page++) {
+      const j = await this.api("users.conversations", { types: "im,mpim,public_channel,private_channel", exclude_archived: "true", limit: "200", cursor });
+      if (!j.ok || gen !== this.gen) return;
+      got.push(...(j.channels ?? []));
+      cursor = j.response_metadata?.next_cursor;
+      if (!cursor) break;
+    }
+    if (cursor) return;
+    const ids = new Set(got.map((c) => c.id));
+    for (const [id, c] of [...this.convs]) if (!ids.has(id) && (c.kind === "channel" || c.kind === "group")) this.dropConv(id);
+    for (const c of got) if (!this.convs.has(c.id)) { this.notMember.delete(c.id); this.nameConv(this.addConv(c)); }
+    this.dirty = true;
+  }
+
   addConv(c) {
     const kind = c.is_im ? "im" : c.is_mpim ? "mpim" : c.is_private || c.is_group ? "group" : "channel";
     const kept = this.cache[c.id];
@@ -1202,7 +1232,8 @@ export default class Slack extends View {
   // else's and recent, for the point you had read up to and Slack's own count.
   async hydrateOne(c) {
     const h = await this.api("conversations.history", { channel: c.id, limit: "1" });
-    if (!h.ok) return;
+    // Not yours any more (left since the list was read): out, not counted.
+    if (!h.ok) { if (NOT_MEMBER.has(h.error)) this.dropConv(c.id); return; }
     const latest = h.messages?.[0];
     if (!latest) return;
     c.ts = Number(latest.ts) * 1000;
@@ -1218,6 +1249,7 @@ export default class Slack extends View {
     c.unread = 0;
     if (!mine && fresh) {
       const j = await this.api("conversations.info", { channel: c.id });
+      if (j.ok ? !isMember(j.channel) : NOT_MEMBER.has(j.error)) { this.dropConv(c.id); return; }
       const lastRead = j.ok ? j.channel.last_read : null;
       const count = j.ok ? j.channel.unread_count_display ?? null : null;
       const unreadNow = lastRead ? Number(latest.ts) > Number(lastRead) : true;
@@ -1252,9 +1284,14 @@ export default class Slack extends View {
           if (gen !== this.gen) return;
           const msg = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw));
           if (msg.envelope_id) await ws.write(JSON.stringify({ envelope_id: msg.envelope_id }));
-          if (msg.type === "hello") { this.status = "live"; this.error = null; this.dirty = true; }
+          if (msg.type === "hello") {
+            // Back after a drop: what was joined or left meanwhile sent no event here.
+            if (this.status === "reconnecting") cx.spawn(() => this.syncMembership(gen).catch(() => {}));
+            this.status = "live"; this.error = null; this.dirty = true;
+          }
           else if (msg.type === "disconnect") break;
-          else if (msg.type === "events_api") await this.onEvent(msg.payload?.event, cx);
+          // One event going wrong is that event lost, never the connection.
+          else if (msg.type === "events_api") await this.onEvent(msg.payload?.event, cx).catch(() => {});
         }
         await ws.close().catch(() => {});
       } catch (e) {
@@ -1288,7 +1325,11 @@ export default class Slack extends View {
   }
 
   async onEvent(ev, cx) {
-    if (!ev || ev.type !== "message" || !ev.channel) return;
+    if (!ev) return;
+    // You left (here, or in another Slack app): out of the list at once.
+    if ((ev.type === "channel_left" || ev.type === "group_left") && ev.channel) { this.dropConv(ev.channel); return; }
+    if (ev.type === "message" && (ev.subtype === "channel_leave" || ev.subtype === "group_leave") && ev.user === this.me?.id && ev.channel) { this.dropConv(ev.channel); return; }
+    if (ev.type !== "message" || !ev.channel) return;
     // An app's message brings its icon: the toast shows it once downloaded.
     if (!ev.user && ev.bot_id && !this.faces.has(ev.bot_id)) {
       const url = ev.bot_profile?.icons?.image_48 ?? ev.icons?.image_48;
@@ -1301,6 +1342,8 @@ export default class Slack extends View {
     // goes on into it below.
     if (ev.thread_ts && ev.thread_ts !== ev.ts) {
       if (ev.user && !this.users.has(ev.user)) await this.resolveUsers([ev.user]);
+      // Left (dropConv) while the names were fetched: no count or toast for it.
+      if (c && this.convs.get(ev.channel) !== c) return;
       const o = this.open?.id === ev.channel ? this.open : null;
       const parent = o?.messages.find((m) => m.ts === ev.thread_ts);
       if (o?.thread?.ts === ev.thread_ts && !o.thread.messages.some((m) => m.ts === ev.ts)) o.thread.messages.push(this.normalize(ev));
@@ -1316,12 +1359,23 @@ export default class Slack extends View {
       }
     }
     if (!c) {
-      const j = await this.api("conversations.info", { channel: ev.channel });
-      if (!j.ok) return;
-      c = this.addConv(j.channel);
-      this.nameConv(c);
+      // Slack can deliver messages from channels you are not in (to an app another person in
+      // the workspace also installed, say). Only one you belong to is taken in: asked about
+      // aside (memberOf), so the connection reads on meanwhile, and the event comes back here
+      // once it is known to be yours. Unknown (rate limit, no answer) drops the event.
+      if (Date.now() - (this.notMember.get(ev.channel) ?? 0) < 600000) return;
+      const gen = this.gen;
+      cx.spawn(async (cx) => {
+        const ch = await this.memberOf(ev.channel, cx);
+        if (!ch || gen !== this.gen) return;
+        if (!this.convs.has(ev.channel)) this.nameConv(this.addConv(ch));
+        await this.onEvent(ev, cx).catch(() => {});
+      });
+      return;
     }
     if (ev.user && !this.users.has(ev.user)) await this.resolveUsers([ev.user]);
+    // Left (dropConv) while the names were fetched: no count, toast or mark for it.
+    if (this.convs.get(c.id) !== c) return;
     const mine = ev.user === this.me.id;
     const shown = this.open?.id === c.id;
     c.ts = Number(ev.ts) * 1000;
@@ -2004,6 +2058,8 @@ export default class Slack extends View {
       const j = await this.api("conversations.mark", { channel: c.id, ts }, true).catch((e) => ({ ok: false, error: String(e?.message ?? e) }));
       this.logMark(c.id, ts, j);
       if (j?.ok) { this.pendingMark.delete(c.id); continue; }
+      // Not one of yours (left since, or never joined): dropped, not retried.
+      if (NOT_MEMBER.has(j?.error)) { this.dropConv(c.id); continue; }
       // Refused or unanswered: it stays as it was. Unanswered, the minute check keeps asking
       // Slack about it (pendingMark "retry") until Slack says it is read, whoever read it;
       // refused for permissions ("scope"), the yellow bar asks for them instead.
@@ -2293,6 +2349,7 @@ export default class Slack extends View {
       // Where you had read up to in Slack, asked before anything marks it read: a conversation
       // read here but not in Slack (marked while offline, say) is still marked there.
       const j = await this.api("conversations.info", { channel: id }).catch(() => null);
+      if (j && (j.ok ? !isMember(j.channel) : NOT_MEMBER.has(j.error))) { this.dropConv(id); return; }
       lastRead = (j?.ok ? j.channel.last_read : null) || (waiting ? this.seen[id] : null) || null;
       got = await this.fetchMessages(id);
     } catch (e) {
@@ -2309,6 +2366,47 @@ export default class Slack extends View {
     const behind = Boolean(last && lastRead && Number(last.ts) > Number(lastRead));
     if (!waiting && !behind) { this.open.bottomSeen = true; if (last) { this.seen[id] = last.ts; this.saveSeen(); } }
     this.dirty = true;
+  }
+
+  // Slack says you aren't in it (never were, or left): out of the list, closed if open, and
+  // never marked; it comes back when you join (onEvent, or the next start's list).
+  dropConv(id) {
+    this.convs.delete(id);
+    this.pendingMark.delete(id);
+    this.notMember.set(id, Date.now());
+    if (this.open?.id === id) this.open = null;
+    this.dirty = true;
+  }
+
+  // Is this unknown channel yours? conversations.info's channel if so, else null. One question
+  // per channel at a time (others wait for its answer), at most one a second, twenty waiting at
+  // most; a rate limit holds every question for as long as Slack says. Never throws.
+  memberOf(id, cx) {
+    // The maps of this workspace: a question still out when it changes (reload) only ever
+    // touches its own, never the new ones.
+    const asks = this.memberAsk, gone = this.notMember;
+    const asking = asks.get(id);
+    if (asking) return asking;
+    if (asks.size >= 20) return Promise.resolve(null);
+    let p = null;
+    p = (async () => {
+      try {
+        const at = Math.max(Date.now(), this.memberNext);
+        this.memberNext = at + 1000;
+        if (at > Date.now()) await sleep(cx, at - Date.now());
+        const j = await this.api("conversations.info", { channel: id });
+        if (j?.ok && isMember(j.channel)) { gone.delete(id); return j.channel; }
+        if (j?.ok || NOT_MEMBER.has(j?.error)) gone.set(id, Date.now());
+        return null;
+      } catch (e) {
+        if (e?.retryAfter) this.memberNext = Math.max(this.memberNext, Date.now() + e.retryAfter * 1000);
+        return null;
+      } finally {
+        if (asks.get(id) === p) asks.delete(id);
+      }
+    })();
+    asks.set(id, p);
+    return p;
   }
 
   // The first message after `lastRead` that someone else wrote, and how many came after it

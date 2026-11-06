@@ -17,7 +17,11 @@ export async function call(token, method, params = {}, post = false) {
   const res = post
     ? await fetch(`https://slack.com/api/${method}`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify(params) })
     : await fetch(`https://slack.com/api/${method}?${new URLSearchParams(params)}`, { headers: { Authorization: `Bearer ${token}` } });
-  if (res.status === 429) throw new Error("Slack is rate limiting this app; try again in a minute");
+  if (res.status === 429) {
+    const e = new Error("Slack is rate limiting this app; try again in a minute");
+    e.retryAfter = Math.max(1, Number(res.headers.get("retry-after")) || 60);
+    throw e;
+  }
   return res.json();
 }
 
@@ -52,7 +56,8 @@ export const MANIFEST = {
   display_information: { name: "Herdr", description: "Read and answer Slack from Herdr's side panel." },
   oauth_config: { scopes: { user: SCOPES.map(([s]) => s) } },
   settings: {
-    event_subscriptions: { user_events: ["message.channels", "message.groups", "message.im", "message.mpim"] },
+    // Leaving a channel (here or in another Slack app) takes it out of the panel's list.
+    event_subscriptions: { user_events: ["message.channels", "message.groups", "message.im", "message.mpim", "channel_left", "group_left"] },
     interactivity: { is_enabled: false },
     org_deploy_enabled: false,
     socket_mode_enabled: true,
