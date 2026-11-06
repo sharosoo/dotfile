@@ -33,32 +33,38 @@ const mono = () => settings().font_family ?? "JetBrains Mono";
 const refuse = (text) => Object.assign(new Error(text), { refused: true });
 const diffArgs = (entry) => ["diff", ...(entry.section === "staged" ? ["--cached"] : []), "--no-ext-diff", "--no-textconv", "--", entry.path];
 
-// The Files tab mirrors the built-in Files mod: same listing, caps and preview setup.
+// The Files tab mirrors the built-in Files mod: same caps and preview setup, one tree per workspace.
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
-const PER_FOLDER = 500, TOTAL = 5000, TREE_H = 28;
+const PER_FOLDER = 500, TOTAL = 5000, TREE_H = 28, POLL_FOLDERS = 8;
+const treeKey = () => JSON.stringify({ ...location(), space: spaces().find((s) => s.active)?.id ?? null });
 
-async function directory(path, on) {
+// Lists at most `limit` entries. find streams and stops at head's limit, where a shell glob would read and sort
+// the whole folder first. Links are reported as links and never followed, so a linked folder does not expand.
+async function directory(path, on, limit) {
   const windowsDirectory = async () => {
     // Windows PowerShell otherwise uses the console code page; exec decodes UTF-8.
-    // Links keep directory attributes even when dangling; check their target.
-    // Other reparse points (OneDrive's folders) have no LinkType and are folders.
+    // Other reparse points (OneDrive's folders) have no LinkType and stay folders.
     // PowerShell reads curly single quotes as quotes too, so they're doubled like '.
-    const r = await exec("powershell", ["-NoProfile", "-Command", "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); & { param($p) @(Get-ChildItem -LiteralPath $p -Force -ErrorAction Stop | Where-Object Name -ne '.git' | Select-Object -First 501 | ForEach-Object { @{ name=$_.Name; dir=($_.PSIsContainer -and (-not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -or -not $_.LinkType -or ($_.Target -and [IO.Directory]::Exists(([IO.Path]::Combine([IO.Path]::GetDirectoryName($_.FullName), $_.Target[0])))))) } }) | ConvertTo-Json -Compress } '" + path.replace(/['‘’‚‛]/g, "$&$&") + "'"], { on });
+    const r = await exec("powershell", ["-NoProfile", "-Command", "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); & { param($p, $n) @(Get-ChildItem -LiteralPath $p -Force -ErrorAction Stop | Where-Object Name -ne '.git' | Select-Object -First $n | ForEach-Object { @{ name=$_.Name; link=[bool]$_.LinkType; dir=($_.PSIsContainer -and -not $_.LinkType); linkDir=($_.PSIsContainer -and [bool]$_.LinkType) } }) | ConvertTo-Json -Compress } '" + path.replace(/['‘’‚‛]/g, "$&$&") + "' " + limit], { on });
     if (r.code !== 0) throw new Error(r.stderr || "Cannot list this folder");
     const result = JSON.parse(r.stdout || "[]");
     return Array.isArray(result) ? result : [result];
   };
   if (!on && appWindow()?.platform === "windows") return windowsDirectory();
-  const script = 'n=0; for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; name=${p##*/}; [ "$name" = .git ] && continue; if [ -d "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; n=$((n+1)); [ "$n" -gt 500 ] && break; done; test -d "$1"';
+  // A name with a newline splits into fragments that are not on disk; the existence test drops them.
+  const script = 'cd -P -- "$1" || exit 1; find . -mindepth 1 -maxdepth 1 ! -name .git | head -n "$2" | while IFS= read -r p; do [ -e "$p" ] || [ -L "$p" ] || continue; if [ -L "$p" ]; then if [ -d "$p" ]; then kind=L; else kind=l; fi; elif [ -d "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "${p#./}"; done; exit 0';
   let r;
-  try { r = await exec("sh", ["-c", script, "files", path], { on }); }
+  try { r = await exec("sh", ["-c", script, "files", path, String(limit)], { on }); }
   catch (e) {
     if (on && String(e).includes("cannot start sh: program not found")) return windowsDirectory();
     throw e;
   }
   if (r.code !== 0) throw new Error(r.stderr || "Cannot list this folder");
   const fields = r.stdout.split("\0"), out = [];
-  for (let i = 0; i + 1 < fields.length; i += 2) out.push({ name: fields[i + 1], dir: fields[i] === "d" });
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    const kind = fields[i];
+    out.push({ name: fields[i + 1], dir: kind === "d", link: kind === "l" || kind === "L", linkDir: kind === "L" });
+  }
   return out;
 }
 
@@ -120,7 +126,7 @@ export default class Git extends View {
     this.refresh(cx);
     cx.timer.every(4000, (cx) => { if (visible()) this.refresh(cx); });
     cx.timer.every(300, (cx) => { if (this.wantMore) { this.wantMore = false; this.loadMore(cx); } });
-    cx.timer.every(10000, (cx) => { if (this.tab === "files" && visible()) this.refreshTree(cx); });
+    cx.timer.every(10000, (cx) => this.pollTree(cx));
     cx.spawn(async (cx) => {
       for (;;) {
         if (await nextCommand() === "focus") { this.handle.focus(); this.refresh(cx, true); }
@@ -573,81 +579,158 @@ export default class Git extends View {
     cx.notify();
   }
 
-  // The tree follows location() alone, so it also lists folders outside any repository. Expanded folders and
-  // the open preview are remembered per location, as the Files mod does.
+  // The tree follows the active workspace and its pane's folder, so it also lists folders outside any repository.
+  // Expanded folders and the open preview are remembered per workspace and folder, as the Files mod does.
   syncTree(cx) {
-    const next = key();
+    const next = treeKey();
     if (this.tree?.key === next) return this.tree;
     const old = this.tree;
     if (old) { old.code?.release(); old.code = null; this.treeSaved.set(old.key, { folders: old.folders, file: old.file, sel: old.sel }); }
     const { cwd, on } = location(), saved = this.treeSaved.get(next);
-    this.tree = { key: next, cwd, on, entries: new Map(), folders: new Set(saved?.folders), pending: new Set(), sel: saved?.sel ?? null,
-      file: null, code: null, fileError: null, loading: false, limited: false, error: null, watched: false };
+    this.tree = { key: next, cwd, on, entries: new Map(), folders: new Set(saved?.folders), dirty: new Set(), cut: new Set(),
+      sel: saved?.sel ?? null, file: null, code: null, fileError: null, draining: false, drain: null, stale: false, pollAt: 0,
+      error: null, watched: false, changed: new Set(), changedAll: false, flushing: false, lastChange: 0 };
     if (saved?.file) this.preview(saved.file, cx);
     return this.tree;
   }
 
-  liveTree(tree) { return this.tree === tree && key() === tree.key; }
+  liveTree(tree) { return this.tree === tree && treeKey() === tree.key; }
 
+  treeEntry(tree, path) {
+    const cut = path.lastIndexOf("/"), parent = cut < 0 ? "" : path.slice(0, cut);
+    return tree.entries.get(parent)?.find((e) => e.name === path.slice(cut + 1)) ?? null;
+  }
+
+  // The caps are spent before listing: a folder gets only the room left, and none is listed once the total is reached.
   async loadFolder(tree, path) {
-    const entries = await directory(path ? `${tree.cwd}/${path}` : tree.cwd, tree.on);
+    const room = () => Math.min(PER_FOLDER, TOTAL - [...tree.entries].filter(([p]) => p !== path).reduce((n, [, e]) => n + e.length, 0));
+    const before = room();
+    const entries = before > 0 ? await directory(path ? `${tree.cwd}/${path}` : tree.cwd, tree.on, before + 1) : [];
     if (!this.liveTree(tree) || (path && !tree.folders.has(path))) return;
-    const used = [...tree.entries].filter(([p]) => p !== path).reduce((n, [, e]) => n + e.length, 0);
-    tree.entries.set(path, entries.slice(0, Math.max(0, Math.min(PER_FOLDER, TOTAL - used))).sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name)));
-    if (entries.length > PER_FOLDER || used + entries.length > TOTAL) tree.limited = true;
+    const keep = Math.max(0, room());
+    if (before <= 0 || entries.length > keep) tree.cut.add(path); else tree.cut.delete(path);
+    tree.entries.set(path, entries.slice(0, keep).sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name)));
+  }
+
+  // An open folder that is gone, or is no longer a real folder in its parent's listing, is closed instead of failing the tree.
+  async reloadFolder(tree, path) {
+    if (path && (!tree.folders.has(path) || !this.treeEntry(tree, path)?.dir)) { this.closeFolder(tree, path); return; }
+    try { await this.loadFolder(tree, path); }
+    catch (e) { if (!path) throw e; if (this.liveTree(tree)) this.closeFolder(tree, path); }
   }
 
   refreshTree(cx) {
     const tree = this.syncTree(cx);
-    if (!tree.cwd || tree.loading) return;
-    tree.loading = true; tree.limited = false;
-    cx.spawn(async (cx) => {
-      try {
-        for (const path of ["", ...tree.folders]) {
-          if (!this.liveTree(tree)) return;
-          await this.loadFolder(tree, path);
-        }
-        if (!this.liveTree(tree)) return;
-        tree.error = null; this.watchTree(tree, cx);
-      } catch (e) { if (this.liveTree(tree)) tree.error = msg(e); }
-      finally { tree.loading = false; cx.notify(); }
-    });
+    if (!tree.cwd) return;
+    tree.stale = false;
+    this.queueFolders(tree, ["", ...tree.folders], cx);
   }
 
-  // A change on disk reloads the tree and the status its marks come from; only local folders can be watched.
+  // One single-flight queue serves every listing (full refresh, watch flush, poll, opening a folder, reveal), so
+  // relists never overlap and run in the order they were queued. Resolves once the queue is empty.
+  queueFolders(tree, folders, cx) {
+    for (const f of folders) if (f === "" || tree.folders.has(f)) tree.dirty.add(f);
+    if (tree.draining) return tree.drain;
+    if (!tree.dirty.size) return Promise.resolve();
+    tree.draining = true;
+    tree.drain = new Promise((done) => cx.spawn(async (cx) => {
+      while (tree.dirty.size && this.liveTree(tree)) {
+        const [f] = tree.dirty;
+        tree.dirty.delete(f);
+        try {
+          await this.reloadFolder(tree, f);
+          if (!f && this.liveTree(tree)) { tree.error = null; this.watchTree(tree, cx); }
+        } catch (e) { if (this.liveTree(tree)) tree.error = msg(e); }
+      }
+      tree.draining = false;
+      cx.notify();
+      done();
+    }));
+    return tree.drain;
+  }
+
+  // A local change relists only the folders it touched (a batch naming the root means everything), and refreshes the
+  // status the marks come from. Bursts are coalesced into one flush 300 ms after the last event; changes while the
+  // tab is not shown leave the tree stale for the next poll.
   watchTree(tree, cx) {
     if (tree.on || tree.watched) return;
     tree.watched = true;
     cx.spawn(async (cx) => {
       try {
         while (this.tree === tree) {
-          await watchFolder(tree.cwd);
-          if (this.liveTree(tree) && this.tab === "files" && visible()) { this.refreshTree(cx); this.refresh(cx); }
+          const paths = await watchFolder(tree.cwd);
+          if (!this.liveTree(tree)) continue;
+          if (this.tab !== "files" || !visible()) { tree.stale = true; continue; }
+          const root = tree.cwd;
+          for (const p of paths) {
+            if (p === root || !p.startsWith(`${root}/`)) { tree.changedAll = true; break; }
+            const rel = p.slice(root.length + 1), cut = rel.lastIndexOf("/");
+            tree.changed.add(cut < 0 ? "" : rel.slice(0, cut));
+          }
+          tree.lastChange = Date.now();
+          if (!tree.flushing) this.flushChanges(tree, cx);
         }
       } catch { if (this.tree === tree) tree.watched = false; }
     });
   }
 
+  flushChanges(tree, cx) {
+    tree.flushing = true;
+    cx.spawn(async (cx) => {
+      for (let wait = 300; wait > 0; wait = tree.lastChange + 300 - Date.now()) await cx.sleep(wait);
+      tree.flushing = false;
+      const dirs = tree.changedAll ? ["", ...tree.folders] : [...tree.changed];
+      tree.changed = new Set(); tree.changedAll = false;
+      if (!this.liveTree(tree)) return;
+      this.queueFolders(tree, dirs, cx);
+      this.refresh(cx);
+    });
+  }
+
+  // Without a watch (another machine, or the watch was refused) a few open folders are relisted per tick, in turn.
+  pollTree(cx) {
+    const tree = this.tree;
+    if (this.tab !== "files" || !visible() || !tree?.cwd || !this.liveTree(tree) || tree.draining) return;
+    if (tree.stale) { this.refreshTree(cx); return; }
+    if (tree.watched) return;
+    const all = ["", ...tree.folders], start = tree.pollAt % all.length, batch = all.slice(start, start + POLL_FOLDERS);
+    tree.pollAt = start + batch.length;
+    this.queueFolders(tree, batch, cx);
+  }
+
+  closeFolder(tree, path) {
+    for (const folder of [...tree.folders]) if (folder === path || folder.startsWith(path + "/")) {
+      tree.folders.delete(folder);
+      tree.entries.delete(folder);
+      tree.cut.delete(folder);
+    }
+    if (tree.sel?.startsWith(path + "/")) tree.sel = path;
+  }
+
   toggleFolder(path, cx) {
     const tree = this.tree;
-    if (tree.folders.has(path)) {
-      for (const folder of [...tree.folders]) if (folder === path || folder.startsWith(path + "/")) {
-        tree.folders.delete(folder);
-        tree.entries.delete(folder);
-      }
-      if (tree.sel?.startsWith(path + "/")) tree.sel = path;
-    } else {
+    if (tree.folders.has(path)) this.closeFolder(tree, path);
+    else if (this.treeEntry(tree, path)?.dir) {
       tree.folders.add(path);
-      if (!tree.entries.has(path) && !tree.pending.has(path)) {
-        tree.pending.add(path);
-        cx.spawn(async (cx) => {
-          try { await this.loadFolder(tree, path); }
-          catch (e) { if (this.liveTree(tree)) tree.error = msg(e); }
-          finally { tree.pending.delete(path); cx.notify(); }
-        });
-      }
+      if (!tree.entries.has(path)) this.queueFolders(tree, [path], cx);
     }
     cx.notify();
+  }
+
+  // Previews, diffs and reveals stay inside the tree: a link, or a folder swapped for one since the listing, must not
+  // reach files outside it. Null when the check itself failed. Windows without sh only knows what the listing said.
+  async insideTree(tree, path) {
+    const windows = async () => !this.treeEntry(tree, path)?.link;
+    if (!tree.on && appWindow()?.platform === "windows") return windows();
+    let r;
+    try { r = await exec("sh", ["-c", 'for p; do realpath -e "$p" 2>/dev/null || realpath "$p" 2>/dev/null || exit 1; done', "realpath", tree.cwd, `${tree.cwd}/${path}`], { on: tree.on }); }
+    catch (e) {
+      if (tree.on && String(e).includes("cannot start sh: program not found")) return windows();
+      throw e;
+    }
+    const [root, real] = r.stdout.split("\n");
+    if (r.code !== 0 || !root || !real) return null;
+    return real.startsWith(root.endsWith("/") ? root : `${root}/`);
   }
 
   preview(path, cx) {
@@ -655,8 +738,12 @@ export default class Git extends View {
     tree.code?.release(); tree.code = null; tree.file = path; tree.fileError = null;
     if (path) tree.sel = path;
     if (!path || !cx) return;
+    if (this.treeEntry(tree, path)?.linkDir) { tree.fileError = "Linked folder · links are not followed"; return; }
     cx.spawn(async (cx) => {
       try {
+        const inside = await this.insideTree(tree, path);
+        if (tree.file !== path || !this.liveTree(tree)) return;
+        if (inside !== true) { tree.fileError = inside === false ? "This file resolves outside the folder · no preview" : "Cannot check where this file resolves · no preview"; return; }
         const text = await readTextFile(`${tree.cwd}/${path}`, { on: tree.on });
         if (tree.file !== path || !this.liveTree(tree)) return;
         if (text === null) { tree.fileError = "This file is no longer available"; return; }
@@ -677,7 +764,7 @@ export default class Git extends View {
     for (const entry of tree.entries.get(prefix) ?? []) {
       if (out.length >= TOTAL) break;
       const path = prefix ? `${prefix}/${entry.name}` : entry.name;
-      out.push({ path, name: entry.name, dir: entry.dir, depth });
+      out.push({ path, name: entry.name, dir: entry.dir, link: Boolean(entry.link), linkDir: Boolean(entry.linkDir), depth });
       if (entry.dir && tree.folders.has(path)) this.treeRows(tree, path, depth + 1, out);
     }
     return out;
@@ -703,11 +790,17 @@ export default class Git extends View {
 
   // Working-tree changes first: that is what the tree and its preview show.
   openDiff(path, cx) {
-    const p = this.repoPath(this.tree, path), all = this.entries();
-    const entry = ["unstaged", "untracked", "staged"].map((s) => all.find((e) => e.section === s && e.path === p)).find(Boolean);
-    if (!entry) return;
-    this.setTab("status", cx);
-    this.select(entry, cx);
+    const tree = this.tree, p = this.repoPath(tree, path);
+    const find = () => { const all = this.entries(); return ["unstaged", "untracked", "staged"].map((s) => all.find((e) => e.section === s && e.path === p)).find(Boolean); };
+    if (!find()) return;
+    cx.spawn(async (cx) => {
+      const inside = await this.insideTree(tree, path).catch(() => null);
+      if (!this.liveTree(tree)) return;
+      const entry = find();
+      if (inside !== true) this.note = { error: true, text: inside === false ? `${path} resolves outside ${tree.cwd}; its diff is not opened` : `Cannot check where ${path} resolves; its diff is not opened` };
+      else if (entry) { this.setTab("status", cx); this.select(entry, cx); }
+      cx.notify();
+    });
   }
 
   // `path` is relative to the repository root, as the status and commit lists show it.
@@ -723,19 +816,21 @@ export default class Git extends View {
     }
     const rel = abs.slice(tree.cwd.length + 1), parts = rel.split("/");
     const folders = parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join("/"));
-    for (const f of folders) tree.folders.add(f);
     if (tree.file) this.preview(null);
-    tree.sel = rel;
     cx.spawn(async (cx) => {
-      try { for (const f of ["", ...folders]) { if (!this.liveTree(tree)) return; if (!tree.entries.has(f)) await this.loadFolder(tree, f); } }
-      catch (e) { if (this.liveTree(tree)) tree.error = msg(e); }
+      // A failed check (the file and its folders are gone) still reveals as far as the disk allows.
+      const inside = await this.insideTree(tree, rel).catch(() => null);
+      if (!this.liveTree(tree)) return;
+      if (inside === false) { this.note = { error: true, text: `${path} resolves outside ${tree.cwd}, the folder Files lists` }; cx.notify(); return; }
+      for (const f of folders) tree.folders.add(f);
+      tree.sel = rel;
+      await this.queueFolders(tree, ["", ...folders].filter((f) => !tree.entries.has(f)), cx);
       if (!this.liveTree(tree)) return;
       const i = this.treeRows(tree).findIndex((r) => r.path === rel);
       if (i >= 0) this.treeScroll.scroll_to_item(i, "center");
       else if (tree.sel === rel) this.note = { text: `${rel} is not on disk` };
       cx.notify();
     });
-    cx.notify();
   }
 
   // Like the Log tab: the first click selects, a second click on the selected file opens it.
@@ -1184,8 +1279,8 @@ export default class Git extends View {
     return h_flex().h(TREE_H).w_full().pl(8 + r.depth * 18).pr(8).gap(7).items_center().rounded(7).text_size(13)
       .when(tree.sel === r.path, (el) => el.bg(t.selected))
       .child(r.dir ? svg(`mods/files/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
-      .child(svg(`mods/files/${r.dir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(t.muted))
-      .child(div().flex_1().min_w(0).truncate().child(r.name))
+      .child(svg(`mods/files/${r.dir || r.linkDir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(r.link ? t.dim : t.muted))
+      .child(div().flex_1().min_w(0).truncate().when(r.link, (el) => el.text_color(t.muted)).child(r.link ? `${r.name} ↗` : r.name))
       .when(Boolean(mark), (el) => el.child(div().text_size(11).text_color(codeColor(t, mark)).child(mark)));
   }
 
@@ -1217,13 +1312,13 @@ export default class Git extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(tree.cwd)))
       .child(div().flex_1().min_h(0).relative().px(4).py(2).child(list).child(Scrollbar.vertical("files-tree").absolute().inset_0())
         .when(!rows.length, (el) => el.child(div().absolute().top(8).left(0).px(12).text_size(12).text_color(tree.error ? t.ansi1 : t.dim)
-          .child(tree.error || (tree.loading ? "Loading files…" : "No files")))))
+          .child(tree.error || (tree.draining ? "Loading files…" : "No files")))))
       .when(Boolean(tree.error) && rows.length > 0, (el) => el.child(note(tree.error, t.ansi1)))
-      .when(tree.limited, (el) => el.child(note("File list limited to 500 entries per folder and 5,000 total")))
+      .when(tree.cut.size > 0, (el) => el.child(note("File list limited to 500 entries per folder and 5,000 total")))
       .when(Boolean(sel), (el) => el.child(h_flex().h(32).flex_none().px(8).gap(6).items_center().border_t(1).border_color(t.border)
         .when(Boolean(mark), (el) => el.child(div().w(10).flex_none().font_family(mono()).text_size(11).text_color(codeColor(t, mark)).child(mark)))
-        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(sel.path))
-        .child(this.button(t, "tree-preview", "Preview", (_e, cx) => { this.preview(sel.path, cx); cx.notify(); }, { tip: "Enter" }))
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(sel.linkDir ? `${sel.path} · linked folder, not followed` : sel.path))
+        .when(!sel.linkDir, (el) => el.child(this.button(t, "tree-preview", "Preview", (_e, cx) => { this.preview(sel.path, cx); cx.notify(); }, { tip: "Enter" })))
         .when(Boolean(mark), (el) => el.child(this.button(t, "tree-diff", "Diff", (_e, cx) => this.openDiff(sel.path, cx), { tip: "Show the change in Status (d)" })))))
       .child(this.footer(t));
   }
@@ -1237,7 +1332,7 @@ export default class Git extends View {
 
   render(cx) {
     if (key() !== this.ctx) this.refresh(cx);
-    if (this.tab === "files" && key() !== this.tree?.key) this.refreshTree(cx);
+    if (this.tab === "files" && treeKey() !== this.tree?.key) this.refreshTree(cx);
     const t = theme();
     let content;
     if (this.tab === "prs") content = this.prsPane(t, cx);
