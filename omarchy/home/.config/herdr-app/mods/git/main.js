@@ -1,7 +1,7 @@
 // A gitui-style client for the focused terminal's repository: staging with hunks, a log graph, branches, stashes, PRs.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, theme, settings, layout, nextCommand } from "herdr";
+import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle, Editor, EditorState } from "gpui-base";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, layout, nextCommand, window as appWindow } from "herdr";
 import { parseStatus, parseDiff, fileAsDiff, hunkPatch, LOG_FORMAT, parseLog, BRANCH_FORMAT, parseBranches, STASH_FORMAT, parseStashes, parseRemote, ago } from "./parse.js";
 import { newGraph, placeCommit, rowPaths, LANE, MAX_LANES } from "./graph.js";
 import { prsInit, prsRender } from "./prs.js";
@@ -19,7 +19,7 @@ const key = () => JSON.stringify(location());
 // patches go back through `git apply`, which a user's mnemonicPrefix/noprefix setting would break.
 const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false", "-c", "core.quotepath=false",
   "-c", "color.ui=false", "-c", "diff.mnemonicPrefix=false", "-c", "diff.noprefix=false"];
-const TABS = [["status", "Status"], ["log", "Log"], ["branches", "Branches"], ["stash", "Stash"], ["prs", "PRs"]];
+const TABS = [["files", "Files"], ["status", "Status"], ["log", "Log"], ["branches", "Branches"], ["stash", "Stash"], ["prs", "PRs"]];
 const LOG_PAGE = 200;
 const ROW_H = 36;
 const MAX_ROWS = 500;
@@ -32,6 +32,35 @@ const info = (text) => ({ rows: [{ kind: "i", text }], files: [], hunks: [], wid
 const mono = () => settings().font_family ?? "JetBrains Mono";
 const refuse = (text) => Object.assign(new Error(text), { refused: true });
 const diffArgs = (entry) => ["diff", ...(entry.section === "staged" ? ["--cached"] : []), "--no-ext-diff", "--no-textconv", "--", entry.path];
+
+// The Files tab mirrors the built-in Files mod: same listing, caps and preview setup.
+const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
+const PER_FOLDER = 500, TOTAL = 5000, TREE_H = 28;
+
+async function directory(path, on) {
+  const windowsDirectory = async () => {
+    // Windows PowerShell otherwise uses the console code page; exec decodes UTF-8.
+    // Links keep directory attributes even when dangling; check their target.
+    // Other reparse points (OneDrive's folders) have no LinkType and are folders.
+    // PowerShell reads curly single quotes as quotes too, so they're doubled like '.
+    const r = await exec("powershell", ["-NoProfile", "-Command", "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); & { param($p) @(Get-ChildItem -LiteralPath $p -Force -ErrorAction Stop | Where-Object Name -ne '.git' | Select-Object -First 501 | ForEach-Object { @{ name=$_.Name; dir=($_.PSIsContainer -and (-not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -or -not $_.LinkType -or ($_.Target -and [IO.Directory]::Exists(([IO.Path]::Combine([IO.Path]::GetDirectoryName($_.FullName), $_.Target[0])))))) } }) | ConvertTo-Json -Compress } '" + path.replace(/['‘’‚‛]/g, "$&$&") + "'"], { on });
+    if (r.code !== 0) throw new Error(r.stderr || "Cannot list this folder");
+    const result = JSON.parse(r.stdout || "[]");
+    return Array.isArray(result) ? result : [result];
+  };
+  if (!on && appWindow()?.platform === "windows") return windowsDirectory();
+  const script = 'n=0; for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; name=${p##*/}; [ "$name" = .git ] && continue; if [ -d "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; n=$((n+1)); [ "$n" -gt 500 ] && break; done; test -d "$1"';
+  let r;
+  try { r = await exec("sh", ["-c", script, "files", path], { on }); }
+  catch (e) {
+    if (on && String(e).includes("cannot start sh: program not found")) return windowsDirectory();
+    throw e;
+  }
+  if (r.code !== 0) throw new Error(r.stderr || "Cannot list this folder");
+  const fields = r.stdout.split("\0"), out = [];
+  for (let i = 0; i + 1 < fields.length; i += 2) out.push({ name: fields[i + 1], dir: fields[i] === "d" });
+  return out;
+}
 
 // Hidden copies keep their timers; only poll git while this block is in the shown layout, nothing above
 // it hidden, and every stack on the way showing its branch.
@@ -62,6 +91,11 @@ function codeColor(t, code) {
   return t.blocked;
 }
 
+// One letter per file, as the Files mod marks it, whatever mix of staged and unstaged codes it has.
+function markFor(codes) {
+  return codes.includes("?") || codes.includes("A") ? "A" : codes.includes("U") ? "U" : codes.includes("D") ? "D" : "M";
+}
+
 export default class Git extends View {
   init(_props, cx) {
     this.tab = localStorage.getItem("tab") ?? "status";
@@ -70,6 +104,7 @@ export default class Git extends View {
     this.diffScroll = VirtualListScrollHandle.new();
     this.logScroll = VirtualListScrollHandle.new();
     this.seq = 0; this.gen = 0; this.logToken = 0; this.logFetching = 0; this.message = ""; this.typing = null;
+    this.tree = null; this.treeSaved = new Map(); this.treeRowsShown = []; this.treeScroll = VirtualListScrollHandle.new();
     this.reset();
     this.repo = { cwd: null, root: null, remote: null };
 
@@ -85,6 +120,7 @@ export default class Git extends View {
     this.refresh(cx);
     cx.timer.every(4000, (cx) => { if (visible()) this.refresh(cx); });
     cx.timer.every(300, (cx) => { if (this.wantMore) { this.wantMore = false; this.loadMore(cx); } });
+    cx.timer.every(10000, (cx) => { if (this.tab === "files" && visible()) this.refreshTree(cx); });
     cx.spawn(async (cx) => {
       for (;;) {
         if (await nextCommand() === "focus") { this.handle.focus(); this.refresh(cx, true); }
@@ -124,6 +160,7 @@ export default class Git extends View {
   }
 
   refresh(cx, force = false) {
+    if (force && this.tab === "files") this.refreshTree(cx);
     const loc = location(), ctx = key();
     if (!loc.cwd) {
       if (this.ctx !== ctx) { this.ctx = ctx; this.seq++; this.reset(); this.repo = { cwd: null, root: null, remote: null }; }
@@ -536,10 +573,221 @@ export default class Git extends View {
     cx.notify();
   }
 
+  // The tree follows location() alone, so it also lists folders outside any repository. Expanded folders and
+  // the open preview are remembered per location, as the Files mod does.
+  syncTree(cx) {
+    const next = key();
+    if (this.tree?.key === next) return this.tree;
+    const old = this.tree;
+    if (old) { old.code?.release(); old.code = null; this.treeSaved.set(old.key, { folders: old.folders, file: old.file, sel: old.sel }); }
+    const { cwd, on } = location(), saved = this.treeSaved.get(next);
+    this.tree = { key: next, cwd, on, entries: new Map(), folders: new Set(saved?.folders), pending: new Set(), sel: saved?.sel ?? null,
+      file: null, code: null, fileError: null, loading: false, limited: false, error: null, watched: false };
+    if (saved?.file) this.preview(saved.file, cx);
+    return this.tree;
+  }
+
+  liveTree(tree) { return this.tree === tree && key() === tree.key; }
+
+  async loadFolder(tree, path) {
+    const entries = await directory(path ? `${tree.cwd}/${path}` : tree.cwd, tree.on);
+    if (!this.liveTree(tree) || (path && !tree.folders.has(path))) return;
+    const used = [...tree.entries].filter(([p]) => p !== path).reduce((n, [, e]) => n + e.length, 0);
+    tree.entries.set(path, entries.slice(0, Math.max(0, Math.min(PER_FOLDER, TOTAL - used))).sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name)));
+    if (entries.length > PER_FOLDER || used + entries.length > TOTAL) tree.limited = true;
+  }
+
+  refreshTree(cx) {
+    const tree = this.syncTree(cx);
+    if (!tree.cwd || tree.loading) return;
+    tree.loading = true; tree.limited = false;
+    cx.spawn(async (cx) => {
+      try {
+        for (const path of ["", ...tree.folders]) {
+          if (!this.liveTree(tree)) return;
+          await this.loadFolder(tree, path);
+        }
+        if (!this.liveTree(tree)) return;
+        tree.error = null; this.watchTree(tree, cx);
+      } catch (e) { if (this.liveTree(tree)) tree.error = msg(e); }
+      finally { tree.loading = false; cx.notify(); }
+    });
+  }
+
+  // A change on disk reloads the tree and the status its marks come from; only local folders can be watched.
+  watchTree(tree, cx) {
+    if (tree.on || tree.watched) return;
+    tree.watched = true;
+    cx.spawn(async (cx) => {
+      try {
+        while (this.tree === tree) {
+          await watchFolder(tree.cwd);
+          if (this.liveTree(tree) && this.tab === "files" && visible()) { this.refreshTree(cx); this.refresh(cx); }
+        }
+      } catch { if (this.tree === tree) tree.watched = false; }
+    });
+  }
+
+  toggleFolder(path, cx) {
+    const tree = this.tree;
+    if (tree.folders.has(path)) {
+      for (const folder of [...tree.folders]) if (folder === path || folder.startsWith(path + "/")) {
+        tree.folders.delete(folder);
+        tree.entries.delete(folder);
+      }
+      if (tree.sel?.startsWith(path + "/")) tree.sel = path;
+    } else {
+      tree.folders.add(path);
+      if (!tree.entries.has(path) && !tree.pending.has(path)) {
+        tree.pending.add(path);
+        cx.spawn(async (cx) => {
+          try { await this.loadFolder(tree, path); }
+          catch (e) { if (this.liveTree(tree)) tree.error = msg(e); }
+          finally { tree.pending.delete(path); cx.notify(); }
+        });
+      }
+    }
+    cx.notify();
+  }
+
+  preview(path, cx) {
+    const tree = this.tree;
+    tree.code?.release(); tree.code = null; tree.file = path; tree.fileError = null;
+    if (path) tree.sel = path;
+    if (!path || !cx) return;
+    cx.spawn(async (cx) => {
+      try {
+        const text = await readTextFile(`${tree.cwd}/${path}`, { on: tree.on });
+        if (tree.file !== path || !this.liveTree(tree)) return;
+        if (text === null) { tree.fileError = "This file is no longer available"; return; }
+        if (text.includes("\0")) { tree.fileError = "Binary file · no text preview"; return; }
+        const t = theme(), ext = path.includes(".") ? path.split(".").pop() : "txt";
+        tree.code?.release();
+        tree.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true,
+          value: text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text,
+          font_family: settings().font_family, font_size: 12,
+          syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
+      } catch { if (tree.file === path && this.liveTree(tree)) tree.fileError = "Cannot preview this file (binary, too large, or unreadable)"; }
+      finally { cx.notify(); }
+    });
+  }
+
+  treeRows(tree, prefix = "", depth = 0, out = []) {
+    if (out.length >= TOTAL || depth > 40) return out;
+    for (const entry of tree.entries.get(prefix) ?? []) {
+      if (out.length >= TOTAL) break;
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      out.push({ path, name: entry.name, dir: entry.dir, depth });
+      if (entry.dir && tree.folders.has(path)) this.treeRows(tree, path, depth + 1, out);
+    }
+    return out;
+  }
+
+  // Status paths are relative to the repository root; the tree is rooted at the pane's folder, which may sit below it.
+  repoPath(tree, path) {
+    if (!this.root || tree.on !== this.on || this.repo.cwd !== tree.cwd) return null;
+    const abs = `${tree.cwd}/${path}`;
+    return abs.startsWith(`${this.root}/`) ? abs.slice(this.root.length + 1) : null;
+  }
+
+  markOf(tree, path) {
+    const p = this.repoPath(tree, path);
+    if (p === null) return null;
+    if (this.markSource !== this.status) {
+      const codes = new Map();
+      for (const [section] of SECTIONS) for (const f of this.status[section]) codes.set(f.path, (codes.get(f.path) ?? "") + f.code);
+      this.markSource = this.status; this.marks = new Map([...codes].map(([file, c]) => [file, markFor(c)]));
+    }
+    return this.marks.get(p) ?? null;
+  }
+
+  // Working-tree changes first: that is what the tree and its preview show.
+  openDiff(path, cx) {
+    const p = this.repoPath(this.tree, path), all = this.entries();
+    const entry = ["unstaged", "untracked", "staged"].map((s) => all.find((e) => e.section === s && e.path === p)).find(Boolean);
+    if (!entry) return;
+    this.setTab("status", cx);
+    this.select(entry, cx);
+  }
+
+  // `path` is relative to the repository root, as the status and commit lists show it.
+  reveal(path, cx) {
+    if (!this.root) return;
+    const abs = `${this.root}/${path}`;
+    this.setTab("files", cx);
+    const tree = this.syncTree(cx);
+    if (tree.on !== this.on || !tree.cwd || !abs.startsWith(`${tree.cwd}/`)) {
+      this.note = { error: true, text: `${path} is outside ${tree.cwd ?? "this folder"}, the folder Files lists` };
+      cx.notify();
+      return;
+    }
+    const rel = abs.slice(tree.cwd.length + 1), parts = rel.split("/");
+    const folders = parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join("/"));
+    for (const f of folders) tree.folders.add(f);
+    if (tree.file) this.preview(null);
+    tree.sel = rel;
+    cx.spawn(async (cx) => {
+      try { for (const f of ["", ...folders]) { if (!this.liveTree(tree)) return; if (!tree.entries.has(f)) await this.loadFolder(tree, f); } }
+      catch (e) { if (this.liveTree(tree)) tree.error = msg(e); }
+      if (!this.liveTree(tree)) return;
+      const i = this.treeRows(tree).findIndex((r) => r.path === rel);
+      if (i >= 0) this.treeScroll.scroll_to_item(i, "center");
+      else if (tree.sel === rel) this.note = { text: `${rel} is not on disk` };
+      cx.notify();
+    });
+    cx.notify();
+  }
+
+  // Like the Log tab: the first click selects, a second click on the selected file opens it.
+  clickTree(path, cx) {
+    const tree = this.tree, r = this.treeRowsShown.find((x) => x.path === path);
+    if (!tree || !r) return;
+    if (r.dir) { tree.sel = path; this.toggleFolder(path, cx); }
+    else if (tree.sel === path) this.preview(path, cx);
+    else tree.sel = path;
+    cx.notify();
+  }
+
+  treeKey(k, cx) {
+    const tree = this.tree;
+    if (!tree) return false;
+    if (tree.file) {
+      if (k === "escape" || k === "backspace" || k === "h" || k === "left") { this.preview(null); cx.notify(); }
+      else if (k === "d") this.openDiff(tree.file, cx);
+      else return false;
+      return true;
+    }
+    const down = k === "j" || k === "down", up = k === "k" || k === "up";
+    const rows = this.treeRowsShown, i = rows.findIndex((r) => r.path === tree.sel), r = rows[i];
+    const pick = (j) => {
+      const at = Math.max(0, Math.min(rows.length - 1, j));
+      if (!rows[at]) return;
+      tree.sel = rows[at].path; this.treeScroll.scroll_to_item(at, "center"); cx.notify();
+    };
+    if (down || up) pick(i < 0 ? 0 : i + (down ? 1 : -1));
+    else if (k === "g" || k === "shift-g") pick(k === "g" ? 0 : rows.length - 1);
+    else if (k === "enter" && r) { if (r.dir) this.toggleFolder(r.path, cx); else this.preview(r.path, cx); }
+    else if ((k === "l" || k === "right") && r) {
+      if (!r.dir) this.preview(r.path, cx);
+      else if (!tree.folders.has(r.path)) this.toggleFolder(r.path, cx);
+      else if (rows[i + 1]?.depth > r.depth) pick(i + 1);
+    } else if ((k === "h" || k === "left") && r) {
+      if (r.dir && tree.folders.has(r.path)) this.toggleFolder(r.path, cx);
+      else if (r.path.includes("/")) pick(rows.findIndex((x) => x.path === r.path.slice(0, r.path.lastIndexOf("/"))));
+    } else if (k === "d" && r && !r.dir) this.openDiff(r.path, cx);
+    else return false;
+    cx.notify();
+    return true;
+  }
+
   onKey(e, cx) {
     const k = e.keystroke;
     if (!this.handle.is_focused()) {
-      if (k === "escape" && this.typing) { this.handle.focus(); cx.stop_propagation(); cx.notify(); }
+      // The read-only preview keeps focus for selecting and copying; Esc still leaves it.
+      if (k === "escape" && (this.typing || (this.tab === "files" && this.tree?.file))) {
+        if (!this.typing) this.preview(null);
+        this.handle.focus(); cx.stop_propagation(); cx.notify();
+      }
       return;
     }
     if (this.handleKey(k, cx)) cx.stop_propagation();
@@ -555,13 +803,14 @@ export default class Git extends View {
     }
     const ids = TABS.map(([id]) => id), at = ids.indexOf(this.tab);
     if (k === "tab" || k === "shift-tab") this.setTab(ids[(at + (k === "tab" ? 1 : ids.length - 1)) % ids.length], cx);
-    else if (/^[1-5]$/.test(k)) this.setTab(ids[+k - 1], cx);
+    else if (/^[1-9]$/.test(k) && ids[+k - 1]) this.setTab(ids[+k - 1], cx);
     else if (k === "r") this.refresh(cx, true);
-    else return Boolean(this.root) && this.keyIn(k, cx);
+    else return (this.tab === "files" || Boolean(this.root)) && this.keyIn(k, cx);
     return true;
   }
 
   keyIn(k, cx) {
+    if (this.tab === "files") return this.treeKey(k, cx);
     const down = k === "j" || k === "down", up = k === "k" || k === "up";
     if (this.tab === "status") {
       const all = this.entries(), i = all.findIndex((x) => x.section === this.sel?.section && x.path === this.sel?.path);
@@ -740,6 +989,9 @@ export default class Git extends View {
           .child(h_flex().flex_1().min_w(0)
             .child(div().min_w(0).truncate().text_color(t.dim).child(slash >= 0 ? f.path.slice(0, slash + 1) : ""))
             .child(div().flex_none().max_w(240).truncate().child(f.path.slice(slash + 1))))
+          .child(div().id(`fr-${section}-${f.path}`).w(18).h(18).flex().flex_none().items_center().justify_center().rounded(4).text_color(t.muted)
+            .tooltip("Show in files").hover((st) => st.bg(t.raised).text_color(t.foreground))
+            .on_click((_e, cx) => { cx.stop_propagation(); this.reveal(f.path, cx); }).child(svg("mods/files/folder.svg").size(12)))
           .child(div().id(`fa-${section}-${f.path}`).w(18).h(18).flex().flex_none().items_center().justify_center().rounded(4).text_color(t.muted)
             .tooltip(staged ? "Unstage (u)" : "Stage (s)").hover((st) => st.bg(t.raised).text_color(t.foreground))
             .on_click((_e, cx) => { cx.stop_propagation(); staged ? this.unstage(cx, entry) : this.stage(cx, entry); }).child(staged ? "−" : "+")));
@@ -843,7 +1095,10 @@ export default class Git extends View {
         .when(on, (el) => el.bg(t.selected)).hover((s) => s.bg(on ? t.selected : t.hover))
         .on_click((_e, cx) => this.pickCommitFile(f.path, cx))
         .child(div().w(10).flex_none().font_family(mono()).text_size(11).text_color(codeColor(t, f.code)).child(f.code))
-        .child(div().flex_1().min_w(0).truncate().text_size(11.5).child(f.path));
+        .child(div().flex_1().min_w(0).truncate().text_size(11.5).child(f.path))
+        .child(div().id(`cfr-${f.path}`).w(18).h(18).flex().flex_none().items_center().justify_center().rounded(4).text_color(t.muted)
+          .tooltip("Show in files").hover((s) => s.bg(t.raised).text_color(t.foreground))
+          .on_click((_e, cx) => { cx.stop_propagation(); this.reveal(f.path, cx); }).child(svg("mods/files/folder.svg").size(12)));
     });
     const height = this.size?.height ?? 640;
     return v_flex().flex_1().min_h(0)
@@ -924,6 +1179,55 @@ export default class Git extends View {
       .child(this.footer(t));
   }
 
+  treeRow(r, tree, t) {
+    const open = r.dir && tree.folders.has(r.path), mark = r.dir ? null : this.markOf(tree, r.path);
+    return h_flex().h(TREE_H).w_full().pl(8 + r.depth * 18).pr(8).gap(7).items_center().rounded(7).text_size(13)
+      .when(tree.sel === r.path, (el) => el.bg(t.selected))
+      .child(r.dir ? svg(`mods/files/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
+      .child(svg(`mods/files/${r.dir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(t.muted))
+      .child(div().flex_1().min_w(0).truncate().child(r.name))
+      .when(Boolean(mark), (el) => el.child(div().text_size(11).text_color(codeColor(t, mark)).child(mark)));
+  }
+
+  filesPane(t) {
+    const tree = this.tree;
+    if (!tree?.cwd) return div().p(14).text_color(t.dim).child("No folder");
+    if (tree.file) {
+      const mark = this.markOf(tree, tree.file);
+      return v_flex().flex_1().min_h(0)
+        .child(h_flex().h(30).flex_none().px(8).gap(8).items_center().border_b(1).border_color(t.border)
+          .child(div().id("preview-back").px(4).rounded(4).text_color(t.muted).cursor_pointer().tooltip("Back (Esc)").hover((s) => s.bg(t.hover).text_color(t.foreground))
+            .on_click((_e, cx) => { this.preview(null); this.handle.focus(); cx.notify(); }).child("←"))
+          .when(Boolean(mark), (el) => el.child(div().flex_none().font_family(mono()).text_size(11).text_color(codeColor(t, mark)).child(mark)))
+          .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(tree.file))
+          .when(Boolean(mark), (el) => el.child(this.button(t, "preview-diff", "Diff", (_e, cx) => this.openDiff(tree.file, cx), { tip: "Show the change in Status (d)" }))))
+        .child(tree.code ? Editor.new(tree.code).flex_1().min_h(0) : div().p(12).text_color(t.dim).child(tree.fileError || "Loading file…"))
+        .child(this.footer(t));
+    }
+    const rows = this.treeRows(tree);
+    this.treeRowsShown = rows;
+    const sel = rows.find((r) => r.path === tree.sel && !r.dir), mark = sel ? this.markOf(tree, sel.path) : null;
+    const list = v_virtual_list("files-tree", rows.length, TREE_H, (i) => rows[i].path,
+      (range) => rows.slice(range.start, range.end).map((r) => this.treeRow(r, tree, t)))
+      .size_full().track_scroll(this.treeScroll).on_item_click((k, cx) => this.clickTree(k, cx));
+    const note = (text, color = t.dim) => div().flex_none().px(12).py(4).text_size(11).text_color(color).child(text);
+    return v_flex().flex_1().min_h(0)
+      .child(h_flex().h(30).flex_none().px(10).gap(6).items_center().border_b(1).border_color(t.border)
+        .child(svg("mods/files/folder.svg").size(13).flex_none().text_color(t.muted))
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(tree.cwd)))
+      .child(div().flex_1().min_h(0).relative().px(4).py(2).child(list).child(Scrollbar.vertical("files-tree").absolute().inset_0())
+        .when(!rows.length, (el) => el.child(div().absolute().top(8).left(0).px(12).text_size(12).text_color(tree.error ? t.ansi1 : t.dim)
+          .child(tree.error || (tree.loading ? "Loading files…" : "No files")))))
+      .when(Boolean(tree.error) && rows.length > 0, (el) => el.child(note(tree.error, t.ansi1)))
+      .when(tree.limited, (el) => el.child(note("File list limited to 500 entries per folder and 5,000 total")))
+      .when(Boolean(sel), (el) => el.child(h_flex().h(32).flex_none().px(8).gap(6).items_center().border_t(1).border_color(t.border)
+        .when(Boolean(mark), (el) => el.child(div().w(10).flex_none().font_family(mono()).text_size(11).text_color(codeColor(t, mark)).child(mark)))
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(sel.path))
+        .child(this.button(t, "tree-preview", "Preview", (_e, cx) => { this.preview(sel.path, cx); cx.notify(); }, { tip: "Enter" }))
+        .when(Boolean(mark), (el) => el.child(this.button(t, "tree-diff", "Diff", (_e, cx) => this.openDiff(sel.path, cx), { tip: "Show the change in Status (d)" })))))
+      .child(this.footer(t));
+  }
+
   prsPane(t, cx) {
     let body;
     try { body = prsRender(this, t, cx); }
@@ -933,15 +1237,17 @@ export default class Git extends View {
 
   render(cx) {
     if (key() !== this.ctx) this.refresh(cx);
+    if (this.tab === "files" && key() !== this.tree?.key) this.refreshTree(cx);
     const t = theme();
     let content;
     if (this.tab === "prs") content = this.prsPane(t, cx);
+    else if (this.tab === "files") content = this.filesPane(t);
     else if (!this.root) content = div().p(14).text_color(t.dim).child(this.error ?? (this.loading ? "Loading…" : "No folder"));
     else if (this.tab === "log") content = this.logPane(t);
     else if (this.tab === "branches") content = this.branchesPane(t);
     else if (this.tab === "stash") content = this.stashPane(t);
     else content = this.statusPane(t);
-    const focusMe = (_e, cx) => { if (this.tab !== "prs") this.handle.focus(); };
+    const focusMe = (_e, cx) => { if (this.tab !== "prs" && !(this.tab === "files" && this.tree?.file)) this.handle.focus(); };
     return v_flex().id("git").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border)
       .text_color(t.foreground).text_size(12)
       .track_focus(this.handle).on_key_down((e, cx) => this.onKey(e, cx))

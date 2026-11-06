@@ -130,8 +130,8 @@ export default class Tabs extends View {
       ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
-    // Git covers what Changes showed, so Changes stays out of the panel.
-    const enabled = [...(shared("workspace.panels") ?? ["files"]).filter((id) => id !== "changes"), "omp-usage", "artifacts", "slack", "browser", "git",
+    // Git covers what Changes and Files showed (Files is a tab inside Git), so neither stays in the panel.
+    const enabled = [...(shared("workspace.panels") ?? []).filter((id) => id !== "changes" && id !== "files"), "omp-usage", "artifacts", "slack", "browser", "git",
       ...OPTIONAL.filter((p) => isOpen(p.id)).map((p) => p.id)];
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon) => {
@@ -151,10 +151,9 @@ export default class Tabs extends View {
       .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
       .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar().children(shown.map(item)))
       .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
-      .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
       .child(panelButton("omp-usage", "Usage", "mods/omp-usage/refresh.svg"))
-      .child(panelButton("artifacts", "Artifacts", "mods/files/file.svg"))
+      .child(panelButton("artifacts", "Artifacts", "mods/artifacts/book-open.svg"))
       .child(panelButton("slack", "Slack", "mods/slack/message-square.svg"))
       .child(panelButton("browser", "Browser", "mods/browser/globe.svg"))
       .child(panelButton("git", "Git", "mods/changes/changes.svg"))
