@@ -1,21 +1,21 @@
 modelRoles:
-  slow: openai-codex/gpt-6.1-sol:high
+  slow: openai-codex/gpt-6-astra:max
   vision: google-antigravity/gemini-3.7-flash:auto
-  smol: google-antigravity/gemini-4-argon:medium
-  plan: google-antigravity/gemini-4-argon
+  smol: google-antigravity/gemini-4-argon:high
+  plan: google-antigravity/gemini-3.8-flash
   advisor: openai-codex/gpt-6-astra:high
   tiny: openai-codex/gpt-5.6-luna
   commit: google-antigravity/gemini-3.7-flash:auto
   web: anthropic/claude-haiku-5-5
   image: openai/gpt-image-1
-  default: anthropic/claude-opus-5-5:low
+  default: anthropic/claude-opus-5-5:high
 symbolPreset: nerd
 composer:
   shape: band
 theme:
   dark: titanium
   light: light
-setupVersion: 2
+setupVersion: 3
 dev:
   autoqaConsent: granted
 defaultThinkingLevel: auto
@@ -31,8 +31,9 @@ retry:
       - devin/kimi-k3
       - openai-codex/gpt-6-luna
       - commandcode/deepseek/deepseek-v4.1-flash
-    openai-codex/gpt-6.1-sol:
-      - devin/gpt-6-1-sol
+    openai-codex/gpt-6.1-sol: []
+    openai-codex/gpt-6-astra: []
+    openai-codex/gpt-6-luna: []
     openai-codex/gpt-5.6-sol:
       - openai-codex/gpt-5.6-terra
       - kimi-code/k3
@@ -44,10 +45,11 @@ retry:
       - commandcode/deepseek/deepseek-v4-pro
     google-antigravity/gemini-4-argon:
       - google-antigravity/gemini-3.8-flash
-    google-antigravity/claude-opus-5-5:
-      - anthropic/claude-opus-5-5
-    google-antigravity/claude-sonnet-5-5:
-      - anthropic/claude-sonnet-5-5
+      - commandcode/google/gemini-3.8-flash
+    google-antigravity/gemini-3.8-flash:
+      - commandcode/google/gemini-3.8-flash
+    google-antigravity/gemini-3.7-flash:
+      - commandcode/google/gemini-3.7-flash
     web:
       - openai-codex/gpt-6-luna
       - web/parallel
@@ -70,8 +72,7 @@ retry:
       - web/google
       - web/mojeek
       - web/public
-      - openai-codex/gpt-5.6
-      - openai-codex/gpt-5.5
+      - openai-codex/gpt-5.6-sol
       - web/zai
       - web/ollama
     image:
@@ -92,11 +93,19 @@ github:
   enabled: true
 collab:
   webUrl: ""
-hideThinkingBlock: false
+hideThinkingBlock: true
 browser:
   relay: false
 skills:
   ignoredSkills:
+    - gpai-qa
+    - gpai_qa_bf
+    - gpai_qa_cases
+    - gpai_qa_parallel
+    - gpai_qa_device
+    - gpai_qa_judge
+    - gpai_qa_report
+    - qa-map
     - analyzing-experiment-session-replays
     - assessing-heatmaps
     - auditing-endpoints
@@ -194,19 +203,40 @@ skills:
     - tuning-incremental-sync-config
     - working-with-skills
 codexResets:
-  autoRedeem: "yes"
+  autoRedeem: "no"
   keepCredits: 0
 task:
   enableEffort: true
   maxEffort: xhigh
-  agentServiceTierOverrides: {}
+  agentServiceTierOverrides:
+    astra: ultrafast
+    sol: ultrafast
+    terra: priority
+    luna: priority
   agentModelOverrides:
-    task: "devin/swe-2, openai-codex/gpt-6-luna, commandcode/deepseek/deepseek-v4.1-flash"
+    task: "anthropic/claude-opus-5-5:high, openai-codex/gpt-6.1-sol, devin/swe-2"
     sonic: "devin/swe-2:medium, commandcode/deepseek/deepseek-v4.1-flash"
-    scout: "google-antigravity/gemini-4-argon:medium, devin/swe-2:medium, openai-codex/gpt-6-luna:low"
-    reviewer: "devin/swe-2, google-antigravity/gemini-4-argon"
-    security-reviewer: "openai-codex/gpt-6-astra:high, devin/gpt-6-astra:high"
-  maxConcurrency: 12
+    scout: "google-antigravity/gemini-3.8-flash:medium, devin/swe-2:medium, openai-codex/gpt-6-luna:low"
+    reviewer: "devin/swe-2, google-antigravity/gemini-3.8-flash"
+    security-reviewer: openai-codex/gpt-6-astra:high
+  maxConcurrency: 0
 tier:
-  openai: none
+  openai: ultrafast
   anthropic: none
+modelProviderOrder:
+  - anthropic
+  - openai-codex
+  - google-antigravity
+auth:
+  accountPolicies:
+    - provider: anthropic
+      account:
+        email: "<redacted>"
+        orgId: "<redacted>"
+      priority: 10
+    - provider: openai-codex
+      account:
+        email: "<redacted>"
+      priority: 20
+update:
+  auto: true
