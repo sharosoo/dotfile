@@ -1,0 +1,753 @@
+#!/usr/bin/env bun
+// One-way sync from the person's Chromium (~/.config/chromium/Default) into the herdr agent browser
+// (~/.local/share/herdr-browser/profile). Passwords are never read: logins stay in browser-vault.
+//
+//   herdr-browser-sync cookies [--full] [--dry-run] [--domains a,b] [--debounce S] [--min-interval S] [--wait S]
+//       Live, over CDP (127.0.0.1:9333). Sends cookies that are new or changed since the last run and deletes
+//       agent-side cookies this tool synced earlier that the person's browser no longer has (logouts).
+//       Cookies only the agent browser has are left alone. --full resends everything.
+//   herdr-browser-sync offline          herdr browser stopped (ExecStartPre): extensions, their storage,
+//       History merge, IndexedDB per origin.
+//   herdr-browser-sync local-storage    herdr browser stopped, one-time: replaces the agent's Local Storage
+//       with a copy of the person's (one leveldb for every site, so it cannot be merged per origin).
+//   herdr-browser-sync extensions       list what `offline` loads.
+//
+// Cookie values never reach stdout or logs; output is counts only. Any failure exits 1 with an ERROR line.
+//
+// Only the cookie sync is retried (herdr-browser-sync.service, Restart=on-failure). `offline` runs once per
+// herdr-browser start; a failure there is logged and the next start tries again, nothing retries it sooner.
+// Trust boundary: the person's profile and our managed roots (~/.local/share/herdr-browser, the scratch dir)
+// are assumed to belong to the same user. The path checks stop a symlink from redirecting a copy, not a
+// process running as that user, which could rewrite the files directly anyway.
+
+import { Database } from "bun:sqlite";
+import { createDecipheriv, createHash, pbkdf2Sync } from "node:crypto";
+import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
+  readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+
+const HOME = process.env.HOME;
+const SRC = join(HOME, ".config/chromium/Default");
+const ROOT = join(HOME, ".local/share/herdr-browser");
+const PROFILE = join(ROOT, "profile");
+const DST = join(PROFILE, "Default");
+const EXT_DIR = join(ROOT, "extensions");
+const STATE = join(ROOT, "sync-state.json");
+const LOCK = join(ROOT, "sync.lock");
+const CDP_PORT = (() => {
+  const raw = process.env.HERDR_BROWSER_CDP_PORT ?? "9333";
+  const n = Number(raw);
+  if (!/^\d+$/.test(raw) || n < 1 || n > 65535) { console.error(`herdr-browser-sync: ERROR invalid HERDR_BROWSER_CDP_PORT ${JSON.stringify(raw)}`); process.exit(64); }
+  return String(n);
+})();
+const CDP = `http://127.0.0.1:${CDP_PORT}`;
+const EXTENSION_ID = /^[a-p]{32}$/;
+// The relay extension bridges the person's own browser to omp; a copy in the agent browser would register a
+// second relay client and steal relay sessions.
+const SKIP_EXTENSIONS = new Set(["mhpgnodolhkbdjggenpfcmlkgmecgjak"]);
+
+const [cmd, ...rest] = process.argv.slice(2);
+const flag = (name) => rest.includes(name);
+const opt = (name) => { const i = rest.indexOf(name); return i >= 0 ? rest[i + 1] : undefined; };
+const log = (...a) => console.log("herdr-browser-sync:", ...a);
+const fail = (...a) => { console.error("herdr-browser-sync: ERROR", ...a); process.exitCode = 1; };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// --- single run at a time --------------------------------------------------------------------------------
+// The path-triggered run, ExecStartPre/Post and manual runs share the state file and the agent profile.
+
+if (cmd && cmd !== "extensions" && !process.env.HERDR_BROWSER_SYNC_LOCKED) {
+  mkdirSync(ROOT, { recursive: true });
+  const r = Bun.spawnSync(["flock", "-w", "300", LOCK, process.execPath, import.meta.path, cmd, ...rest], {
+    env: { ...process.env, HERDR_BROWSER_SYNC_LOCKED: "1" }, stdout: "inherit", stderr: "inherit",
+  });
+  process.exit(r.exitCode ?? 1);
+}
+
+// --- scratch copies ------------------------------------------------------------------------------------
+// Snapshots of the person's databases live in a 0700 dir on tmpfs and are overwritten before removal, also
+// when the run is killed. A run that died anyway leaves `herdr-browser-sync.*`, shredded by the next run.
+
+const scratchDirs = new Set();
+const SCRATCH_BASE = (() => {
+  const runtime = process.env.XDG_RUNTIME_DIR;
+  if (runtime && Bun.spawnSync(["stat", "-f", "-c", "%T", runtime]).stdout.toString().trim() === "tmpfs") return runtime;
+  return "/dev/shm";
+})();
+
+function shredDir(dir) {
+  const files = [];
+  const walk = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p); else if (e.isFile()) files.push(p);
+    }
+  };
+  try { walk(dir); } catch {}
+  if (files.length) Bun.spawnSync(["shred", "-u", "-z", ...files]);
+  rmSync(dir, { recursive: true, force: true });
+  scratchDirs.delete(dir);
+}
+
+function scratch() {
+  const dir = mkdtempSync(join(SCRATCH_BASE, "herdr-browser-sync."));
+  chmodSync(dir, 0o700);
+  scratchDirs.add(dir);
+  return dir;
+}
+
+for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) {
+  process.on(sig, () => { for (const d of [...scratchDirs]) shredDir(d); process.exit(code); });
+}
+
+function shredStaleScratch() {
+  for (const base of new Set([SCRATCH_BASE, process.env.XDG_RUNTIME_DIR, "/dev/shm"].filter(Boolean))) {
+    let names = [];
+    try { names = readdirSync(base); } catch { continue; }
+    for (const n of names) {
+      if (!n.startsWith("herdr-browser-sync.")) continue;
+      const p = join(base, n);
+      try {
+        const st = lstatSync(p);
+        // /dev/shm is shared: only our own leftovers, never another user's dir or a symlink.
+        if (st.isDirectory() && st.uid === process.getuid() && !scratchDirs.has(p)) shredDir(p);
+      } catch (err) {
+        fail(`stale scratch ${p} not removed: ${err.message}`);
+      }
+    }
+  }
+}
+
+// --- path safety -----------------------------------------------------------------------------------------
+
+const within = (path, root) => path === root || path.startsWith(`${root}/`);
+
+// Every entry of a tree we copy must be a plain file or directory: a symlink could pull in, or write to,
+// something outside the profile. The one exception is a system extension under /usr (Omarchy ships
+// copy-url/icon.png -> /usr/share/omarchy/icon.png): there a link to a system file under /usr is copied as
+// that file, since the person cannot have planted it. "System" means not ours and not writable by us; the
+// uid alone does not work, because inside herdr-browser.service (PrivateTmp, a user namespace) root shows
+// up as nobody.
+function systemOwned(path) {
+  if (lstatSync(path).uid === process.getuid()) return false;
+  try { accessSync(path, constants.W_OK); return false; } catch { return true; }
+}
+const systemTree = (path) => within(path, "/usr") && systemOwned(path);
+
+function fingerprint(path, allowSystemLinks = false) {
+  const out = [];
+  const walk = (p, rel) => {
+    let st = lstatSync(p);
+    if (st.isSymbolicLink()) {
+      const target = allowSystemLinks && systemOwned(dirname(p)) ? realpathSync(p) : null;
+      const tst = target ? lstatSync(target) : null;
+      if (!tst || !within(target, "/usr") || !systemOwned(target) || !tst.isFile()) throw new Error(`symlink in source tree: ${p}`);
+      st = tst;
+    }
+    if (st.isDirectory()) {
+      out.push(`${rel}/`);
+      for (const n of readdirSync(p).sort()) walk(join(p, n), `${rel}/${n}`);
+    } else if (st.isFile()) {
+      out.push(`${rel} ${st.size} ${st.mtimeMs}`);
+    } else {
+      throw new Error(`special file in source tree: ${p}`);
+    }
+  };
+  walk(path, "");
+  return out.join("\n");
+}
+
+// Destinations must resolve inside one of our own roots, without following a planted symlink.
+function checkDest(dest, root) {
+  const parent = realpathSync(dirname(dest));
+  if (!within(parent, realpathSync(root))) throw new Error(`destination escapes ${root}: ${dest}`);
+  if (existsSync(dest) && lstatSync(dest).isSymbolicLink()) throw new Error(`destination is a symlink: ${dest}`);
+}
+
+// Sources inside the person's profile must be the real entry, not a symlink planted there.
+function checkSource(path) {
+  if (lstatSync(SRC).isSymbolicLink()) throw new Error(`profile root is a symlink: ${SRC}`);
+  if (lstatSync(path).isSymbolicLink()) throw new Error(`source is a symlink: ${path}`);
+  if (!within(realpathSync(path), realpathSync(SRC))) throw new Error(`source escapes the profile: ${path}`);
+  return path;
+}
+
+// LevelDB dirs and extensions change while the person's Chromium runs. A copy is accepted only when the
+// source looked identical (names, sizes, mtimes) before and after it and the staged copy has the same names
+// and sizes; otherwise it is retried, then skipped. A skipped dir keeps the agent's previous copy, which is
+// better than a torn one. The swap renames the old copy aside first, so a failure never leaves neither.
+const shape = (fp) => fp.replace(/ [\d.e+-]+$/gm, "");
+
+async function copyConsistent(src, dest, root) {
+  checkDest(dest, root);
+  if (lstatSync(src).isSymbolicLink()) throw new Error(`source is a symlink: ${src}`);
+  const system = systemTree(src);
+  const stage = `${dest}.sync-tmp`;
+  const trash = `${dest}.sync-old`;
+  for (const p of [stage, trash]) checkDest(p, root);
+  for (let attempt = 0; attempt < 4; attempt++) {
+    rmSync(stage, { recursive: true, force: true });
+    const before = fingerprint(src, system);
+    cpSync(src, stage, { recursive: true, dereference: system });
+    if (fingerprint(src, system) === before && shape(fingerprint(stage)) === shape(before)) {
+      rmSync(trash, { recursive: true, force: true });
+      const hadOld = existsSync(dest);
+      if (hadOld) renameSync(dest, trash);
+      try {
+        renameSync(stage, dest);
+      } catch (err) {
+        if (hadOld) renameSync(trash, dest);
+        throw err;
+      }
+      rmSync(trash, { recursive: true, force: true });
+      return true;
+    }
+    await sleep(300 * (attempt + 1));
+  }
+  rmSync(stage, { recursive: true, force: true });
+  return false;
+}
+
+// --- consistent sqlite snapshots ---------------------------------------------------------------------------
+
+// The online backup API reads one consistent transaction. Chromium holds some databases (History) with
+// exclusive locking, which blocks it; then fall back to a copy of the file set that was stable across the copy.
+async function snapshotDb(dir, name) {
+  const src = checkSource(join(SRC, name));
+  const dest = join(dir, name);
+  const backup = Bun.spawnSync(["sqlite3", `file:${src}?mode=ro`, ".timeout 3000", `.backup '${dest}'`], { stderr: "pipe" });
+  if (backup.exitCode === 0) return dest;
+  rmSync(dest, { force: true });
+  const files = ["", "-journal", "-wal"].map((s) => name + s).filter((f) => existsSync(join(SRC, f)));
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const before = files.map((f) => fingerprint(join(SRC, f))).join("\n");
+    for (const f of files) cpSync(join(SRC, f), join(dir, f));
+    if (files.map((f) => fingerprint(join(SRC, f))).join("\n") === before) {
+      const db = new Database(dest);
+      const ok = db.query("pragma quick_check").get()?.quick_check === "ok";
+      db.close();
+      if (ok) return dest;
+    }
+    for (const f of files) rmSync(join(dir, f), { force: true });
+    await sleep(500 * (attempt + 1));
+  }
+  throw new Error(`no consistent snapshot of ${name}`);
+}
+
+// --- cookies -------------------------------------------------------------------------------------------
+
+// Chromium on Linux: v11 = keyring password, v10 = the fixed "peanuts" key; AES-128-CBC, PBKDF2-SHA1.
+const keyCache = {};
+function keyFor(prefix) {
+  if (prefix in keyCache) return keyCache[prefix];
+  if (prefix === "v10") return (keyCache.v10 = pbkdf2Sync("peanuts", "saltysalt", 1, 16, "sha1"));
+  if (prefix === "v11") {
+    const r = Bun.spawnSync(["secret-tool", "lookup", "application", "chromium"]);
+    const password = r.stdout.toString().replace(/\n$/, "");
+    return (keyCache.v11 = password ? pbkdf2Sync(password, "saltysalt", 1, 16, "sha1") : null);
+  }
+  return null;
+}
+
+function decrypt(host, blob, dbVersion) {
+  const key = keyFor(blob.subarray(0, 3).toString());
+  if (!key) return null;
+  try {
+    const d = createDecipheriv("aes-128-cbc", key, Buffer.alloc(16, 0x20));
+    let plain = Buffer.concat([d.update(blob.subarray(3)), d.final()]);
+    // Since DB version 24 the plaintext starts with SHA256(host_key), binding the value to its host.
+    if (dbVersion >= 24) {
+      if (!plain.subarray(0, 32).equals(createHash("sha256").update(host).digest())) return null;
+      plain = plain.subarray(32);
+    }
+    return plain.toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+const SAME_SITE = { 0: "None", 1: "Lax", 2: "Strict" };
+const PRIORITY = { 0: "Low", 1: "Medium", 2: "High" };
+const SCHEME = { 0: "Unset", 1: "NonSecure", 2: "Secure" };
+const unixSeconds = (chromeMicros) => chromeMicros / 1e6 - 11644473600;
+const validPort = (p) => p === -1 || (p >= 1 && p <= 65535);
+
+// Chromium's unique key for a cookie; two rows differing in any of these are different cookies.
+const cookieId = (r) => JSON.stringify([r.host_key, r.top_frame_site_key, !!r.has_cross_site_ancestor, r.name, r.path,
+  r.source_scheme, r.source_port]);
+// The same key for a cookie as CDP reports it from the agent browser.
+const SCHEME_CODE = { Unset: 0, NonSecure: 1, Secure: 2 };
+const agentCookieId = (c) => JSON.stringify([c.domain, c.partitionKey?.topLevelSite ?? "", !!c.partitionKey?.hasCrossSiteAncestor,
+  c.name, c.path, SCHEME_CODE[c.sourceScheme], c.sourcePort]);
+const valueHash = (value) => createHash("sha256").update(value).digest("hex").slice(0, 32);
+
+// Fields shared by a cookie and its deletion: they address the same key in the agent's cookie store.
+function address([host, top, crossSite, name, path, scheme, port]) {
+  const secure = scheme !== 1;
+  const c = { name, path };
+  // A host-only cookie must be set through a URL; passing `domain` would turn it into a domain cookie.
+  if (host.startsWith(".")) c.domain = host; else c.url = `${secure ? "https" : "http"}://${host}${path}`;
+  if (SCHEME[scheme]) c.sourceScheme = SCHEME[scheme];
+  if (validPort(port)) c.sourcePort = port;
+  if (top) c.partitionKey = { topLevelSite: top, hasCrossSiteAncestor: crossSite };
+  return c;
+}
+
+async function readUserCookies() {
+  const dir = scratch();
+  try {
+    const db = new Database(await snapshotDb(dir, "Cookies"));
+    const dbVersion = Number(db.query("select value from meta where key='version'").get().value);
+    const now = Date.now() / 1000;
+    const out = [];
+    let undecryptable = 0;
+    for (const r of db.query("select * from cookies").all()) {
+      if (r.has_expires && unixSeconds(r.expires_utc) <= now) continue;
+      const value = r.encrypted_value?.length ? decrypt(r.host_key, Buffer.from(r.encrypted_value), dbVersion) : r.value;
+      if (value === null) { undecryptable++; continue; }
+      const id = cookieId(r);
+      const c = { ...address(JSON.parse(id)), value, secure: !!r.is_secure, httpOnly: !!r.is_httponly };
+      if (r.has_expires) c.expires = unixSeconds(r.expires_utc);
+      if (SAME_SITE[r.samesite]) c.sameSite = SAME_SITE[r.samesite];
+      if (PRIORITY[r.priority]) c.priority = PRIORITY[r.priority];
+      const hash = createHash("sha256").update(JSON.stringify(c)).digest("hex").slice(0, 32);
+      out.push({ id, host: r.host_key.replace(/^\./, ""), cookie: c, hash, valueHash: valueHash(value) });
+    }
+    db.close();
+    return { cookies: out, undecryptable };
+  } finally {
+    shredDir(dir);
+  }
+}
+
+function siteOf(host) {
+  const parts = host.split(".");
+  const two = parts.slice(-2).join(".");
+  // Good enough for a report: keep three labels under two-letter-ccTLD second levels (co.kr, co.uk).
+  return parts.length > 2 && /^(co|com|ne|or|go|ac|net|org)\.[a-z]{2}$/.test(two) ? parts.slice(-3).join(".") : two;
+}
+
+const domainFilter = (opt("--domains") ?? "").split(",").map((d) => d.trim().replace(/^\./, "")).filter(Boolean);
+const inFilter = (host) => !domainFilter.length || domainFilter.some((d) => host === d || host.endsWith(`.${d}`));
+const hostOfId = (id) => JSON.parse(id)[0].replace(/^\./, "");
+
+async function cdpVersion(waitSeconds) {
+  const until = Date.now() + waitSeconds * 1000;
+  for (;;) {
+    try {
+      const r = await fetch(`${CDP}/json/version`);
+      if (r.ok) return await r.json();
+    } catch {}
+    if (Date.now() >= until) return null;
+    await sleep(1000);
+  }
+}
+
+function connect(wsUrl) {
+  // Cookie values go only to the local CDP proxy, whatever /json/version claims.
+  const u = new URL(wsUrl);
+  if (u.protocol !== "ws:" || u.hostname !== "127.0.0.1" || u.port !== CDP_PORT || !u.pathname.startsWith("/devtools/browser/")) {
+    throw new Error(`unexpected CDP endpoint ${u.protocol}//${u.host}`);
+  }
+  const ws = new WebSocket(u.href);
+  let next = 1;
+  const pending = new Map();
+  // A lost connection or a hung command must end the run (and be retried by the unit), not stall it.
+  const transportError = (message) => Object.assign(new Error(message), { transport: true });
+  const rejectAll = (message) => {
+    for (const p of pending.values()) { clearTimeout(p.timer); p.reject(transportError(message)); }
+    pending.clear();
+  };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    const p = pending.get(m.id);
+    if (!p) return;
+    pending.delete(m.id);
+    clearTimeout(p.timer);
+    m.error ? p.reject(new Error(m.error.message)) : p.resolve(m.result);
+  };
+  const opened = new Promise((res, rej) => {
+    ws.onopen = res;
+    ws.onerror = () => { rej(transportError("CDP websocket failed")); rejectAll("CDP websocket failed"); };
+  });
+  ws.onclose = () => rejectAll("CDP websocket closed");
+  const send = (method, params = {}) => new Promise((resolve, reject) => {
+    if (ws.readyState !== WebSocket.OPEN) { reject(transportError("CDP websocket not open")); return; }
+    const id = next++;
+    const timer = setTimeout(() => { pending.delete(id); reject(transportError(`${method} timed out`)); }, 10_000);
+    pending.set(id, { resolve, reject, timer });
+    ws.send(JSON.stringify({ id, method, params }));
+  });
+  return { opened, send, close: () => ws.close() };
+}
+
+// Storage.setCookies rejects the whole batch when one cookie is invalid; split until the bad ones are isolated.
+// Returns the ids that were not accepted.
+async function setAll(send, items) {
+  const failed = new Set();
+  const go = async (batch) => {
+    try {
+      await send("Storage.setCookies", { cookies: batch.map((b) => b.cookie) });
+    } catch (err) {
+      if (err.transport) throw err;
+      if (batch.length === 1) { failed.add(batch[0].id); return; }
+      const mid = batch.length >> 1;
+      await go(batch.slice(0, mid));
+      await go(batch.slice(mid));
+    }
+  };
+  for (let i = 0; i < items.length; i += 500) await go(items.slice(i, i + 500));
+  return failed;
+}
+
+// state.cookies: id -> { h: hash of what we sent, v: hash of the value alone }. `v` is what the agent's
+// cookie is compared against before a deletion.
+function loadState() {
+  try {
+    const s = JSON.parse(readFileSync(STATE, "utf8"));
+    // Ids from older key layouts cannot address a cookie exactly; forget them rather than delete by guess.
+    s.cookies = Object.fromEntries(Object.entries(s.cookies ?? {})
+      .filter(([id]) => JSON.parse(id).length === 7)
+      .map(([id, e]) => [id, typeof e === "string" ? { h: e, v: null } : e]));
+    return s;
+  } catch {
+    return { cookies: {} };
+  }
+}
+
+function writeAtomic(path, text) {
+  const tmp = `${path}.tmp`;
+  rmSync(tmp, { force: true });
+  writeFileSync(tmp, text, { mode: 0o600 });
+  renameSync(tmp, path);
+}
+
+async function syncCookies() {
+  // Chromium can rewrite the cookie file every few seconds; --min-interval spaces runs out instead of skipping
+  // one, so the last change in a burst is still picked up.
+  const debounceMs = Number(opt("--debounce") ?? 0) * 1000;
+  const sinceLast = Date.now() - (loadState().lastRun ?? 0);
+  const waitMs = Math.max(debounceMs, Number(opt("--min-interval") ?? 0) * 1000 - sinceLast);
+  if (waitMs > 0) await sleep(waitMs);
+  const { cookies, undecryptable } = await readUserCookies();
+  const selected = cookies.filter((c) => inFilter(c.host));
+  const complete = undecryptable === 0;
+
+  if (flag("--dry-run")) {
+    const per = new Map();
+    for (const c of selected) per.set(siteOf(c.host), (per.get(siteOf(c.host)) ?? 0) + 1);
+    for (const [site, n] of [...per].sort((a, b) => b[1] - a[1])) console.log(`${String(n).padStart(5)}  ${site}`);
+    log(`dry run: ${selected.length} cookies on ${per.size} sites, ${undecryptable} undecryptable`);
+    return;
+  }
+
+  const version = await cdpVersion(Number(opt("--wait") ?? 0));
+  if (!version) { log("herdr browser is not running; nothing to do"); return; }
+
+  const state = loadState();
+  const prev = state.cookies;
+  const current = new Set(selected.map((c) => c.id));
+  const toSet = selected.filter((c) => flag("--full") || prev[c.id]?.h !== c.hash);
+  // Deleting needs the full picture: a row we could not read is not a logout.
+  const gone = complete ? Object.keys(prev).filter((id) => !current.has(id) && inFilter(hostOfId(id))) : [];
+
+  const cdp = connect(version.webSocketDebuggerUrl);
+  await cdp.opened;
+  let setFailed;
+  let deleteFailed;
+  const deletions = [];
+  const released = [];
+  try {
+    // Only delete a cookie the agent still holds exactly as we set it. If a site or an agent has since
+    // rewritten it there, it is the agent's cookie now: leave it and stop tracking it.
+    if (gone.length) {
+      const live = new Map((await cdp.send("Storage.getCookies")).cookies.map((c) => [agentCookieId(c), valueHash(c.value)]));
+      for (const id of gone) {
+        const v = prev[id].v;
+        if (v && live.get(id) === v) {
+          // An already-expired cookie with the same key makes the cookie store drop the existing one.
+          const c = { ...address(JSON.parse(id)), value: "", expires: 1 };
+          c.secure = c.sourceScheme !== "NonSecure";
+          deletions.push({ id, cookie: c });
+        } else {
+          released.push(id);
+        }
+      }
+    }
+    // Deletions first: when a key is both dropped and (re)sent, the person's current cookie must win.
+    deleteFailed = await setAll(cdp.send, deletions);
+    setFailed = await setAll(cdp.send, toSet);
+  } finally {
+    cdp.close();
+  }
+
+  // State advances only for what the agent browser accepted; the rest is retried on the next run.
+  const next = { ...prev };
+  for (const c of toSet) if (!setFailed.has(c.id)) next[c.id] = { h: c.hash, v: c.valueHash };
+  for (const { id } of deletions) if (!deleteFailed.has(id)) delete next[id];
+  for (const id of released) delete next[id];
+  state.cookies = next;
+  state.lastRun = Date.now();
+  writeAtomic(STATE, JSON.stringify(state));
+
+  const per = new Map();
+  for (const c of toSet) per.set(siteOf(c.host), (per.get(siteOf(c.host)) ?? 0) + 1);
+  const top = [...per].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([s, n]) => `${s}=${n}`).join(" ");
+  log(`set ${toSet.length - setFailed.size}/${toSet.length} cookies, deleted ${deletions.length - deleteFailed.size}/${deletions.length}, ` +
+    `left ${released.length} the agent had changed or no longer had, unchanged ${selected.length - toSet.length}, ` +
+    `undecryptable ${undecryptable}${top ? ` | ${top}` : ""}`);
+  if (!complete) fail(`${undecryptable} cookies could not be decrypted; deletions skipped this run`);
+  if (setFailed.size || deleteFailed.size) fail(`${setFailed.size} cookies rejected, ${deleteFailed.size} deletions rejected; retried next run`);
+}
+
+// --- offline: the agent Chromium must be stopped -------------------------------------------------------
+
+// Any process still using the agent profile counts, not just the pid in SingletonLock: on a restart
+// ExecStartPre can run while the old Chromium's helpers are still exiting.
+function agentRunning() {
+  const arg = `--user-data-dir=${PROFILE}`;
+  for (const pid of readdirSync("/proc").filter((d) => /^\d+$/.test(d))) {
+    try {
+      if (readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").includes(arg)) return true;
+    } catch {}
+  }
+  return false;
+}
+
+async function requireStopped() {
+  for (let i = 0; i < 20 && agentRunning(); i++) await sleep(500);
+  if (agentRunning()) { fail("the herdr browser is running; stop herdr-browser.service first"); process.exit(2); }
+}
+
+// Paths of --load-extension from the person's running Chromium (or its flags file), e.g. Omarchy's
+// /usr/share/omarchy/default/chromium/extensions/*.
+function commandLineExtensions() {
+  for (const pid of readdirSync("/proc").filter((d) => /^\d+$/.test(d))) {
+    let args;
+    try { args = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0"); } catch { continue; }
+    if (!args[0]?.endsWith("/chromium") || args.some((a) => a.startsWith("--type=") || a === "--headless" || a.startsWith("--headless="))) continue;
+    const dataDir = args.find((a) => a.startsWith("--user-data-dir="));
+    if (dataDir && dataDir !== `--user-data-dir=${join(HOME, ".config/chromium")}`) continue;
+    const load = args.findLast((a) => a.startsWith("--load-extension="));
+    return load ? load.slice("--load-extension=".length).split(",").filter(Boolean) : [];
+  }
+  try {
+    const conf = readFileSync(join(HOME, ".config/chromium-flags.conf"), "utf8");
+    const m = [...conf.matchAll(/--load-extension=(\S+)/g)].pop();
+    return m ? m[1].split(",") : [];
+  } catch {
+    return [];
+  }
+}
+
+function extensionName(dir, manifest) {
+  const name = manifest.name ?? basename(dir);
+  const m = /^__MSG_(.+)__$/.exec(name);
+  if (!m || !manifest.default_locale) return name;
+  try {
+    const msgs = JSON.parse(readFileSync(join(dir, "_locales", manifest.default_locale, "messages.json"), "utf8"));
+    const hit = Object.entries(msgs).find(([k]) => k.toLowerCase() === m[1].toLowerCase());
+    return hit?.[1]?.message ?? name;
+  } catch {
+    return name;
+  }
+}
+
+// Resolves an extension's source dir. Allowed: a store install inside the profile's Extensions dir, or a
+// system extension under /usr that we neither own nor can write. Anything else (an unpacked dir in the
+// person's home, a path reached through a symlink) throws, so it is logged and never loaded.
+function extensionSource(path) {
+  if (!path) throw new Error("no path");
+  if (path.startsWith("/")) {
+    if (!existsSync(path) || realpathSync(path) !== path) throw new Error(`not a real path: ${path}`);
+    if (!within(path, "/usr") || !systemOwned(path)) throw new Error(`outside /usr or writable by us: ${path}`);
+    return path;
+  }
+  const storeRoot = realpathSync(checkSource(join(SRC, "Extensions")));
+  const p = join(storeRoot, path);
+  if (!existsSync(p) || !within(realpathSync(p), storeRoot)) throw new Error(`escapes the profile's Extensions dir: ${path}`);
+  return p;
+}
+
+// Chromium rewrites Preferences in place; read it only when it was the same before and after the read.
+async function readPreferences() {
+  const path = checkSource(join(SRC, "Preferences"));
+  const shape = () => { const st = lstatSync(path); return `${st.size} ${st.mtimeMs}`; };
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const before = shape();
+    const text = readFileSync(path, "utf8");
+    if (shape() === before) {
+      try { return JSON.parse(text); } catch {}
+    }
+    await sleep(300 * (attempt + 1));
+  }
+  throw new Error("Preferences kept changing while read");
+}
+
+async function planExtensions() {
+  const settings = (await readPreferences()).extensions?.settings ?? {};
+  const plan = [];
+  const seen = new Set();
+  const add = (id, path, s, how) => {
+    if (!EXTENSION_ID.test(id ?? "") || seen.has(id)) return;
+    seen.add(id);
+    const enabled = !(s?.disable_reasons?.length) && s?.state !== 0;
+    if (SKIP_EXTENSIONS.has(id)) { plan.push({ id, how, enabled, skip: true, name: id }); return; }
+    let src;
+    try { src = extensionSource(path); } catch (err) { fail(`extension ${id} rejected: ${err.message}`); return; }
+    let manifest = {};
+    try { manifest = JSON.parse(readFileSync(join(src, "manifest.json"), "utf8")); } catch { return; }
+    plan.push({ id, src, how, enabled, skip: false, name: extensionName(src, manifest), version: manifest.version });
+  };
+  for (const [id, s] of Object.entries(settings)) {
+    // 5 = component (built into Chromium), 8 = command line (taken from the process args below).
+    if (s.location === 5 || s.location === 8) continue;
+    add(id, s.path, s, s.path?.startsWith("/") ? "unpacked" : "store");
+  }
+  for (const dir of commandLineExtensions()) {
+    const entry = Object.entries(settings).find(([, s]) => s.path === dir);
+    if (entry) add(entry[0], dir, entry[1], "command-line");
+  }
+  return plan;
+}
+
+async function listExtensions() {
+  for (const e of await planExtensions()) {
+    const how = e.skip ? "skipped" : !e.enabled ? "disabled" : e.how;
+    console.log(`${e.id}  ${String(e.version ?? "").padEnd(18)}  ${how.padEnd(12)}  ${e.name}`);
+  }
+}
+
+async function syncExtensions() {
+  mkdirSync(EXT_DIR, { recursive: true, mode: 0o700 });
+  const loaded = [];
+  for (const e of await planExtensions()) {
+    if (e.skip || !e.enabled) continue;
+    const to = join(EXT_DIR, e.id);
+    try {
+      if (!(await copyConsistent(e.src, to, EXT_DIR))) { fail(`extension ${e.id} kept changing while copied; kept the previous copy`); }
+    } catch (err) {
+      fail(`extension ${e.id} not copied: ${err.message}`);
+      continue;
+    }
+    // Chromium refuses to load an unpacked directory containing the store's _metadata (content hashes).
+    rmSync(join(to, "_metadata"), { recursive: true, force: true });
+    if (existsSync(join(to, "manifest.json"))) loaded.push(e.id);
+  }
+  const keep = new Set(loaded);
+  for (const d of readdirSync(EXT_DIR)) {
+    if ((EXTENSION_ID.test(d) && !keep.has(d)) || /\.sync-(tmp|old)$/.test(d)) rmSync(join(EXT_DIR, d), { recursive: true, force: true });
+  }
+  // Only our own copies are listed: browser.mjs never loads a path outside this directory.
+  writeAtomic(join(EXT_DIR, "load-list"), loaded.map((id) => `${join(EXT_DIR, id)}\n`).join(""));
+
+  let stores = 0;
+  for (const area of ["Local Extension Settings", "Sync Extension Settings"]) {
+    for (const id of loaded) {
+      const from = join(SRC, area, id);
+      if (!existsSync(from)) continue;
+      mkdirSync(join(DST, area), { recursive: true });
+      try {
+        if (await copyConsistent(checkSource(from), join(DST, area, id), DST)) stores++;
+        else fail(`${area}/${id} kept changing while copied; kept the previous copy`);
+      } catch (err) {
+        fail(`${area}/${id} not copied: ${err.message}`);
+      }
+    }
+  }
+  log(`extensions: ${loaded.length} loaded, ${stores} storage dirs copied`);
+}
+
+async function syncIndexedDB() {
+  const from = join(SRC, "IndexedDB");
+  if (!existsSync(from)) return;
+  checkSource(from);
+  mkdirSync(join(DST, "IndexedDB"), { recursive: true });
+  let copied = 0;
+  let skipped = 0;
+  for (const name of readdirSync(from)) {
+    // QuotaManager bookkeeping belongs to the agent profile; buckets are re-registered on first open.
+    if (name.startsWith("QuotaManager") || !/^[a-z-]+_[A-Za-z0-9.\-]+_\d+\.indexeddb\.(leveldb|blob)$/.test(name)) continue;
+    try {
+      if (await copyConsistent(checkSource(join(from, name)), join(DST, "IndexedDB", name), DST)) copied++;
+      else skipped++;
+    } catch (err) {
+      skipped++;
+      fail(`IndexedDB/${name} not copied: ${err.message}`);
+    }
+  }
+  log(`indexeddb: ${copied} origin dirs copied, ${skipped} skipped (changing or unsafe; previous copy kept)`);
+}
+
+async function syncHistory() {
+  const dst = join(DST, "History");
+  checkDest(dst, DST);
+  const dir = scratch();
+  try {
+    const src = await snapshotDb(dir, "History");
+    if (!existsSync(dst)) {
+      cpSync(src, dst);
+      log("history: copied (agent had none)");
+      return;
+    }
+    const db = new Database(dst);
+    db.run("attach ? as u", [src]);
+    const v = (schema) => db.query(`select value from ${schema}.meta where key='version'`).get()?.value;
+    if (v("main") !== v("u")) { db.close(); throw new Error(`schema ${v("u")} vs ${v("main")}`); }
+    const urlsBefore = db.query("select count(*) n from main.urls").get().n;
+    const visitsBefore = db.query("select count(*) n from main.visits").get().n;
+    db.transaction(() => {
+      db.run(`insert into main.urls(url, title, visit_count, typed_count, last_visit_time, hidden)
+              select url, title, visit_count, typed_count, last_visit_time, hidden from u.urls
+              where url not in (select url from main.urls)`);
+      db.run(`update main.urls set
+                title = coalesce((select x.title from u.urls x where x.url = main.urls.url and x.last_visit_time > main.urls.last_visit_time), title),
+                visit_count = max(visit_count, (select x.visit_count from u.urls x where x.url = main.urls.url)),
+                typed_count = max(typed_count, (select x.typed_count from u.urls x where x.url = main.urls.url)),
+                last_visit_time = max(last_visit_time, (select x.last_visit_time from u.urls x where x.url = main.urls.url))
+              where url in (select url from u.urls)`);
+      db.run(`insert into main.visits(url, visit_time, from_visit, transition, segment_id, visit_duration, incremented_omnibox_typed_score)
+              select m.id, v.visit_time, 0, v.transition, 0, v.visit_duration, v.incremented_omnibox_typed_score
+              from u.visits v join u.urls uu on uu.id = v.url join main.urls m on m.url = uu.url
+              where not exists (select 1 from main.visits x where x.url = m.id and x.visit_time = v.visit_time)`);
+    })();
+    const urls = db.query("select count(*) n from main.urls").get().n - urlsBefore;
+    const visits = db.query("select count(*) n from main.visits").get().n - visitsBefore;
+    db.run("detach u");
+    db.close();
+    log(`history: +${urls} urls, +${visits} visits`);
+  } finally {
+    shredDir(dir);
+  }
+}
+
+async function copyLocalStorage() {
+  if (await copyConsistent(checkSource(join(SRC, "Local Storage")), join(DST, "Local Storage"), DST)) log("local storage: replaced with a copy of the person's");
+  else fail("local storage kept changing while copied; nothing replaced, try again");
+}
+
+async function step(name, fn) {
+  try { await fn(); } catch (e) { fail(`${name}: ${e.message}`); }
+}
+
+if (process.env.HERDR_BROWSER_SYNC_LOCKED) shredStaleScratch();
+switch (cmd) {
+  case "cookies": await step("cookies", syncCookies); break;
+  case "offline":
+    await requireStopped();
+    mkdirSync(DST, { recursive: true, mode: 0o700 });
+    await step("extensions", syncExtensions);
+    await step("history", syncHistory);
+    await step("indexeddb", syncIndexedDB);
+    break;
+  case "local-storage":
+    await requireStopped();
+    mkdirSync(DST, { recursive: true, mode: 0o700 });
+    await step("local storage", copyLocalStorage);
+    break;
+  case "extensions": await listExtensions(); break;
+  default:
+    console.error("usage: herdr-browser-sync cookies [--full] [--dry-run] [--domains a,b] [--debounce S] [--min-interval S] [--wait S] | offline | local-storage | extensions");
+    process.exit(64);
+}
+for (const d of [...scratchDirs]) shredDir(d);

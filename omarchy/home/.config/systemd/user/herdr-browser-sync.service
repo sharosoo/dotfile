@@ -1,0 +1,20 @@
+[Unit]
+Description=Sync the person's Chromium cookies into the herdr browser (one way)
+# Runs are at least 30 s apart (--min-interval), so 30 starts in 10 min only happens if something loops;
+# the limit is kept above that so a normal burst never trips it (a tripped limit also stops the .path unit).
+StartLimitIntervalSec=10min
+StartLimitBurst=30
+
+[Service]
+Type=oneshot
+# Upper bound for one run: 30 s spacing + snapshot + CDP (every command times out after 10 s).
+TimeoutStartSec=120
+# The debounce coalesces Chromium's burst of cookie-file writes: triggers that arrive while this runs are
+# merged. Under sustained writes the path unit fires again right after each run; --min-interval spaces those.
+ExecStart=%h/.local/bin/herdr-browser-sync cookies --debounce 10 --min-interval 30
+# A failed run (unreadable rows, rejected cookies, no consistent snapshot) is retried with growing delays;
+# cookies it did not apply stay pending in the state file until a run succeeds.
+Restart=on-failure
+RestartSec=30s
+RestartSteps=5
+RestartMaxDelaySec=15min

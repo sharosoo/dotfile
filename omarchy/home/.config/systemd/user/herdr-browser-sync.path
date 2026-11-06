@@ -1,0 +1,13 @@
+[Unit]
+Description=Watch the person's Chromium cookie store for herdr-browser-sync
+
+[Path]
+# Chromium keeps the database open, so only PathModified (every write) fires; PathChanged waits for a close.
+# A commit can touch only the journal or WAL file, depending on the journal mode.
+PathModified=%h/.config/chromium/Default/Cookies
+PathModified=%h/.config/chromium/Default/Cookies-journal
+PathModified=%h/.config/chromium/Default/Cookies-wal
+Unit=herdr-browser-sync.service
+
+[Install]
+WantedBy=default.target
