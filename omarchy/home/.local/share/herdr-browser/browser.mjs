@@ -140,9 +140,14 @@ async function launchChromium() {
   const proc = Bun.spawn([
     CHROMIUM,
     ...(NATIVE
-      // A kiosk window has no tab strip or toolbar; Hyprland floats it over the panel without focusing it
+      // A normal window, not --kiosk: kiosk mode turns off the right-click menu. It starts in Chromium's own
+      // fullscreen, which hides the tab strip and toolbar; told fullscreen only by Hyprland, Chromium gives that
+      // up again on its own a moment later. Hyprland floats it over the panel without focusing it
       // (hypr/herdr_browser.lua), and the service places it.
-      ? ["--ozone-platform=wayland", `--class=${NATIVE_CLASS}`, "--kiosk"]
+      ? ["--ozone-platform=wayland", `--class=${NATIVE_CLASS}`, "--start-fullscreen",
+        // The service stops Chromium by signal and brings the tabs back itself; Chromium's own "Restore pages?"
+        // bubble would offer the same over the page.
+        "--hide-crash-restore-bubble"]
       : ["--headless=new", "--ozone-platform=headless", `--force-device-scale-factor=${screen.scale}`,
         `--screen-info={${screen.width}x${screen.height}}`, "--window-size=800,600",
         // Headless defaults to SwiftShader, a software GPU that both costs CPU and marks the browser as a bot.
@@ -1163,12 +1168,20 @@ async function restoreTabs() {
 // the panel says so or stops reporting (Browser tab not shown, herdr closed).
 const PANEL_GONE_MS = 800;
 const HIDDEN_WORKSPACE = "special:herdr-browser";
-const HIDE_ALL = `hl.dispatch(hl.dsp.window.move({ window = "class:^${NATIVE_CLASS}$", workspace = "${HIDDEN_WORKSPACE}", follow = false }))`;
+// A `class:` selector moves only the first match, so every window of ours goes by address.
+const HIDE_ALL = `for _, w in ipairs(hl.get_windows()) do if w.class == "${NATIVE_CLASS}" then hl.dispatch(hl.dsp.window.move({ window = "address:" .. w.address, workspace = "${HIDDEN_WORKSPACE}", follow = false })) end end`;
 let panel = null;
 let panelSeq = 0;
 let placing = false;
 let placeAgain = false;
 let nativeFocused = false;
+// F11, the context menu's "Exit full screen" or holding Esc take Chromium out of fullscreen by itself. Hyprland
+// ignores the request and still reports the window fullscreen, so keepFullscreen asks Chromium and sets this.
+let refullscreen = false;
+let mainFullscreen = false; // Hyprland's last word on the main window: fullscreen as far as the client knows
+let refullscreenTries = 0;
+const REFULLSCREEN_TRIES = 2;
+const centred = new Set(); // popups already brought next to the panel once; after that they stay where put
 
 function panelAt(b) {
   const width = clampInt(b.width, 0, 50, 8000), height = clampInt(b.height, 0, 50, 8000);
@@ -1280,12 +1293,22 @@ async function place() {
 }
 
 async function placeWith(clients) {
-  const windows = clients.filter((c) => c?.class === NATIVE_CLASS && /^0x[0-9a-fA-F]+$/.test(c.address ?? ""));
-  if (!windows.length) return;
-  const herdr = clients.filter((c) => c?.class === "herdr-app" && c.mapped).sort((a, b) => a.focusHistoryID - b.focusHistoryID)[0];
+  const ours = clients.filter((c) => c?.class === NATIVE_CLASS && /^0x[0-9a-fA-F]+$/.test(c.address ?? ""));
+  if (!ours.length) return;
+  // Chromium maps its main window first; stableIds count up and are never reused. The main window is laid over
+  // the panel; later ones (window.open popups, sign-in windows, Ctrl+N) keep their own size and place, but come
+  // and go with the panel like it.
+  const id = (c) => parseInt(c.stableId, 16);
+  ours.sort((a, b) => id(a) - id(b));
+  const [main] = ours;
+  // A herdr window that was never focused has focusHistoryID -1.
+  const herdr = clients.filter((c) => c?.class === "herdr-app" && c.mapped && c.focusHistoryID >= 0).sort((a, b) => a.focusHistoryID - b.focusHistoryID)[0];
   let rect = null;
   const wsId = herdr?.workspace?.id;
-  if (herdr && Number.isInteger(wsId) && wsId > 0 && panel && !panel.hidden && Date.now() - panel.at < PANEL_GONE_MS && panel.x !== undefined) {
+  // Another app fullscreen on herdr's workspace covers herdr, and so its panel.
+  const covered = !!herdr && herdr.fullscreen === 0 && !herdr.allowedOverFullscreen
+    && clients.some((c) => c !== herdr && c?.workspace?.id === wsId && c.fullscreen !== 0);
+  if (herdr && !covered && Number.isInteger(wsId) && wsId > 0 && panel && !panel.hidden && Date.now() - panel.at < PANEL_GONE_MS && panel.x !== undefined) {
     const [hx, hy] = herdr.at, [hw, hh] = herdr.size;
     // A resize without a fresh measurement keeps the page area's distance from herdr's right and bottom edges.
     if (panel.measured) Object.assign(panel, { right: hw - panel.x - panel.width, bottom: hh - panel.y - panel.height, measured: false });
@@ -1295,30 +1318,74 @@ async function placeWith(clients) {
     rect = { x: int(hx + panel.x, hx, hx + hw - w), y: int(hy + panel.y, hy, hy + hh - h), w, h, ws: String(wsId) };
   }
   const shown = !!rect && !agentView;
-  // The person clicked into the window (it never takes focus by itself): that is them using the page. Only the
-  // moment it gains focus counts, and only while it is shown; staying focused does not keep the agent paused.
-  const focused = shown && windows.some((w) => w.focusHistoryID === 0);
+  // The person clicked into one of our windows (they never take focus by themselves): that is them using the
+  // page. Only the moment one gains focus counts, and only while it is shown; staying focused does not keep the
+  // agent paused.
+  const focused = shown && ours.some((w) => w.focusHistoryID === 0 && w.workspace?.name !== HIDDEN_WORKSPACE);
   if (focused && !nativeFocused) takeControl();
   nativeFocused = focused;
-  // Hidden while an agent drives, the window still renders the frames the panel shows, so it keeps the panel's size.
-  const size = rect ?? (agentView && panel?.width ? { w: int(panel.width, 50, 8000), h: int(panel.height, 50, 8000) } : null);
   const cmds = [];
-  for (const w of windows) {
-    const win = `address:${w.address}`;
-    if (!shown) {
-      if (w.workspace?.name !== HIDDEN_WORKSPACE) cmds.push(`hl.dsp.window.move({ window = "${win}", workspace = "${HIDDEN_WORKSPACE}", follow = false })`);
-      if (agentView && size && (w.size?.[0] !== size.w || w.size?.[1] !== size.h)) cmds.push(`hl.dsp.window.resize({ window = "${win}", x = ${size.w}, y = ${size.h} })`);
-      continue;
+  const win = (w) => `address:${w.address}`;
+  const fullscreen = (w) => {
+    // Chromium hides its tab strip and toolbar only while it believes it is fullscreen. When only Chromium itself
+    // had left, going through "not fullscreen" makes Hyprland tell it again.
+    const set = w.fullscreenClient === 2 && w.fullscreen === 0;
+    if (refullscreen && set) cmds.push(`hl.dsp.window.fullscreen_state({ window = "${win(w)}", internal = 0, client = 0 })`);
+    if (refullscreen || !set) cmds.push(`hl.dsp.window.fullscreen_state({ window = "${win(w)}", internal = 0, client = 2 })`);
+    refullscreen = false;
+  };
+  mainFullscreen = main.fullscreenClient === 2 && main.fullscreen === 0;
+  for (const a of centred) if (!ours.some((w) => w.address === a)) centred.delete(a);
+  if (!shown) {
+    for (const w of ours) if (w.workspace?.name !== HIDDEN_WORKSPACE) cmds.push(`hl.dsp.window.move({ window = "${win(w)}", workspace = "${HIDDEN_WORKSPACE}", follow = false })`);
+    // Hidden while an agent drives, the main window still renders the frames the panel shows, so it keeps the
+    // panel's size and its fullscreen look.
+    if (agentView && panel?.width) {
+      const w = int(panel.width, 50, 8000), h = int(panel.height, 50, 8000);
+      if (main.size?.[0] !== w || main.size?.[1] !== h) cmds.push(`hl.dsp.window.resize({ window = "${win(main)}", x = ${w}, y = ${h} })`);
+      fullscreen(main);
     }
-    if (String(w.workspace?.id) !== rect.ws) cmds.push(`hl.dsp.window.move({ window = "${win}", workspace = "${rect.ws}", follow = false })`);
-    // The kiosk hides its tab strip and toolbar only while the client believes it is fullscreen.
-    if (w.fullscreenClient !== 2 || w.fullscreen !== 0) cmds.push(`hl.dsp.window.fullscreen_state({ window = "${win}", internal = 0, client = 2 })`);
+  } else {
+    for (const w of ours) {
+      if (String(w.workspace?.id) === rect.ws) continue;
+      cmds.push(`hl.dsp.window.move({ window = "${win(w)}", workspace = "${rect.ws}", follow = false })`);
+      // A popup opens on the special workspace of whichever monitor had focus, and keeps that place when moved:
+      // the first time it comes out it goes over the panel instead, inside herdr's window.
+      if (w === main || centred.has(w.address)) continue;
+      centred.add(w.address);
+      const [hx, hy] = herdr.at, [hw, hh] = herdr.size, [pw, ph] = w.size;
+      const x = int(rect.x + (rect.w - pw) / 2, hx, Math.max(hx, hx + hw - pw)), y = int(rect.y + (rect.h - ph) / 2, hy, Math.max(hy, hy + hh - ph));
+      cmds.push(`hl.dsp.window.move({ window = "${win(w)}", x = ${x}, y = ${y} })`);
+    }
+    fullscreen(main);
     // Hyprland resizes about the window's center, so the move comes after.
-    const resize = w.size?.[0] !== rect.w || w.size?.[1] !== rect.h;
-    if (resize) cmds.push(`hl.dsp.window.resize({ window = "${win}", x = ${rect.w}, y = ${rect.h} })`);
-    if (resize || w.at?.[0] !== rect.x || w.at?.[1] !== rect.y) cmds.push(`hl.dsp.window.move({ window = "${win}", x = ${rect.x}, y = ${rect.y} })`);
+    const resize = main.size?.[0] !== rect.w || main.size?.[1] !== rect.h;
+    if (resize) cmds.push(`hl.dsp.window.resize({ window = "${win(main)}", x = ${rect.w}, y = ${rect.h} })`);
+    if (resize || main.at?.[0] !== rect.x || main.at?.[1] !== rect.y) cmds.push(`hl.dsp.window.move({ window = "${win(main)}", x = ${rect.x}, y = ${rect.y} })`);
+    // herdr floats too, and Hyprland raises a window on every click into it; maximized, herdr also covers every
+    // floating window not raised since. Either way the page would sit unseen under herdr's own empty panel.
+    // `hyprctl clients` lists windows bottom to top. Popups go back above the main window, oldest first.
+    const below = (w) => !w.allowedOverFullscreen || (herdr.fullscreen === 0 && clients.indexOf(w) < clients.indexOf(herdr));
+    if (ours.some(below)) for (const w of ours) cmds.push(`hl.dsp.window.alter_zorder({ mode = "top", window = "${win(w)}" })`);
   }
   if (cmds.length) await output(["hyprctl", "eval", cmds.map((c) => `hl.dispatch(${c})`).join("; ")]);
+}
+
+async function keepFullscreen() {
+  // Only while Hyprland has it fullscreen: otherwise placing the window sets it anyway.
+  if (!NATIVE || !cdp || refullscreen || !mainFullscreen) return;
+  // Popups are windows of their own, opened later: the main window has the lowest id.
+  let main = null;
+  for (const targetId of tabs.keys()) {
+    const r = await cdp.send("Browser.getWindowForTarget", { targetId }).catch(() => null);
+    if (r && (!main || r.windowId < main.windowId)) main = r;
+  }
+  if (!main) return;
+  if (main.bounds?.windowState === "fullscreen") return void (refullscreenTries = 0);
+  // A Chromium that never reports fullscreen for this would otherwise flash its toolbar every second.
+  if (refullscreenTries === REFULLSCREEN_TRIES) console.error(`native window: Chromium stays "${main.bounds?.windowState}" after ${REFULLSCREEN_TRIES} tries; giving up until it is fullscreen again`);
+  if (refullscreenTries++ >= REFULLSCREEN_TRIES) return;
+  refullscreen = true;
 }
 
 // Chromium's own DevTools page, connected straight to Chromium's port: it is the person's tool, so it must neither
@@ -1458,5 +1525,6 @@ Bun.serve({
 setInterval(() => {
   if (casting && !watching()) serial(stopCast);
   expireHeld();
+  keepFullscreen().catch(() => {});
 }, 1000);
 console.log(`herdr-browser: CDP 127.0.0.1:${CDP_PORT}, API 127.0.0.1:${API_PORT}`);
