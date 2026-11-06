@@ -1182,6 +1182,7 @@ let mainFullscreen = false; // Hyprland's last word on the main window: fullscre
 let refullscreenTries = 0;
 const REFULLSCREEN_TRIES = 2;
 const centred = new Set(); // popups already brought next to the panel once; after that they stay where put
+let lastRaise = 0;
 
 function panelAt(b) {
   const width = clampInt(b.width, 0, 50, 8000), height = clampInt(b.height, 0, 50, 8000);
@@ -1300,9 +1301,12 @@ async function placeWith(clients) {
   // and go with the panel like it.
   const id = (c) => parseInt(c.stableId, 16);
   ours.sort((a, b) => id(a) - id(b));
-  const [main] = ours;
-  // A herdr window that was never focused has focusHistoryID -1.
-  const herdr = clients.filter((c) => c?.class === "herdr-app" && c.mapped && c.focusHistoryID >= 0).sort((a, b) => a.focusHistoryID - b.focusHistoryID)[0];
+  // An old window still unmapping (a Chromium restart, a closing popup) can't be the main one.
+  const main = ours.find((c) => c.mapped);
+  if (!main) return;
+  // The most recently focused herdr window; one never focused (focusHistoryID -1) still counts, after those.
+  const rank = (c) => (c.focusHistoryID >= 0 ? c.focusHistoryID : Number.MAX_SAFE_INTEGER);
+  const herdr = clients.filter((c) => c?.class === "herdr-app" && c.mapped && !c.hidden).sort((a, b) => rank(a) - rank(b))[0];
   let rect = null;
   const wsId = herdr?.workspace?.id;
   // Another app fullscreen on herdr's workspace covers herdr, and so its panel.
@@ -1365,8 +1369,14 @@ async function placeWith(clients) {
     // herdr floats too, and Hyprland raises a window on every click into it; maximized, herdr also covers every
     // floating window not raised since. Either way the page would sit unseen under herdr's own empty panel.
     // `hyprctl clients` lists windows bottom to top. Popups go back above the main window, oldest first.
-    const below = (w) => !w.allowedOverFullscreen || (herdr.fullscreen === 0 && clients.indexOf(w) < clients.indexOf(herdr));
-    if (ours.some(below)) for (const w of ours) cmds.push(`hl.dsp.window.alter_zorder({ mode = "top", window = "${win(w)}" })`);
+    // allowedOverFullscreen only matters while herdr is fullscreen; otherwise only a window really under herdr counts,
+    // so a window the user put above ours is left alone. At most one raise a second keeps a state Hyprland doesn't
+    // clear from re-raising every placement.
+    const below = (w) => herdr.fullscreen !== 0 ? !w.allowedOverFullscreen : clients.indexOf(w) < clients.indexOf(herdr);
+    if (ours.some(below) && Date.now() - lastRaise >= 1000) {
+      lastRaise = Date.now();
+      for (const w of ours) cmds.push(`hl.dsp.window.alter_zorder({ mode = "top", window = "${win(w)}" })`);
+    }
   }
   if (cmds.length) await output(["hyprctl", "eval", cmds.map((c) => `hl.dispatch(${c})`).join("; ")]);
 }
