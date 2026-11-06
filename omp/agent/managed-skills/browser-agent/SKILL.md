@@ -29,10 +29,12 @@ omp -p --auto-approve --no-title "$(cat ~/.hermes/cache/scratch/<topic>/browser-
 ## 2. herdr browser (visible QA)
 `herdr-browser.service` (systemd user unit; code `~/.local/share/herdr-browser/` → dotfile `omarchy/home/.local/share/herdr-browser/`) keeps one headless Chromium with a persistent profile at `~/.local/share/herdr-browser/profile`, exposes CDP on `127.0.0.1:9333`, and streams the page into the **Browser** tab of herdr's right panel. The panel follows the page an agent is driving (last navigation/input) and badges it as agent-driven, so the user watches QA live and can click or type into the same page.
 
+**It is logged in as the user.** `herdr-browser-sync` (dotfile `omarchy/home/.local/bin/`) copies the user's own Chromium into it one way: cookies live within ~10 s of a change (a logout there deletes them here), history, IndexedDB and extensions (with their storage) at each service start. Treat every site as signed in to the user's real accounts: whatever you do is done as the user, so §6 and `browser-vault check` confirm/deny apply to every purchase, message, post, delete or account change, exactly as on the relay. Saved passwords are not synced; vault logins (§5) still work, and logins made here never flow back to the user's browser.
+
 | | managed headless | herdr browser | relay |
 |---|---|---|---|
 | visible to the user | no | yes, herdr Browser panel | the user's Chrome (never raised) |
-| profile | omp-owned, shared per project, disposable | persistent: cookies and logins survive restarts and are shared by every agent and the user | the user's real profile and accounts |
+| profile | omp-owned, shared per project, disposable | persistent, shared by every agent and the user; carries the user's Chromium sessions (synced) | the user's real profile and accounts |
 | lifecycle | omp freezes and idle-closes its tabs | nothing is closed for you; `browser.close` only releases | tabs omp opened close at session end |
 | stealth patches | yes | no | real browser |
 
@@ -67,8 +69,16 @@ Tab hygiene:
 - Close every page you created, also on failure (`finally`). Keep ≤ 4 agent pages open.
 - The user may click in the same page. When it changes under you, re-observe instead of fighting it.
 - Leave the viewport to the panel unless the check is about a specific size (responsive QA).
-- The profile is shared and persistent: never `clearCookies`/`clearStorage` or log out there unless the user asked; do logged-out checks in managed headless.
+- The profile is shared and persistent: never `clearCookies`/`clearStorage` or log out there unless the user asked (a logout there ends the user's real session on that site too); do logged-out checks in managed headless.
 - The panel need not be open for `tab.screenshot()` or anything else. When the user asked to watch and the panel is hidden: `herdr-app do layout.select '{"stack":"panel-body","child":"browser"}'` then `herdr-app do layout.show '{"id":"panel"}'`. Otherwise leave their layout alone.
+
+The user can take over: any click, key, scroll, tab switch or address-bar navigation in the panel pauses agents until 5 s after their last input (or until they press **Hand back**). Meanwhile the CDP proxy **holds** every command that is not on its short read list, in order and without dropping it: input, navigation, `evaluate`, DOM writes, `Fetch.*`, script injection, emulation, detaching, and `/json/new`, `/json/activate`, `/json/close`. Reads (`getTargets`, attaching, DOM/AX queries, screenshots) still pass. A held command just takes longer; after 60 s it fails with "agent commands are paused" (`/json/*` answers 409), so retry after it. Before a burst of actions, check:
+```bash
+curl -s 127.0.0.1:47825/state   # "userControl":{"active":true,"until":<ms>,"held":<n>} → wait, then re-observe
+```
+Never work around the pause: always use `127.0.0.1:9333`. Chromium's own port 9334 skips the proxy (pause, agent marks, panel follow); it is reachable by local processes only as an accepted risk, not as an option. Never use your own Chromium or `/handback`.
+
+Wait for the page instead of sleeping: `GET http://127.0.0.1:47825/wait?idle=300&timeout=8000` (timeout ≤ 9000) returns `{changed,timed_out,seq,waited_ms}` once the shown page has painted nothing for `idle` ms; add `&change` (and optionally `&since=<seq>` from `/state`) to first require a new paint. It measures the tab shown in the panel, which is yours while you drive it. `GET /screenshot?id=<your page id>` returns a PNG of the viewport without attaching; only the shown tab or a tab an agent drives (403 otherwise), two at a time (429). Both answer 429 when too many requests wait at once.
 
 ## 3. Relay discipline (real Chrome)
 - Driver is the forked extension "sharosoo Browser Relay" (`~/.config/sharosoo-browser/relay-extension` → dotfile). It never focuses/raises the window: `Page.bringToFront`/`Target.activateTarget` only switch the tab inside its window, new tabs open with `active:false`, and every attached tab gets `Emulation.setFocusEmulationEnabled` so background tabs keep rendering (screenshots and clicks work while hidden). Verified 2026-10-09: Hyprland active window stayed on the terminal through open/newPage/bringToFront/screenshot.
@@ -98,57 +108,54 @@ A site can hold several accounts: refer to them as `SITE:ACCOUNT` (`google:work`
 | `browser-vault otp <site[:account]>` | current TOTP code (waits if < 5 s left); the seed is never printed |
 | `browser-vault otp-enroll <site[:account]> --host <page origin> [--confirmed] [--replace]` | stores a TOTP seed read from **stdin** during a site's 2FA setup and prints only the current code (§5.2) |
 | `browser-vault session info\|seal\|rm <site[:account]>` | storageState path `~/.local/share/sharosoo-browser/sessions/<site>.<account>.json`; `seal` = chmod 600 |
+| `browser-vault policy [site]` | merged policy JSON: `domains`, `login_url`, `otp`, `session`, `confirm`/`deny` |
 | `browser-vault check <site> <action>` | exit 0 allow, 3 confirm (ask user first), 4 deny |
 | `browser-vault add <site[:account]> --domain <host> [--field f] [--otp] [--otp-enroll confirm\|auto] [--otp-issuer name] [--otp-replace] [--ignore-port]` | **user only**: registers/updates the site, then hidden prompts for that account's secrets |
 | `browser-vault set <site[:account]> <field>` / `forget <site[:account]>` | **user only**: store one field / remove an account or a whole site |
 
 Rules:
-- Secrets never enter the transcript. Read them inside the cell that uses them and never print/return them:
+- Secrets never enter the transcript. Read them in the eval cell that types them and never print/return them. `tab.run` closures are serialized (no captured variables), so do not fetch secrets inside one; type through an element handle (`fill`/`click` take string selectors; observe ids need `tab.id(n)`):
   ```js
-  await tab.fill("label/Password", (await Bun.$`browser-vault get github password`.text()));
-  await tab.fill("label/Code", (await Bun.$`browser-vault otp github`.text()).trim());
+  const pw = await tab.id(passwordId);                                  // id from tab.observe()
+  await pw.type(await Bun.$`${process.env.HOME}/.local/bin/browser-vault get github:work password`.text());
   ```
   Never put a secret on a `bash` command line, in a file in a repo, or in a message.
 - Never ask the user to paste passwords/codes into chat. Missing site or secret → tell them the exact `browser-vault add <site>:<account> --domain <host>` (or `set`) to run themselves.
 - Type credentials only into a host listed in the site's `domains`; check `tab.url()` first.
-- Prefer a saved session over typing credentials: `browser-vault session info <site:account>` → if fresh, `tab.loadState(path)` then reload and confirm logged-in state (and that it is the intended account). After a successful login, `tab.saveState(path)` then `browser-vault session seal <site:account>`. Stale/expired → log in again, re-save.
+- Prefer a saved session over typing credentials (`vaultLogin` does this). Never call `tab.saveState(path)` for a vault session: it writes **every** site's cookies in the profile (2 389 in herdr, measured) to disk. `vaultLogin` reads cookies over CDP into memory and writes only those the site's `session_domains` (default: `domains`; never used for typing) fully cover: a host-only cookie whose host is listed, a domain cookie `.d` only with an exact `d` entry or a `*.x` entry with `d` strictly under `x` (`*.x` never covers `x` itself) (a parent-domain cookie would also reach sibling hosts), plus localStorage of the current allowed origin. Sites whose login lives on a parent-domain cookie need it, e.g. google: `browser-vault add google --session-domain google.com --session-domain '*.google.com'`.
 - Storing a TOTP seed next to the password puts both factors in one place; only for sites the user put `otp = true` on.
 - Captcha / passkey / push approval / device check → stop and hand it to the user; do not try to bypass.
 
-### 5.1 Login recipe (herdr browser)
-On your own page from §2, in this order; stop at the first step that leaves you logged in **as the intended account** — check the account identity the page shows (user menu, `meta` tag, settings page) against the vault's `username`, not just a logged-in look:
-1. **Already logged in.** The persistent profile may hold the session: open the app and check the identity. Logged in as someone else → stop and tell the user; do not log out (the profile is shared).
-2. **Saved session.** `browser-vault session info <ref>` → `exists` and not `stale` → `tab.loadState(path)`, reload, check the identity again.
-3. **Credentials.** Confirm `tab.url()` host is in the site's `domains`, then type `get` values and, on a code prompt, `otp`, all inside one cell.
-4. **Save.** After a verified login: `tab.saveState(path)` and `browser-vault session seal <ref>`.
+### 5.1 Login: `vaultLogin` (shared helper)
+Use `login.mjs` next to this file for every vault login instead of hand-typing. On your own page (§2 for herdr, or managed headless), in an eval JS cell:
 ```js
-const ref = "github:work";
-const info = JSON.parse(await Bun.$`browser-vault session info ${ref}`.text());
-const expected = (await Bun.$`browser-vault get ${ref} username`.text()).trim();
-// GitHub names the signed-in account in <meta name="user-login">.
-const loggedInAs = async () => (await tab.attr('meta[name="user-login"]', "content").catch(() => null)) || null;
-const isExpected = async () => {
-  const who = await loggedInAs();
-  if (who && who.toLowerCase() !== expected.toLowerCase()) throw new Error("signed in as a different account; stopping");
-  return Boolean(who);
-};
-await tab.goto("https://github.com/");
-if (!(await isExpected()) && info.exists && !info.stale) { await tab.loadState(info.path); await tab.reload(); }
-if (!(await isExpected())) {
-  await tab.goto("https://github.com/login");
-  if (new URL(await tab.url()).hostname !== "github.com") throw new Error("login redirected off the allowed domain");
-  await tab.fill("label/Username or email address", expected);
-  await tab.fill("label/Password", await Bun.$`browser-vault get ${ref} password`.text());
-  await tab.click('role/button[name="Sign in"]');
-  if (await tab.waitForSelector("label/Authentication code", { timeout: 8000 }).catch(() => false))
-    await tab.fill("label/Authentication code", (await Bun.$`browser-vault otp ${ref}`.text()).trim());
-  await tab.waitForUrl(/github\.com\/(?!login|sessions)/, { timeout: 15000 }).catch(() => {});
-  if (!(await isExpected())) throw new Error("login did not complete");
-  await tab.saveState(info.path);
-  await Bun.$`browser-vault session seal ${ref}`;
-}
+const { vaultLogin } = await import(`${process.env.HOME}/.omp/agent/managed-skills/browser-agent/login.mjs`);
+const r = await vaultLogin(tab, "github:work", { url: "https://github.com/login" });
+// { status: "logged_in" | "needs_user" | "wrong_account" | "failed", step, reason, identity?, session?, saved?, url }
 ```
-Selectors, URLs, the identity signal and the host check above are GitHub's; take each site's own from `observe()` and its `domains`/`login_url` from `browser-vault policy <site>`. On a site with `session = false`, `session info` exits 4 (so `Bun.$` throws): drop the `info` lines, steps 2 and 4.
+- Order: already signed in → saved session once (`loadState` + reload) → username → password → TOTP code (`browser-vault otp`) → cookies read in memory over CDP (`Network.getAllCookies`), filtered by `session_domains`, only those written (0600, atomic) + `session seal`. `url` omitted = continue on the current page (`login_url` when blank). One `vaultLogin` runs at a time per machine (lock file under `~/.local/share/sharosoo-browser/`); a second caller waits up to 2 min.
+- `logged_in` always means the page proved the vault account (`identity: "verified"`): Google's account button on myaccount (when the profile's default account differs, it opens `myaccount.google.com/?authuser=<email>` once) or the exact email on the consent page, GitHub's `meta[name=user-login]`, else the site's `identity_selector`, read only on its `identity_paths` (default `/`, the root page only). No proof → `needs_user`, `step: "verify"`; a different account → `wrong_account` (`shown`): tell the user, never log out the shared profile.
+- OAuth callback: after the consent click the page leaves the site's domains for the client's `redirect_uri` (gcloud: `localhost:8085`). That lands as `logged_in`, `step: "consent"`, `verified`, `session: "not_saved"`, because the consent page showed the vault email as an exact match before the click; nothing is read or saved on the callback page.
+- Typing and clicks happen only in the top document, on a host in `domains` and an allowed path (adapter paths, or the site's `login_paths`), into a visible, enabled field of the right type; the policy is re-read per operation and the element and document are re-checked before every key. Any change → `failed` (`document_changed`, `host_not_allowed`, `path_not_allowed`, `element_invalid`). Accepted residual race: a navigation that starts between the last check and the key dispatch can still receive that one keystroke (one character, never the rest of the value).
+- At most **one** username, password and code submit per call, and one password submit per account per 10 min across calls (`reason: "recent_password_attempt"`; cleared by a verified login). Report it and ask the user; never loop (lockout). Captcha, passkey, push/device prompts, SMS, unverified-app warnings, unknown pages → `needs_user` with that `step`, checked before any form field.
+- `reason` is a fixed code (`REASONS` in `login.mjs`); vault stderr and exception text never come back.
+- OAuth consent (`oauth_grant`) is clicked only with `consent: true`, which you pass only when the user asked for this grant in this conversation, and only when the consent page shows the vault email. `browser-vault check <site> oauth_grant`: 0 or 3 → click, 4 → `failed`, anything else → `needs_user`.
+- Adapters: `ADAPTERS` table (`google`, `github`, `generic`), picked by site name, then by domain. `generic` types only into the site's CSS `login_selectors`; without them it returns `needs_user`, `step: "not_configured"`. Tell the user to run `browser-vault add <site> --login-selector username=<css> --login-selector password=<css> [--login-selector otp=<css>] [--login-selector submit=<css>] --login-path <path> --identity-selector <css> --identity-path <post-login path>`.
+
+`gcloud auth login` through the herdr browser, after the user asked for it (that request is the `oauth_grant` approval):
+```js
+const gcloud = Bun.spawn(["gcloud", "auth", "login"], { env: { ...process.env, BROWSER: "/bin/true" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+let log = "";
+const dec = new TextDecoder();
+const drained = (async () => { for await (const c of gcloud.stderr) log += dec.decode(c); })(); // keep reading: gcloud logs more after the redirect
+for (const end = Date.now() + 30_000; !/https:\/\/accounts\.google\.com\/\S+/.test(log) && Date.now() < end;) await Bun.sleep(200);
+const authUrl = log.match(/https:\/\/accounts\.google\.com\/\S+/)?.[0];
+if (!authUrl) { gcloud.kill(); throw new Error("gcloud printed no auth URL"); }
+// page from §2 (json/new + target), then:
+const r = await vaultLogin(tab, "google:work-ben", { url: authUrl, consent: true });
+if (r.status !== "logged_in") gcloud.kill();                          // report r; the user finishes needs_user steps
+const exit = await gcloud.exited; await drained;                       // 0 → `gcloud auth list` shows the account
+```
 
 ### 5.2 TOTP enrollment (a site shows a 2FA setup page)
 Run enrollment in the **managed headless** browser, never the herdr browser: herdr streams every visible frame to JPEG files under `~/.config/herdr-app/mods/browser-frames/`, so a QR or setup key on screen would land on disk. If the setup page is open in herdr, re-open it in managed headless (load the saved session) before reading the key.
