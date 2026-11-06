@@ -102,6 +102,9 @@ async function render(job, key, id, version, width, scheme) {
 Bun.serve({
   hostname: "127.0.0.1",
   port: PORT,
+  // A first tile can take longer than Bun's default 10 s idle limit while other widths render; the panel's
+  // request would be cut off and look like the service had gone.
+  idleTimeout: 120,
   async fetch(req) {
     const u = new URL(req.url);
     if (u.pathname !== "/render") return new Response("not found", { status: 404 });
