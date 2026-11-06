@@ -4,7 +4,7 @@
 ## 1. Who reads this
 
 - **Main**, when writing task packets for gpai-monorepo work: copy the relevant section's rules into the packet (or point the agent here).
-- **Subagents** when the packet points here: model agents (`opus`, `sonnet`, `haiku`, `sol`, `astra`, `fable`, `luna`, `gemini`, `swe`) acting in the role their packet's `Role:` line names (`skill://agent-orchestration`), plus `ci`, `committer`, `pr`, `reporter`, `naturalizer`. (`muse`, `deepseek`, and `minimax` are never used in gpai-monorepo.) Model choice per slot: `skill://model-routing` — spend Claude (`opus`, `sonnet`, `fable`, `haiku`) and `gemini` (Gemini 4 Argon) actively in parallel waves across **both backend/python-worker and `web/`** alongside the GPT family (`sol`, `astra`, `luna`).
+- **Subagents** when the packet points here: model agents (`opus`, `haiku`, `sol`, `astra`, `fable`, `luna`, `gemini`, `swe`) acting in the role their packet's `Role:` line names (`skill://agent-orchestration`), plus `ci`, `committer`, `pr`, `reporter`, `naturalizer`. (`muse`, `deepseek`, and `minimax` are never used in gpai-monorepo; `sonnet` is not used.) Model choice per slot: `skill://model-routing` — Claude slots on **`opus` (omit `effort`) or `fable` (omit `effort`)** across **both backend/python-worker and `web/`**; Codex mainly on **`sol` (omit `effort`)** for backend/logic, contracts, and verification; **`astra`** only as a sparing high-intelligence cross-check verifier on critical slots; `gemini` (Gemini 4 Argon) alongside. Caps: Claude unlimited in every session; Codex unlimited in `feat-personal-agent`, ≤ 2 elsewhere.
 
 Language: everything addressed to the user — Main's chat replies, progress reports, questions, `ask` options, DECISION prompts, final summaries — is in Korean (identifiers, paths, commands, errors verbatim). Subagent reports that Main relays verbatim follow the same rule. Code, comments, commit subjects and other artifacts keep the conventions in their own sections.
 
@@ -138,6 +138,7 @@ Message contract:
 - `scope` ∈ `backend`, `web`, `python-worker`, or a `packages/` directory name (e.g. `react-kit`, `porter`, `drive-contract`, `bento-grid`, `capacitor-airbridge`, `token-studio`). `docs` never takes a scope.
 - Subject: imperative, ≤ 72 chars, no trailing period. English by default; Korean OK when the diff's own comments/docs are Korean; never mixed in one subject.
 - Describe the change, not its provenance — banned: "match figma", "apply design feedback", "per the meeting", "as reviewed", "follow the spec", "address QA".
+- Write for a reader of the repository who never saw the working session: describe the code and behavior change and its product reason in plain words. Never mention session-only context: agent names, eval pair/arm/control labels (`sqa-arm`, `ctl-tip`), review packet or finding keys (`tps`, `B1`, `G4`), approvals ("Main approved"), local or `/tmp` paths, internal tooling (the omp broker), anecdotes ("branch authors kept tripping on it"). Eval scenario ids (`S-10-09`, `S-02-19`) and error-code dumps are not explanations either: say what the eval now does instead. Bad: `fix(evals): seed and version S-10-09 for the unified Google provider`. Good: `fix(evals): seed Google connector accounts under the unified google provider`.
 - Optional body after a blank line: 1–5 short why-lines.
 - No trailers (`Co-Authored-By`, `Signed-off-by`, generated-by).
 
@@ -241,6 +242,24 @@ Every checkout a session creates for gpai-monorepo — `git worktree add` anywhe
 - Keep the shared pnpm store separate from job lifetimes. Do not migrate/reset it during active installs. Hardlinks cannot cross subvolumes; verify reflink/package-import behavior in one new checkout before large installs. Runbook: `~/workspaces/sharosoo/dotfile/omarchy/BTRFS.md` on turing. It documents privileges, pnpm tradeoffs and optional tuning; do not treat tuning suggestions as established fixes.
 - Keep a checkout only when the user asked for it or a draft PR in this conversation is still being iterated; list each kept path in the final report.
 - Never remove checkouts another session or the user created without asking.
+
+## 11. Wide subagent waves without overloading the host
+
+For a fast-paced improvement loop the user may ask for many concurrent subagents (~30). Agents are cheap; host load (CPU, RAM, disk I/O, docker) is not. One turing incident: load 60–77 from ~55 abandoned eval stacks and ~340 containers. Keep the agent count high and the local footprint small.
+
+- **Count.** Keep ~30 running and refill as agents finish: check `read proc://`, then spawn or resume into the free slots. Hard cap 32 concurrent: above that the broker returned 429. Messages to killed agents do not revive them; spawn fresh ones (`<Name>-O2`) pointing at the old worktree or branch. Never broadcast `agent://all`: it wakes paused agents.
+- **One shared runtime.** Exactly one agent (the experiment lead) owns ONE local stack (`pnpm dori dev`, eval runner, sandbox) in its own worktree. Every other agent is code and test only: no `dori dev`, servers, workers, eval runs, or docker stacks. They queue live evals with the lead: SHA, rows, reps. The lead runs one eval slot at a time (shared control for many arms) and tears down stale stacks/containers before starting.
+- **Focused checks only.** Under `nice -n 19 ionice -c3`:
+  - pytest `-p no:xdist` on the touched test files;
+  - vitest `--maxWorkers=2`;
+  - pyright `--threads 2` on changed files; in a 3G cgroup set `NODE_OPTIONS=--max-old-space-size=2700`;
+  - no `next build`;
+  - no full `pnpm check/test` except by the integrator at landing;
+  - a one-shot test Postgres only when the lead says load allows, torn down after.
+- **One integrator.** A single agent lands onto the shared feature branch and runs the full gates (incl. `tests/architecture`). Others push their own branch and hand off the SHA + per-package commit subject/body + checks run.
+- **Never idle.** An agent waiting on an eval takes the next cause in its area, reviews, or writes tests, rather than polling. Recording (decisions, experiments, proposals) is a standing agent of its own.
+- **Cross-family checks.** The verifier family differs from both the author and Main (e.g. sol-authored → gemini or fable; opus-authored → astra or sol).
+- **Watch load.** `uptime` before each spawn wave. Load above ~2× the core count: stop new local work, kill stale stacks/containers, and let code-only agents continue.
 
 ## 10. Library docs and code-search MCP
 
