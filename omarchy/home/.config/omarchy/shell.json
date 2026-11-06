@@ -45,6 +45,9 @@
           "id": "omarchy.tray"
         },
         {
+          "id": "omarchy.tailscale"
+        },
+        {
           "id": "quickshell.spotify"
         },
         {
@@ -54,13 +57,8 @@
           "id": "jankeesvw.herdr"
         },
         {
-          "id": "sharosoo.omp-usage"
-        },
-        {
-          "id": "omarchy.tailscale",
-          "recentMullvadRegions": [
-            "Japan\nOsaka"
-          ]
+          "id": "sharosoo.omp-usage",
+          "refreshIntervalSec": 60
         },
         {
           "id": "omarchy.bluetooth"

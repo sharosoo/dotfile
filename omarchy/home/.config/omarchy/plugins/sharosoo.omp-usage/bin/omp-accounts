@@ -35,6 +35,8 @@ case "$action" in
       SELECT id, provider, identity_key AS identityKey,
              json_extract(data, '\$.email') AS email,
              json_extract(data, '\$.accountId') AS accountId,
+             -- ccx-pull.py borrows ccx's access token with an empty refresh token: ccx owns these sign-ins.
+             CASE WHEN json_extract(data, '\$.refresh') = '' THEN 1 ELSE 0 END AS imported,
              disabled_cause AS disabledCause,
              CASE WHEN disabled_cause IS NOT NULL AND $user_cause THEN 1 ELSE 0 END AS userDisabled
       FROM auth_credentials

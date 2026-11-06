@@ -93,17 +93,28 @@ Panel {
     toggleProc.running = true
   }
 
+  function setCodexTier(tier) {
+    if (tierProc.running) return
+    tierProc.command = ["sh", "-c", "python3 \"$HOME/.omp/agent/managed-skills/model-routing/rotate-accounts.py\" --set-tier \"$1\"", "sh", tier]
+    tierProc.running = true
+  }
+
   function capitalize(text) {
     text = String(text || "")
     return text === "" ? "" : text.charAt(0).toUpperCase() + text.slice(1)
   }
 
-  function refresh() {
+  // Timer ticks read the rotate-accounts snapshot (no API call); anything the user does (open, r, middle-click,
+  // a switch) asks for a live `omp usage` merged into that snapshot.
+  function refresh(live) {
     if (!credsProc.running) credsProc.running = true
     if (usageProc.running) return
     root.loading = true
+    usageProc.command = live === false ? root.snapshotCommand : root.liveCommand
     usageProc.running = true
   }
+  readonly property var snapshotCommand: ["sh", "-c", "cat \"$HOME/.omp/agent/usage-snapshot.json\" 2>/dev/null || omp usage --json"]
+  readonly property var liveCommand: ["sh", "-c", "python3 \"$HOME/.omp/agent/managed-skills/model-routing/rotate-accounts.py\" --snapshot 2>/dev/null || omp usage --json"]
 
   function footerText() {
     if (root.loading) return "Refreshing…"
@@ -132,7 +143,7 @@ Panel {
     cursorActive = false
     nowMs = Date.now()
     if (panelFlick) panelFlick.contentY = 0
-    if (nowMs - fetchedAt > 60000) refresh()
+    if (nowMs - fetchedAt > 30000) refresh()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
   onTabChanged: if (panelFlick) panelFlick.contentY = 0
@@ -141,7 +152,8 @@ Panel {
     id: usageProc
     // Always unredacted: switches match accounts to credentials by email, so
     // the redact setting only changes how accounts are labelled.
-    command: ["omp", "usage", "--json"]
+    // Command is set per call by refresh(): snapshot on timer ticks, live merge on user actions.
+    command: root.snapshotCommand
     stdout: StdioCollector {
       id: usageOut
       waitForEnd: true
@@ -181,6 +193,19 @@ Panel {
   }
 
   Process {
+    id: tierProc
+    stderr: StdioCollector {
+      id: tierErr
+      waitForEnd: true
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0)
+        root.error = "Switching the Codex tier failed: " + (String(tierErr.text || "").trim().split("\n").pop() || ("exit " + exitCode))
+      root.refresh(false)
+    }
+  }
+
+  Process {
     id: toggleProc
     stderr: StdioCollector {
       id: toggleErr
@@ -199,7 +224,7 @@ Panel {
     running: true
     repeat: true
     triggeredOnStart: true
-    onTriggered: root.refresh()
+    onTriggered: root.refresh(false)
   }
 
   // Keeps the countdowns honest while the panel sits open.
@@ -229,7 +254,7 @@ Panel {
     text: {
       var icon = "󱚣"
       if (vertical || !root.showPercent || !root.overall) return icon
-      return icon + " " + root.pct(root.overall.limit.percent)
+      return icon + " " + root.pct(root.overall.limit.percent) + (root.model && root.model.codexTier && Model.TIER_MARK[root.model.codexTier] ? " " + Model.TIER_MARK[root.model.codexTier] : "")
     }
     active: root.alarming
     tooltipText: root.tooltip()
@@ -296,6 +321,7 @@ Panel {
                 var off = root.provider.accounts.filter(function(a) { return !a.enabled }).length
                 return n + " account" + (n > 1 ? "s" : "") + (off > 0 ? " · " + off + " off" : "")
                   + (root.provider.peak ? " · peak " + root.pct(root.provider.peak.percent) : "")
+                  + (root.provider.tier ? " · " + Model.TIER_LABEL[root.provider.tier] : "")
               }
               if (!root.model) return root.loading ? "Asking omp…" : ""
               return root.providers.length + " providers · " + root.model.accountCount + " accounts"
@@ -327,7 +353,7 @@ Panel {
                 required property var modelData
                 required property int index
 
-                text: modelData.name
+                text: modelData.name + (modelData.tier && Model.TIER_MARK[modelData.tier] ? " " + Model.TIER_MARK[modelData.tier] : "")
                 selected: index === root.tab
                 hasCursor: root.cursorActive && index === root.tab
                 bordered: true
@@ -338,6 +364,51 @@ Panel {
                 onClicked: {
                   root.cursorActive = true
                   root.selectTab(index)
+                }
+              }
+            }
+          }
+
+          // ---------- Codex tier ----------
+          // A labelled segmented strip, not a Flow of bordered buttons: it must not read as more provider tabs.
+          Column {
+            visible: !!root.provider && root.provider.id.indexOf("openai-codex") === 0 && !!root.provider.tier
+            width: parent.width
+            spacing: Style.spacing.sm
+
+            PanelSectionHeader {
+              text: "CODEX TIER"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            BorderSurface {
+              implicitWidth: tierRow.implicitWidth + Style.space(4) * 2
+              implicitHeight: tierRow.implicitHeight + Style.space(4) * 2
+              color: root.alpha(root.foreground, 0.04)
+              borderSpec: Border.flat(root.alpha(root.foreground, 0.18), 1)
+              radius: Style.cornerRadius
+
+              Row {
+                id: tierRow
+                anchors.centerIn: parent
+                spacing: Style.space(2)
+
+                Repeater {
+                  model: Model.CODEX_TIERS
+
+                  Button {
+                    required property string modelData
+
+                    text: Model.TIER_LABEL[modelData]
+                    selected: !!root.provider && root.provider.tier === modelData
+                    bordered: false
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.caption
+                    verticalPadding: Style.spacing.controlPaddingY
+                    onClicked: root.setCodexTier(modelData)
+                  }
                 }
               }
             }

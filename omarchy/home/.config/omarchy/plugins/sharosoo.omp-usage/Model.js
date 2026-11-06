@@ -17,7 +17,7 @@ var NAMES = {
   "kimi": "Kimi"
 }
 
-var ORDER = ["anthropic", "openai-codex", "google-antigravity", "google-gemini-cli", "xai-oauth", "github-copilot", "commandcode"]
+var ORDER = ["anthropic", "anthropic-worker", "anthropic-spurt", "openai-codex", "openai-codex-worker", "openai-codex-spurt", "google-antigravity", "google-gemini-cli", "xai-oauth", "github-copilot", "commandcode"]
 
 function providerName(id) {
   if (NAMES[id]) return NAMES[id]
@@ -102,6 +102,34 @@ function attachCredentials(byProvider, list, credentials) {
   }
 }
 
+// rotate-accounts' accountGroups: "worker" accounts burn to the wall and
+// "spurt" (shared) ones are only burned before their reset, so each gets its
+// own "<provider> · worker" / "<provider> · spurt" section apart from personal ones.
+var GROUP_LABEL = { worker: "worker", spurt: "spurt" }
+
+function splitGroups(list, groups, spurt) {
+  for (var i = list.length - 1; i >= 0; i--) {
+    var prov = list[i]
+    var g = groups[prov.id]
+    if (!g) continue
+    var kinds = ["worker", "spurt"]
+    for (var k = 0; k < kinds.length; k++) {
+      var kind = kinds[k]
+      var moved = prov.accounts.filter(function(a) { return g[a.rawEmail] === kind })
+      if (moved.length === 0) continue
+      prov.accounts = prov.accounts.filter(function(a) { return g[a.rawEmail] !== kind })
+      var live = kind === "spurt" && (spurt[prov.id] || []).length > 0
+      list.push({ id: prov.id + "-" + kind, name: prov.name + " · " + GROUP_LABEL[kind] + (live ? " 🔥" : ""), accounts: moved, keys: {} })
+    }
+    if (prov.accounts.length === 0) list.splice(i, 1)
+  }
+}
+
+// Codex tier picked by the user (rotate-accounts.py --set-tier): one bolt for fast, two for ultrafast.
+var CODEX_TIERS = ["standard", "fast", "ultrafast"]
+var TIER_MARK = { standard: "", fast: "⚡", ultrafast: "⚡⚡" }
+var TIER_LABEL = { standard: "standard", fast: "⚡ fast", ultrafast: "⚡⚡ ultrafast" }
+
 function newAccount(key, label, m) {
   return {
     key: key,
@@ -178,6 +206,10 @@ function build(data, credentials) {
   }
 
   attachCredentials(byProvider, list, credentials || [])
+  splitGroups(list, (data && data.accountGroups) || {}, (data && data.spurt) || {})
+  var codexTier = data && TIER_MARK[data.codexTier] !== undefined ? data.codexTier : null
+  for (var f = 0; f < list.length; f++)
+    if (list[f].id.indexOf("openai-codex") === 0) list[f].tier = codexTier
 
   var accountCount = 0
   for (var p = 0; p < list.length; p++) {
@@ -197,7 +229,8 @@ function build(data, credentials) {
         return (x.durationMs || Infinity) - (y.durationMs || Infinity) || x.title.localeCompare(y.title)
       })
       account.peak = peakOf(account.limits)
-      if (account.peak) peaks.push(account.peak)
+      // Parked or spent accounts sit at their cap on purpose; only live ones say how close work is to a wall.
+      if (account.peak && account.enabled) peaks.push(account.peak)
     }
     provider.peak = peakOf(peaks)
     accountCount += provider.accounts.length
@@ -220,6 +253,7 @@ function build(data, credentials) {
     providers: list,
     accountCount: accountCount,
     overall: overall,
+    codexTier: codexTier,
     generatedAt: Number((data && data.generatedAt) || Date.now()),
     withoutUsage: ((data && data.accountsWithoutUsage) || []).length,
     disabled: ((data && data.disabledCredentials) || []).length
