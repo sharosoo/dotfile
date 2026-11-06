@@ -270,6 +270,9 @@ async function show(targetId) {
   if (!tabs.has(targetId)) return;
   if (active === targetId && session) return;
   await stopCast();
+  // Closed while the cast stopped: its targetDestroyed already ran and found another tab active, so nothing would
+  // ever move the view off this dead id. The current tab stays; the next panel heartbeat restarts its cast.
+  if (!tabs.has(targetId)) return;
   active = targetId;
   bump();
   session = await sessionFor(targetId);
@@ -331,6 +334,7 @@ const watching = () => Date.now() - lastBeat < HEARTBEAT_MS || waiters > 0;
 // first frame must be drawn even if it matches what this tab sent before, and nothing queued for the previous
 // cast may be acked, published or painted over.
 function resetCast() {
+  castGen++;
   lastMotion = { data: "", from: null };
   lastData = "";
   lastFrom = null;
@@ -380,6 +384,7 @@ let lastFrameAt = 0;
 let lastData = "";
 let lastFrom = null;
 let lastMotion = { data: "", from: null };
+let castGen = 0; // bumped by resetCast; async work for an older cast checks it and gives up
 
 let ackTimer = null; // { timer, send } for the current cast's last frame, not acked yet
 let lastAck = 0;
@@ -446,11 +451,11 @@ function schedulePublish() {
 
 async function paintOver() {
   paintTimer = null;
-  const from = session;
+  const from = session, gen = castGen;
   if (!from || !frame || pending || !casting) return;
   const r = await cdp.send("Page.captureScreenshot", { format: "jpeg", quality: STILL_QUALITY }, from).catch(() => null);
   // Something moved meanwhile: that newer motion frame wins, and brings its own paint-over.
-  if (!r || pending || from !== session) return;
+  if (!r || pending || from !== session || gen !== castGen) return;
   pending = { data: r.data, width: frame.width, height: frame.height, from, still: true, receivedAt: Date.now() };
   schedulePublish();
 }
@@ -462,6 +467,7 @@ async function publish() {
   // Two tabs can show identical pixels; only a repeat on the same tab is skipped.
   if (!p || p.from !== session || (p.data === lastData && p.from === lastFrom)) return schedulePublish();
   publishing = true;
+  const gen = castGen;
   try {
     const n = ++seq;
     const name = `f-${n}.jpg`;
@@ -469,6 +475,8 @@ async function publish() {
     // Frames are screenshots of logged-in pages.
     await writeFile(tmp, Buffer.from(p.data, "base64"), { mode: 0o600 });
     await rename(tmp, join(FRAMES, name));
+    // A cast that started during the write (another tab, a new size) must not be shown this older frame.
+    if (gen !== castGen) return void (await unlink(join(FRAMES, name)).catch(() => {}));
     lastData = p.data;
     lastFrom = p.from;
     lastWrite = lastFrameAt = Date.now();
