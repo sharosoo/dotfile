@@ -10,6 +10,7 @@
 // They live under mods/ rather than data/ because herdr only drops a cached image when a file under mods/ changes:
 // every frame gets a new name and old ones are deleted, which keeps the app's decoded-image cache bounded.
 // The screencast runs only while the panel sends heartbeats (POST /viewport), so a hidden panel costs nothing.
+import { renameSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -25,12 +26,13 @@ const CHROME_PORT = Number(process.env.HERDR_BROWSER_CHROME_PORT ?? 9334);
 const CHROMIUM = process.env.HERDR_BROWSER_CHROMIUM ?? "/usr/bin/chromium";
 const MODE_FILE = join(HOME, ".local", "share", "herdr-browser", "mode");
 const RESTORE_FILE = join(HOME, ".local", "share", "herdr-browser", "restore.json");
-// "headless" draws the page into the panel as frames; "native" runs Chromium headed and lays its window over the
-// panel. The person picks it in the panel; switching restarts Chromium, so agents never do it.
-const MODE = (await Bun.file(MODE_FILE).text().catch(() => "")).trim() === "native" ? "native" : "headless";
+// "native" (the default) runs Chromium headed and lays its window over the panel; while an agent drives, the
+// window waits hidden and the panel shows frames instead (agentView). "headless" always draws frames. The person
+// picks it in the panel; switching restarts Chromium, so agents never do it.
+const MODE = (await Bun.file(MODE_FILE).text().catch(() => "")).trim() === "headless" ? "headless" : "native";
 const NATIVE = MODE === "native";
-// Page zoom for Fit (the person's setting, all tabs): the page lays out at panel size / zoom and is drawn into the
-// panel, so CSS reflows as with the browser's own zoom. Device presets keep their own CSS size.
+// Page zoom for Fit (the person's setting, all tabs): the page gets a device size of panel / zoom, so CSS reflows
+// as with the browser's own zoom. Device presets keep their own CSS size.
 const ZOOM_FILE = join(HOME, ".local", "share", "herdr-browser", "zoom");
 const DEFAULT_ZOOM = 0.75;
 const validZoom = (z) => Number.isFinite(z) && z >= 0.5 && z <= 2;
@@ -122,8 +124,9 @@ async function extensionDirs() {
 }
 
 let chromium = null;
+let screenScale = 1; // the monitor's: CSS px → the panel's physical px
 let switching = false;
-// False until the tabs saved by a mode switch are back; the CDP proxy turns agents away until then.
+// False until the saved tabs are back; the CDP proxy turns agents away until then.
 let ready = false;
 
 async function launchChromium() {
@@ -132,6 +135,7 @@ async function launchChromium() {
   const kernel = /^(\d+\.\d+\.\d+)/.exec(await output(["uname", "-r"]))?.[1] ?? "";
   uaOverride = identity(fullVersion, kernel);
   const screen = await monitor();
+  screenScale = screen.scale;
   const extensions = await extensionDirs();
   const proc = Bun.spawn([
     CHROMIUM,
@@ -155,8 +159,8 @@ async function launchChromium() {
     "about:blank",
   ], { stdout: "ignore", stderr: "ignore", env: { ...process.env, TZ: process.env.TZ ?? "Asia/Seoul" } });
   chromium = proc;
-  proc.exited.then((code) => { console.error(`chromium exited (${code})`); process.exit(switching ? RESTART_CODE : 1); });
-  for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => { proc.kill(); process.exit(0); });
+  proc.exited.then((code) => { console.error(`chromium exited (${code})`); flushTabsNow(); process.exit(switching ? RESTART_CODE : 1); });
+  for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => { flushTabsNow(); proc.kill(); process.exit(0); });
   for (let i = 0; i < 100; i++) {
     try {
       const v = await (await fetch(`http://127.0.0.1:${CHROME_PORT}/json/version`)).json();
@@ -174,7 +178,7 @@ class Cdp {
     this.calls = new Map();
     this.listeners = [];
     this.open = new Promise((resolve, reject) => { this.ws.onopen = resolve; this.ws.onerror = reject; });
-    this.ws.onclose = () => { console.error("lost the CDP connection"); process.exit(switching ? RESTART_CODE : 1); };
+    this.ws.onclose = () => { console.error("lost the CDP connection"); flushTabsNow(); process.exit(switching ? RESTART_CODE : 1); };
     this.ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.id !== undefined) {
@@ -205,7 +209,7 @@ let order = 0;
 let active = null;
 let session = null; // our session on the shown tab
 const sessions = new Map(); // targetId → our auto-attached session; it carries the disguise, so it stays for the tab's life
-let casting = false;
+let casting = null; // the session our screencast runs on; started, stopped and restarted only inside serial()
 let frame = null;
 let seq = 0;
 let cursor = null;
@@ -246,6 +250,7 @@ function addTab(info) {
   const agent = agentTargets.delete(info.targetId);
   const devtools = DEVTOOLS_TAB.exec(info.url)?.[1] ?? null;
   tabs.set(info.targetId, { id: info.targetId, url: info.url, title: info.title, agent, agentAt: agent ? Date.now() : 0, order: ++order, devtools, emulation: null, agentViewport: false });
+  saveTabs();
   // A popup the shown page opened (target=_blank, window.open) is where the person's click went.
   if ((agent && !controlled()) || !active || info.openerId === active) serial(() => show(info.targetId));
 }
@@ -274,15 +279,16 @@ async function show(targetId) {
   // ever move the view off this dead id. The current tab stays; the next panel heartbeat restarts its cast.
   if (!tabs.has(targetId)) return;
   active = targetId;
+  saveTabs();
   bump();
   session = await sessionFor(targetId);
   if (active !== targetId || !session) return;
   // A background tab is not painted, so it would give no frames.
   // A tab showing a JS dialog answers neither this nor the screencast; don't let it hold the queue long.
   await cdp.send("Page.bringToFront", {}, session, 2000).catch(() => {});
-  // A native window is sized by Hyprland and seen directly: no window fitting, no frames; zoom is emulated.
-  if (NATIVE) return void (await nativeZoom(targetId));
+  // A native window is sized by Hyprland; zoom is emulated in both modes (fitZoom).
   await fitWindow();
+  await fitZoom(targetId);
   if (watching()) await startCast();
 }
 
@@ -323,12 +329,25 @@ async function fitWindow() {
       if (w > 0 && dw >= 0 && dw < 300 && dh >= 0 && dh < 300) chrome.set(targetId, (lastChrome = { width: dw, height: dh }));
       c = chrome.get(targetId) ?? lastChrome;
     }
-    const width = Math.round(viewport.width / zoom), height = Math.round(viewport.height / zoom);
+    // The window is the panel's CSS size; fitZoom lays the page out wider when zoomed.
+    const { width, height } = viewport;
     await cdp.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal", width: width + c.width, height: height + c.height } });
   } catch {}
 }
 
 const watching = () => Date.now() - lastBeat < HEARTBEAT_MS || waiters > 0;
+
+// The page area's size in CSS px: the panel's, whichever mode reports it.
+const panelCss = () => (NATIVE ? (panel?.width ? panel : null) : viewport);
+
+// The shown page's size in CSS px, which is what the panel maps its clicks through: a preset's own size, the
+// Fit size at the person's zoom, or, under an agent's device override, what Chromium reports.
+function pageSize(tab, meta) {
+  if (tab?.emulation) return { width: tab.emulation.width, height: tab.emulation.height };
+  const css = panelCss();
+  if (!tab?.agentViewport && css) return { width: Math.round(css.width / zoom), height: Math.round(css.height / zoom) };
+  return { width: meta.deviceWidth, height: meta.deviceHeight };
+}
 
 // A new cast (another tab, a new size, or the same tab again after showing another) starts from nothing: its
 // first frame must be drawn even if it matches what this tab sent before, and nothing queued for the previous
@@ -348,34 +367,44 @@ function resetCast() {
 }
 
 async function startCast() {
-  if (NATIVE || casting || !session) return;
-  casting = true;
+  const css = panelCss(), from = session;
+  if (!framesShown() || casting || !from || !css) return;
+  casting = from;
   resetCast();
-  // Motion frames at CSS size, not the monitor's scale: the panel decodes each one before it can draw it, and a
-  // frame a third the pixels decodes about three times faster. The still frame after motion is full scale.
-  const size = { maxWidth: viewport.width, maxHeight: viewport.height };
-  await cdp.send("Page.startScreencast", { format: "jpeg", quality: MOTION_QUALITY, everyNthFrame: 1, ...size }, session, 2000).catch(() => { casting = false; });
+  const gen = castGen;
+  // At the panel's physical pixels, so the panel draws every frame 1:1: a frame at CSS size gets scaled up by
+  // the monitor's scale and turns soft whenever the page moves.
+  const size = { maxWidth: Math.round(css.width * screenScale), maxHeight: Math.round(css.height * screenScale) };
+  castParams = { format: "jpeg", quality: FRAME_QUALITY, everyNthFrame: 1, ...size };
+  const ok = await cdp.send("Page.startScreencast", castParams, from, 2000).then(() => true, () => false);
+  if (gen === castGen && casting === from) { if (!ok) casting = null; return; }
+  // The tab detached or closed meanwhile: a screencast that did start must not run on unseen.
+  if (ok) await cdp.send("Page.stopScreencast", {}, from).catch(() => {});
 }
 
 async function stopCast() {
   resetCast();
-  if (!casting || !session) return;
-  casting = false;
-  await cdp.send("Page.stopScreencast", {}, session).catch(() => {});
+  const from = casting;
+  if (!from) return;
+  casting = null;
+  await cdp.send("Page.stopScreencast", {}, from).catch(() => {});
 }
 
 // Every published frame is a new image the panel decodes before it can draw it. While the person is not
 // interacting, frames are written at most every MIN_FRAME_MS (always the latest one, so the last picture of an
 // animation is never lost); while they are, every frame goes out as it comes, up to INTERACTIVE_FRAME_MS. A
-// frame identical to the one on screen is never written. Motion goes out at MOTION_QUALITY; once the page has
-// been still for PAINT_OVER_MS one sharp frame replaces it (the "paint-over" remote desktops do).
+// frame identical to the one on screen is never written. Once the page has been still for PAINT_OVER_MS the
+// screencast restarts, which makes Chromium send the page as it is now: it only sends a frame for damage after
+// the last ack, so the last change of a scroll can come while a frame waits for its ack and never be sent.
+// (A Page.captureScreenshot for this came out at another size and quality than the screencast's frames.)
 // Every new frame costs the panel a load before it can be drawn: at 60 fps blank frames show through (2 of 180 in a
 // 60 fps recording), at 30 fps none did.
 const INTERACTIVE_FRAME_MS = 33;
-const MOTION_QUALITY = 60;
-const STILL_QUALITY = 85;
+// Quality made no difference to the measured sharpness and little to Chromium's CPU.
+const FRAME_QUALITY = 85;
 const PAINT_OVER_MS = 150;
-let pending = null; // { data, width, height, from, still, receivedAt }
+let castParams = null;
+let pending = null; // { data, width, height, from, gen, receivedAt }
 let publishTimer = null;
 let paintTimer = null;
 let publishing = false;
@@ -400,7 +429,7 @@ function ack(sessionId, from) {
     clearTimeout(a.timer);
     ackTimer = null;
     // A stopped or replaced cast never gets its ack; Page.startScreencast starts the count over.
-    if (from !== session || !casting) return;
+    if (casting !== from) return;
     lastAck = Date.now();
     cdp.send("Page.screencastFrameAck", { sessionId }, from).catch(() => {});
   };
@@ -425,19 +454,19 @@ function flushAck() {
 }
 
 function onFrame(params, from) {
-  if (from !== session) return;
+  // A frame still in flight from a stopped cast: acked so that screencast never waits on it, never shown.
+  if (casting !== from) return void cdp.send("Page.screencastFrameAck", { sessionId: params.sessionId }, from).catch(() => {});
   ack(params.sessionId, from);
-  // The sharp paint-over capture makes Chromium composite once more, which the screencast reports as a frame of
-  // the same unchanged page. Drawn, that blurry copy would replace the sharp one and re-arm the paint-over, so
-  // a still page would flip between sharp and blurry forever. A page that did not change sends nothing new.
+  // The paint-over restart sends the page again, usually exactly as already shown; drawing that copy would re-arm
+  // the paint-over, so a still page would never stop publishing. (When the paint-over was a captured screenshot,
+  // its composite came back as such a copy and a still page flipped between sharp and soft.) A page that did not
+  // change sends nothing new.
   if (params.data === lastMotion.data && from === lastMotion.from) return;
   lastMotion = { data: params.data, from };
-  // Under the panel's device override Chromium reports the frame in the monitor's DIPs, not the page's CSS px.
-  const em = tabs.get(active)?.emulation;
-  pending = { data: params.data, width: em?.width ?? params.metadata.deviceWidth, height: em?.height ?? params.metadata.deviceHeight, from, still: false, receivedAt: Date.now() };
-  // Armed on every motion frame, written or not (an identical one is skipped), so the sharp frame always follows.
+  pending = { data: params.data, ...pageSize(tabs.get(active), params.metadata), from, gen: castGen, receivedAt: Date.now() };
+  // Armed on every new frame, written or not, so the page's final state always follows.
   clearTimeout(paintTimer);
-  paintTimer = setTimeout(paintOver, PAINT_OVER_MS);
+  paintTimer = setTimeout(() => { paintTimer = null; serial(paintOver); }, PAINT_OVER_MS);
   schedulePublish();
 }
 
@@ -449,15 +478,17 @@ function schedulePublish() {
   publishTimer = setTimeout(publish, wait);
 }
 
+// Runs inside serial(), so no other start, stop or restart of the screencast interleaves with it.
 async function paintOver() {
-  paintTimer = null;
-  const from = session, gen = castGen;
-  if (!from || !frame || pending || !casting) return;
-  const r = await cdp.send("Page.captureScreenshot", { format: "jpeg", quality: STILL_QUALITY }, from).catch(() => null);
-  // Something moved meanwhile: that newer motion frame wins, and brings its own paint-over.
-  if (!r || pending || from !== session || gen !== castGen) return;
-  pending = { data: r.data, width: frame.width, height: frame.height, from, still: true, receivedAt: Date.now() };
-  schedulePublish();
+  const from = casting, gen = castGen;
+  if (!from || pending) return;
+  dropAck();
+  await cdp.send("Page.stopScreencast", {}, from).catch(() => {});
+  // The tab detached or closed meanwhile.
+  if (gen !== castGen || casting !== from) return;
+  const ok = await cdp.send("Page.startScreencast", castParams, from, 2000).then(() => true, () => false);
+  // Nothing is casting any more; the next panel heartbeat starts a new cast.
+  if (!ok && gen === castGen && casting === from) casting = null;
 }
 
 async function publish() {
@@ -465,9 +496,9 @@ async function publish() {
   const p = pending;
   pending = null;
   // Two tabs can show identical pixels; only a repeat on the same tab is skipped.
-  if (!p || p.from !== session || (p.data === lastData && p.from === lastFrom)) return schedulePublish();
+  if (!p || p.gen !== castGen || p.from !== casting || (p.data === lastData && p.from === lastFrom)) return schedulePublish();
   publishing = true;
-  const gen = castGen;
+  const gen = p.gen;
   try {
     const n = ++seq;
     const name = `f-${n}.jpg`;
@@ -482,7 +513,7 @@ async function publish() {
     lastWrite = lastFrameAt = Date.now();
     frame = { path: `${FRAMES_REL}/${name}`, seq: n, width: Math.round(p.width), height: Math.round(p.height), receivedAt: p.receivedAt, at: lastWrite };
     bump();
-    if (TIMING && interacting()) console.log(`timing: frame ${n}${p.still ? " (still)" : ""} received +${p.receivedAt - inputAt} ms, written +${lastWrite - inputAt} ms after input`);
+    if (TIMING && interacting()) console.log(`timing: frame ${n} received +${p.receivedAt - inputAt} ms, written +${lastWrite - inputAt} ms after input`);
     // The panel keeps the previous frame drawn under the new one until that decodes; deleting a file drops it
     // from the panel's image cache, so files outlive the panel's poll by a wide margin.
     unlink(join(FRAMES, `f-${n - KEEP_FRAMES}.jpg`)).catch(() => {});
@@ -500,17 +531,19 @@ function onEvent(msg) {
     case "Target.targetCreated": addTab(p.targetInfo); break;
     case "Target.targetInfoChanged": {
       const tab = tabs.get(p.targetInfo.targetId);
-      if (tab) { tab.url = p.targetInfo.url; tab.title = p.targetInfo.title; }
+      if (tab) { if (tab.url !== p.targetInfo.url) saveTabs(); tab.url = p.targetInfo.url; tab.title = p.targetInfo.title; }
       else addTab(p.targetInfo);
       break;
     }
     case "Target.targetDestroyed": {
       sessions.delete(p.targetId);
       chrome.delete(p.targetId);
+      tooBigLogged.delete(p.targetId);
       if (!tabs.delete(p.targetId)) break;
+      saveTabs();
       if (cursor?.target === p.targetId) cursor = null;
       if (active === p.targetId) {
-        active = null; session = null; casting = false; frame = null;
+        active = null; session = null; casting = null; frame = null;
         const next = [...tabs.values()].sort((a, b) => b.order - a.order)[0];
         serial(() => next ? show(next.id) : cdp.send("Target.createTarget", { url: "about:blank" }));
       }
@@ -527,7 +560,8 @@ function onEvent(msg) {
     }
     case "Target.detachedFromTarget":
       for (const [id, s] of sessions) if (s === p.sessionId) sessions.delete(id);
-      if (p.sessionId === session) { session = null; casting = false; }
+      if (p.sessionId === session) session = null;
+      if (p.sessionId === casting) casting = null;
       break;
     case "Page.screencastFrame": onFrame(p, msg.sessionId); return;
   }
@@ -544,6 +578,7 @@ const ACTIONS = new Set([
 function fromClient(conn, raw) {
   let msg;
   try { msg = JSON.parse(raw); } catch { return; }
+  agentBusy(false);
   const p = msg.params ?? {};
   if (msg.method === "Target.setAutoAttach" && !msg.sessionId && p.autoAttach) conn.autoAttach = true;
   if (msg.sessionId) adopted(conn, conn.sessions.get(msg.sessionId));
@@ -607,8 +642,8 @@ function reapplyView(targetId) {
       const s = await sessionFor(targetId);
       const { width, height, mobile, dpr } = tab.emulation;
       if (s) await cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: dpr, mobile, screenWidth: width, screenHeight: height }, s).catch(() => {});
-    } else if (NATIVE) await nativeZoom(targetId);
-    if (NATIVE || targetId !== active) return;
+    } else await fitZoom(targetId);
+    if (targetId !== active || !framesShown()) return;
     await stopCast();
     await fitWindow();
     if (watching()) await startCast();
@@ -914,7 +949,8 @@ function state() {
   const pointer = cursor && cursor.target === active ? { x: cursor.x, y: cursor.y, at: cursor.at } : undefined;
   const userControl = { active: controlled(), until: controlUntil, held: heldCount() };
   const agents = clients.size;
-  return { ver, mode: MODE, tabs: list, active, seq, frame, cursor: pointer, clients: agents, casting, userControl, viewport, zoom };
+  // `display` is what the panel shows: Chromium's own window over it, or frames (headless, or an agent driving).
+  return { ver, mode: MODE, display: framesShown() ? "frames" : "window", tabs: list, active, seq, frame, cursor: pointer, clients: agents, casting: !!casting, userControl, viewport, zoom };
 }
 
 // Lets an agent wait for the page to settle (no new frame for `idle` ms), or first to change after `since`,
@@ -1025,19 +1061,16 @@ function saveSetting(path, data) {
   return step;
 }
 
-// Tabs come back after the relaunch from this list; the profile (cookies, logins) is the same either way.
+// Tabs come back after the relaunch from the restore list; the profile (cookies, logins) is the same either way.
 async function switchMode(next) {
   if (next !== "headless" && next !== "native") return json({ error: "mode is headless or native" }, 400);
   if (switching) return json({ error: "already switching" }, 409);
   if (next === MODE) return json({ ok: true, mode: MODE });
   switching = true;
-  const saved = [...tabs.values()].filter((t) => !t.devtools).sort((a, b) => a.order - b.order)
-    .map((t) => ({ url: t.url, active: t.id === active }));
   try {
-    await saveSetting(RESTORE_FILE, JSON.stringify({ mode: next, tabs: saved }));
+    await flushTabs();
     await saveSetting(MODE_FILE, `${next}\n`);
   } catch (e) {
-    await saveSetting(RESTORE_FILE, null).catch(() => {});
     switching = false;
     throw e;
   }
@@ -1045,23 +1078,83 @@ async function switchMode(next) {
   return json({ ok: true, mode: next, restarting: true });
 }
 
+// Every restart (a mode switch, a crash, a service restart) brings the person's tabs back, in order and with the
+// shown one shown, from a list that follows every open, close, navigation and tab switch.
+const TAB_SAVE_MS = 500;
+// Everything the person had open comes back (file:, chrome:, chrome-extension:, view-source:, about:, …) except
+// DevTools pages, which are tied to the tab they inspected, and data: pages too big to keep in the list.
+const MAX_DATA_URL = 64 << 10;
+const restorable = (url) => !/^devtools:/i.test(url) && !(/^data:/i.test(url) && url.length > MAX_DATA_URL);
+const tooBigLogged = new Set(); // tab ids whose oversized data: URL was already reported
+let tabsRestored = false; // until restoreTabs is done, the tabs are a half-restored browser, not the person's
+let unrestored = []; // saved tabs this start could not open: kept in the list for the next start to retry
+let tabSaveTimer = null;
+let savedTabs = "";
+
+function tabList() {
+  const live = [...tabs.values()].filter((t) => !t.devtools).sort((a, b) => a.order - b.order).filter((t) => {
+    if (restorable(t.url)) return true;
+    if (/^data:/i.test(t.url) && !tooBigLogged.has(t.id)) { tooBigLogged.add(t.id); console.error(`restore list: leaving out a ${t.url.length}-byte data: page`); }
+    return false;
+  }).map((t) => ({ url: t.url, active: t.id === active }));
+  return JSON.stringify({ tabs: [...live, ...unrestored] });
+}
+
+function saveTabs() {
+  if (!tabsRestored || switching || tabSaveTimer) return;
+  tabSaveTimer = setTimeout(flushTabs, TAB_SAVE_MS);
+}
+
+function flushTabs() {
+  clearTimeout(tabSaveTimer);
+  tabSaveTimer = null;
+  if (!tabsRestored) return Promise.resolve();
+  const data = tabList();
+  if (data === savedTabs) return Promise.resolve();
+  savedTabs = data;
+  return saveSetting(RESTORE_FILE, data).catch((e) => { savedTabs = ""; console.error(`restore list: ${e?.message ?? e}`); });
+}
+
+// On the way out the latest list must land, even if a debounced or async save is still pending,
+// since nothing async runs after process.exit.
+function flushTabsNow() {
+  clearTimeout(tabSaveTimer);
+  tabSaveTimer = null;
+  if (!tabsRestored) return;
+  const tmp = `${RESTORE_FILE}.${process.pid}.exit.tmp`;
+  try { writeFileSync(tmp, tabList(), { mode: 0o600 }); renameSync(tmp, RESTORE_FILE); } catch (e) { console.error(`restore list: ${e?.message ?? e}`); }
+}
+
+// Logged by origin or scheme only: URLs can carry access keys.
+const origin = (url) => { try { const u = new URL(url); return /^https?:$/.test(u.protocol) ? u.origin : u.protocol; } catch { return "(bad url)"; } };
+
 async function restoreTabs() {
   const saved = await Bun.file(RESTORE_FILE).json().catch(() => null);
-  // Saved for the mode this start runs in; a switch that never took effect leaves nothing to restore.
-  if (saved?.mode !== MODE || !Array.isArray(saved.tabs)) return void (await saveSetting(RESTORE_FILE, null).catch(() => {}));
+  const list = Array.isArray(saved?.tabs) ? saved.tabs.filter((t) => typeof t?.url === "string") : [];
   const initial = (await cdp.send("Target.getTargets")).targetInfos.filter(isTab).map((t) => t.targetId);
   let opened = 0, shown = null;
-  for (const t of saved.tabs) {
-    if (typeof t?.url !== "string" || !/^(https?:\/\/|about:blank$)/.test(t.url)) continue;
-    const r = await cdp.send("Target.createTarget", { url: t.url }).catch(() => null);
-    if (!r) continue;
+  const failed = [];
+  for (const t of list) {
+    // Kept as saved, shown flag included, so a later start that can open it shows it again.
+    if (!restorable(t.url)) { console.error(`restore: not reopening a ${origin(t.url)} page`); failed.push({ url: t.url, active: !!t.active }); continue; }
+    let r = null;
+    for (let attempt = 1; attempt <= 2 && !r; attempt++) {
+      r = await cdp.send("Target.createTarget", { url: t.url }).catch((e) => {
+        console.error(`restore: ${origin(t.url)} failed (attempt ${attempt}): ${e?.message ?? e}`);
+        return null;
+      });
+      if (!r && attempt === 1) await Bun.sleep(500);
+    }
+    if (!r) { failed.push({ url: t.url, active: !!t.active }); continue; }
     opened++;
     if (t.active) shown = r.targetId;
   }
   if (opened) for (const targetId of initial) await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
   if (shown) await serial(() => show(shown));
-  // Kept until every tab is back, so a crash midway restores them on the next start.
-  await saveSetting(RESTORE_FILE, null).catch(() => {});
+  if (failed.length) console.error(`restore: ${opened} of ${opened + failed.length} tabs back; the rest stay listed for the next start`);
+  unrestored = failed;
+  tabsRestored = true;
+  await flushTabs();
 }
 
 // --- native mode: the headed window over the panel ------------------------------------------------------
@@ -1084,19 +1177,26 @@ function panelAt(b) {
   if (Number.isFinite(b.x) && Number.isFinite(b.y)) Object.assign(panel, { x: b.x, y: b.y, measured: true });
   panelSeq++;
   place();
-  if (resized) serial(() => nativeZoom(active));
+  serial(async () => {
+    if (resized) { await stopCast(); await fitZoom(active); }
+    await startCast();
+  });
 }
 
-// A headed window cannot be made larger than the panel to lay the page out wider, so the page gets a device size
-// of panel / zoom drawn at `scale` zoom: Chromium maps input through it the same way. A device size of the
-// person's choosing or an agent's own stays as it is.
-async function nativeZoom(targetId) {
+// Zoom for Fit, in both modes a device size of panel / zoom. Headless renders it at the monitor's scale times
+// zoom, so a frame has exactly the panel's physical pixels and is drawn 1:1. A headed window cannot change its
+// density, so there the page is drawn at `scale` zoom instead; Chromium maps input through either the same way.
+// A device size of the person's choosing or an agent's own stays as it is.
+async function fitZoom(targetId) {
   const tab = targetId && tabs.get(targetId);
-  if (!NATIVE || !tab || tab.emulation || tab.agentViewport || !panel?.width) return;
+  const css = panelCss();
+  if (!tab || tab.emulation || tab.agentViewport || !css) return;
   const s = await sessionFor(targetId);
   if (!s) return;
-  if (zoom === 1) await cdp.send("Emulation.clearDeviceMetricsOverride", {}, s).catch(() => {});
-  else await cdp.send("Emulation.setDeviceMetricsOverride", { width: Math.round(panel.width / zoom), height: Math.round(panel.height / zoom), deviceScaleFactor: 0, mobile: false, scale: zoom }, s).catch(() => {});
+  if (zoom === 1) return void (await cdp.send("Emulation.clearDeviceMetricsOverride", {}, s).catch(() => {}));
+  const size = { width: Math.round(css.width / zoom), height: Math.round(css.height / zoom), mobile: false };
+  const density = NATIVE ? { deviceScaleFactor: 0, scale: zoom } : { deviceScaleFactor: screenScale * zoom };
+  await cdp.send("Emulation.setDeviceMetricsOverride", { ...size, ...density }, s).catch(() => {});
 }
 
 async function setZoom(b) {
@@ -1105,15 +1205,47 @@ async function setZoom(b) {
   await saveSetting(ZOOM_FILE, `${zoom}\n`);
   bump();
   serial(async () => {
-    if (NATIVE) return nativeZoom(active);
     // Zoom only applies to Fit; a preset or an agent's viewport keeps its own size.
     const t = tabs.get(active);
     if (t?.emulation || t?.agentViewport) return;
     await stopCast();
-    await fitWindow();
+    await fitZoom(active);
     if (watching()) await startCast();
   });
   return json({ ok: true, zoom });
+}
+
+// While an agent drives, a native window waits hidden (Hyprland keeps rendering it: render_unfocused in
+// hypr/herdr_browser.lua) and the panel shows its frames, as in headless mode; the same Chromium, so tabs,
+// scroll and logins stay. The window comes back once the agent disconnects or goes quiet, or the person takes
+// over. An agent is a CDP client of the proxy (not the panel's DevTools, which talks to Chromium directly), or
+// a caller of /screenshot or /wait.
+const AGENT_IDLE_MS = 20000;
+let cdpAgentAt = 0;
+let httpAgentAt = 0;
+let agentView = false;
+const framesShown = () => !NATIVE || agentView;
+
+function agentWanted() {
+  const now = Date.now();
+  return NATIVE && !controlled() && ((clients.size > 0 && now - cdpAgentAt < AGENT_IDLE_MS) || now - httpAgentAt < AGENT_IDLE_MS);
+}
+
+function agentBusy(http) {
+  if (http) httpAgentAt = Date.now(); else cdpAgentAt = Date.now();
+  updateAgentView();
+}
+
+function updateAgentView() {
+  const want = agentWanted();
+  if (want === agentView) return;
+  agentView = want;
+  bump();
+  place();
+  serial(async () => {
+    if (!want) return stopCast();
+    if (watching()) await startCast();
+  });
 }
 
 const int = (v, min, max) => Math.max(min, Math.min(max, Math.round(v)));
@@ -1162,16 +1294,20 @@ async function placeWith(clients) {
     const w = int(panel.width, 50, hw), h = int(panel.height, 50, hh);
     rect = { x: int(hx + panel.x, hx, hx + hw - w), y: int(hy + panel.y, hy, hy + hh - h), w, h, ws: String(wsId) };
   }
+  const shown = !!rect && !agentView;
   // The person clicked into the window (it never takes focus by itself): that is them using the page. Only the
   // moment it gains focus counts, and only while it is shown; staying focused does not keep the agent paused.
-  const focused = !!rect && windows.some((w) => w.focusHistoryID === 0);
+  const focused = shown && windows.some((w) => w.focusHistoryID === 0);
   if (focused && !nativeFocused) takeControl();
   nativeFocused = focused;
+  // Hidden while an agent drives, the window still renders the frames the panel shows, so it keeps the panel's size.
+  const size = rect ?? (agentView && panel?.width ? { w: int(panel.width, 50, 8000), h: int(panel.height, 50, 8000) } : null);
   const cmds = [];
   for (const w of windows) {
     const win = `address:${w.address}`;
-    if (!rect) {
+    if (!shown) {
       if (w.workspace?.name !== HIDDEN_WORKSPACE) cmds.push(`hl.dsp.window.move({ window = "${win}", workspace = "${HIDDEN_WORKSPACE}", follow = false })`);
+      if (agentView && size && (w.size?.[0] !== size.w || w.size?.[1] !== size.h)) cmds.push(`hl.dsp.window.resize({ window = "${win}", x = ${size.w}, y = ${size.h} })`);
       continue;
     }
     if (String(w.workspace?.id) !== rect.ws) cmds.push(`hl.dsp.window.move({ window = "${win}", workspace = "${rect.ws}", follow = false })`);
@@ -1217,9 +1353,9 @@ async function emulate(b) {
   if (fit) {
     await cdp.send("Emulation.clearDeviceMetricsOverride", {}, s);
     tab.emulation = null;
-    await nativeZoom(targetId);
-    // The window may still have the size of a zoom set while the preset was on.
-    if (!NATIVE && targetId === active) serial(async () => { await stopCast(); await fitWindow(); if (watching()) await startCast(); });
+    await fitZoom(targetId);
+    // The cast was sized for the preset's frames.
+    if (targetId === active && framesShown()) serial(async () => { await stopCast(); await fitWindow(); if (watching()) await startCast(); });
   } else {
     const { width, height } = b;
     // Phones render at their own density; 0 keeps the monitor's scale for desktop sizes.
@@ -1252,9 +1388,10 @@ async function api(req) {
   if (req.method === "GET" && u.pathname === "/selection") return json({ text: await selection() });
   if (req.method === "GET" && u.pathname === "/wait") {
     if (waiters >= MAX_WAITS) return json({ error: "too many waiting requests" }, 429);
+    agentBusy(true);
     return json(await waitForPage(u.searchParams));
   }
-  if (req.method === "GET" && u.pathname === "/screenshot") return screenshot(u.searchParams.get("id"));
+  if (req.method === "GET" && u.pathname === "/screenshot") { agentBusy(true); return screenshot(u.searchParams.get("id")); }
   if (req.method !== "POST") return json({ error: "not found" }, 404);
   // A page can send text/plain POSTs without asking; requiring JSON forces a CORS preflight it never passes.
   if (!/^application\/json\b/i.test(req.headers.get("content-type") ?? "")) return json({ error: "content-type must be application/json" }, 415);
@@ -1282,7 +1419,7 @@ async function api(req) {
       const height = Math.max(150, Math.min(4000, Math.round(Number(b.height) || 0)));
       const changed = width !== viewport.width || height !== viewport.height;
       viewport = { width, height };
-      serial(async () => { if (changed) { await stopCast(); await fitWindow(); } await startCast(); });
+      serial(async () => { if (changed) { await stopCast(); await fitWindow(); await fitZoom(active); } await startCast(); });
       return json({ ok: true });
     }
     case "/input":
@@ -1307,7 +1444,7 @@ await cdp.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStar
 await restoreTabs();
 ready = true;
 // Hyprland moves herdr's window (scrolling layout, workspace switches) without telling the panel.
-if (NATIVE) setInterval(place, 150);
+if (NATIVE) setInterval(() => { updateAgentView(); place(); }, 150);
 
 Bun.serve({
   hostname: "127.0.0.1",

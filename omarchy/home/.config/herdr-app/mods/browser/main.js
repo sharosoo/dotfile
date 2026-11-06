@@ -1,6 +1,7 @@
-// A live view of herdr-browser.service's headless Chromium: the same browser agents drive over CDP
-// (http://127.0.0.1:9333), so the person can watch QA and take over with the mouse and keyboard.
-// The service streams JPEG frames into mods/browser-frames/; this panel shows the newest and forwards input.
+// A live view of herdr-browser.service's Chromium: the same browser agents drive over CDP
+// (http://127.0.0.1:9333), so the person can watch QA and take over with the mouse and keyboard. In native mode
+// the service lays Chromium's own window over the page area; in headless mode, and in native mode while an agent
+// drives, it streams JPEG frames into mods/browser-frames/ and this panel shows the newest and forwards input.
 
 import { View, div, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
@@ -30,6 +31,7 @@ const PRESETS = [
 ];
 const PRELOAD_MS = 80;
 const MAX_LOADING = 3;
+const ANCHOR_KEY = "herdr-browser.anchor";
 
 const post = (path, body) => fetch(`${API}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
@@ -53,7 +55,11 @@ export default class Browser extends View {
   init(_props, cx) {
     this.state = null; this.raw = ""; this.error = null; this.ver = -1; this.echo = null;
     this.shown = []; this.loading = []; // see apply()
-    this.view = null; this.sentView = ""; this.beatAt = 0;
+    this.view = null; this.sentView = ""; this.beatAt = 0; this.win = null;
+    // Where the page area sits in herdr's window, as distances from its right and bottom edges (the panel is
+    // anchored there): measured once from a pointer move, then kept across restarts, so the native window can be
+    // placed as soon as the panel shows.
+    try { this.anchor = JSON.parse(localStorage.getItem(ANCHOR_KEY) ?? "null"); } catch { this.anchor = null; }
     this.queue = []; this.pumping = false; this.polling = false; this.pollAt = 0;
     this.editing = false; this.cursorOn = false; this.sizeMenu = false;
     this.custom = InputState.new({ placeholder: "Custom, e.g. 1024x768" });
@@ -164,12 +170,16 @@ export default class Browser extends View {
     return !!s?.cursor && Date.now() - s.cursor.at < CURSOR_MS;
   }
 
+  framesView() {
+    const s = this.state;
+    return !!s && (s.display ? s.display === "frames" : s.mode !== "native");
+  }
+
   viewBody() {
     const body = { width: Math.floor(this.view.width), height: Math.floor(this.view.height) };
     if (this.state?.mode !== "native") return body;
-    // Measured from a pointer move over the panel; it stands only while the page area keeps that size.
-    const o = this.origin;
-    if (o && Math.abs(o.width - this.view.width) < 1 && Math.abs(o.height - this.view.height) < 1) Object.assign(body, { x: o.x, y: o.y });
+    const a = this.anchor, w = this.win;
+    if (a && w) Object.assign(body, { x: Math.round(w.width - a.right - this.view.width), y: Math.round(w.height - a.bottom - this.view.height) });
     // The size menu opens over the page area, where the window would cover it.
     if (this.sizeMenu || !visible()) body.hidden = true;
     return body;
@@ -220,7 +230,7 @@ export default class Browser extends View {
   // device size is drawn at most at its real size, centered, with the panel's background around it.
   scale() {
     const f = this.shown[this.shown.length - 1];
-    if (!f || !this.view || this.state?.mode === "native") return null;
+    if (!f || !this.view || !this.framesView()) return null;
     const fit = Math.min(this.view.width / f.width, this.view.height / f.height);
     const emulated = !!this.state?.tabs.find((t) => t.active)?.emulation;
     const k = emulated ? Math.min(1, fit) : fit;
@@ -342,7 +352,7 @@ export default class Browser extends View {
       .child(div().h(1).my(4).bg(t.border))
       .child(div().px(10).h(20).flex().items_center().text_size(11).text_color(t.dim).child("Display"))
       .child(modeRow("mode-headless", "In the panel", "headless", "Frames drawn by herdr; works anywhere"))
-      .child(modeRow("mode-native", "Native window", "native", "Chromium's own window laid over this area; restarts the browser"));
+      .child(modeRow("mode-native", "Native window", "native", "Chromium's own window over this area, frames while an agent drives; restarts the browser"));
 
     const tab = (x) => h_flex().id(`tab-${x.id}`).h(26).max_w(180).min_w(0).pl(8).pr(2).gap(4).items_center().rounded(5).flex_shrink(1)
       .when(x.active, (el) => el.bg(t.selected)).hover((st) => st.bg(x.active ? t.selected : t.hover)).cursor_pointer()
@@ -355,15 +365,15 @@ export default class Browser extends View {
     const strip = h_flex().id("tabs").px(6).h(32).gap(3).flex_none().items_center().overflow_x_scroll().border_b(1).border_color(t.border)
       .children(tabs.map(tab));
 
-    const native = s?.mode === "native";
-    const sc = native ? null : this.scale();
+    const windowView = !!s && !this.framesView();
+    const sc = windowView ? null : this.scale();
     const frames = sc ? this.shown.map((f) => image(f.path).id(`frame-${f.seq}`).absolute().top(sc.oy).left(sc.ox)
       .w(f.width * sc.k).h(f.height * sc.k)) : [];
-    const specks = native ? [] : this.loading.map((f) => image(f.path).id(`pre-${f.seq}`).absolute().top(0).left(0).size(1));
+    const specks = windowView ? [] : this.loading.map((f) => image(f.path).id(`pre-${f.seq}`).absolute().top(0).left(0).size(1));
     const cur = this.cursorOn && sc && s.cursor;
     // Native: the browser window covers this area, so this only shows while it is not placed yet.
     const message = this.error && !s ? `The browser service is not running (${this.error}). Start it with: systemctl --user start herdr-browser`
-      : !s ? "Connecting…" : native ? "Point at the panel to place the browser window here."
+      : !s ? "Connecting…" : windowView ? (this.anchor ? "Placing the browser window…" : "Point at the panel to place the browser window here.")
       : !sc ? (tabs.length ? "Waiting for the first frame…" : "No tabs open.") : null;
 
     const view = div().id("view").flex_1().min_h(0).relative().overflow_hidden().bg(t.background)
@@ -391,10 +401,17 @@ export default class Browser extends View {
         .border_2().border_color(t.accent)))
       .when(!!message, (el) => el.child(div().p(12).text_size(12).text_color(this.error && !s ? t.blocked : t.dim).child(message)));
 
+    // Measured in render, where GPUI allows it; the page area's place is worked out from it on every heartbeat.
+    this.win = window.viewport_size();
     return v_flex().size_full().relative().bg(t.background).text_color(t.foreground)
       // Pointer moves anywhere over the panel give its bounds; the page area is its bottom part.
       .on_mouse_move((e) => {
-        if (e.bounds && this.view) this.origin = { x: e.bounds.x, y: e.bounds.y + e.bounds.height - this.view.height, width: this.view.width, height: this.view.height };
+        const w = this.win;
+        if (!e.bounds || !this.view || !w) return;
+        const anchor = { right: Math.round(w.width - e.bounds.x - this.view.width), bottom: Math.round(w.height - e.bounds.y - e.bounds.height) };
+        if (anchor.right === this.anchor?.right && anchor.bottom === this.anchor?.bottom) return;
+        this.anchor = anchor;
+        try { localStorage.setItem(ANCHOR_KEY, JSON.stringify(anchor)); } catch {}
       })
       .child(toolbar)
       .when(!!banner, (el) => el.child(banner))

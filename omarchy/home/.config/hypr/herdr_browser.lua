@@ -18,4 +18,14 @@ o.window("^herdr-browser$", {
   no_dim = true,
   tag = "-default-opacity",
   opacity = "1 1",
+  -- While an agent drives, the window waits on a hidden special workspace and the panel shows its screencast,
+  -- which only flows while Hyprland keeps rendering the window.
+  render_unfocused = true,
+})
+
+-- Hidden windows render at most this often; the panel's frames go out at up to 30 fps.
+hl.config({
+  misc = {
+    render_unfocused_fps = 30,
+  },
 })
