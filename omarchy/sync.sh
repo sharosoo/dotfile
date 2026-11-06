@@ -36,6 +36,8 @@ COPIED=(
 )
 COPIED_DIRS=(
   .config/herdr-app/mods/artifacts
+  .config/herdr-app/mods/browser
+  .config/herdr-app/mods/git
   .config/herdr-app/mods/my-tabs
   .config/herdr-app/mods/omp-usage
   .config/herdr-app/mods/slack
