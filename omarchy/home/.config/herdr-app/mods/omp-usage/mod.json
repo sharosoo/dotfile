@@ -1,0 +1,1 @@
+{ "place": "none", "title": "omp usage", "overlay": { "kind": "window", "key": "omp-usage", "keep": true, "width": 320, "height": 620 } }

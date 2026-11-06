@@ -8,8 +8,11 @@
 # replace a symlink with a plain file and silently detach it: the Omarchy shell saves
 # shell.json atomically (temp file + rename), fcitx5 does the same for profile, fisher
 # deletes and recreates fish_plugins, Zed rewrites settings.json from its settings UI, and
-# herdr's config.toml is treated the same way to be safe. Run `./sync.sh capture` after
-# changing any of them.
+# herdr's config.toml is treated the same way to be safe. herdr-app rewrites its layout file
+# whenever a panel is shown, hidden or switched, so layouts and keys.json are copied too. Its
+# mods are copied whole (COPIED_DIRS): herdr-app refuses imports and icons whose real path
+# leaves the mod folder, so neither linked files nor a linked folder load. Run
+# `./sync.sh capture` after changing any of them.
 #
 # Third-party bar plugins are vendored under vendor/plugins/<id>/ with their source in
 # vendor/plugins.lock (`id url commit`). They stay real git checkouts in $HOME so
@@ -25,13 +28,23 @@ COPIED=(
   .config/omarchy/shell.json
   .config/fcitx5/profile
   .config/herdr/config.toml
+  .config/herdr-core/config.toml
+  .config/herdr-app/layouts/my-main.json
+  .config/herdr-app/keys.json
   .config/fish/fish_plugins
   .config/zed/settings.json
+)
+COPIED_DIRS=(
+  .config/herdr-app/mods/artifacts
+  .config/herdr-app/mods/my-tabs
+  .config/herdr-app/mods/omp-usage
+  .config/herdr-app/mods/slack
 )
 
 is_copied() {
   local rel=$1 c
   for c in "${COPIED[@]}"; do [[ $rel == "$c" ]] && return 0; done
+  for c in "${COPIED_DIRS[@]}"; do [[ $rel == "$c"/* ]] && return 0; done
   return 1
 }
 
@@ -101,13 +114,19 @@ case ${1:-link} in
 link)
   while IFS= read -r -d '' f; do
     install_file "${f#"$ROOT"/}"
-  done < <(find "$ROOT" -type f -print0)
+  done < <(find "$ROOT" -type f -not -path '*/node_modules/*' -print0)
   install_plugins
+  # The Artifacts panel's renderer runs from its real path here, so its packages live here (gitignored).
+  (cd "$ROOT/.local/share/herdr-artifacts-render" && bun install --frozen-lockfile --silent) && echo "bun install herdr-artifacts-render"
   ;;
 capture)
   for rel in "${COPIED[@]}"; do
     cp "$HOME/$rel" "$ROOT/$rel"
     echo "capture $rel"
+  done
+  for rel in "${COPIED_DIRS[@]}"; do
+    rsync -a --delete --exclude '*.d.ts' "$HOME/$rel/" "$ROOT/$rel/"
+    echo "capture $rel/"
   done
   capture_plugins
   ;;

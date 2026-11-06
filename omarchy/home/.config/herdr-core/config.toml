@@ -1,0 +1,2 @@
+# Login shell stays bash for Omarchy (as in Ghostty's config); herdr-core terminals open fish.
+shell = ["/usr/bin/fish"]

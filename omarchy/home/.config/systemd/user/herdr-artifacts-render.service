@@ -1,0 +1,12 @@
+[Unit]
+Description=Artifact Hub page renderer for the herdr-app Artifacts panel (127.0.0.1:47824)
+
+[Service]
+WorkingDirectory=%h/.local/share/herdr-artifacts-render
+ExecStart=/usr/bin/bun render.mjs
+Restart=on-failure
+MemoryMax=2G
+TimeoutStopSec=5
+
+[Install]
+WantedBy=default.target
