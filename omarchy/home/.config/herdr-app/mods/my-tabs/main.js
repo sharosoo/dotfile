@@ -1,6 +1,12 @@
 import { View, div, svg, image } from "gpui-kit";
-import { h_flex } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings, nextCommand } from "herdr";
+import { h_flex, v_flex } from "gpui-base";
+import { spaces, panes, run, openOverlay, closeOverlay, props, theme, window, shared, setShared, layout, settings, nextCommand } from "herdr";
+
+// Panels that get a tab-bar button only while opened from the + panels menu (or the
+// `my-tabs.<id>` command); their × closes them. Open ones are kept in shared `<id>.open`,
+// which the panel's mod also reads to stop its work while closed.
+const OPTIONAL = [{ id: "spotify", label: "Spotify", icon: "mods/spotify/music.svg" }];
+const isOpen = (id) => shared(`${id}.open`) === true;
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -14,9 +20,47 @@ function find(node, id) {
 export default class Tabs extends View {
   init(_props, cx) {
     this.pressed = null;
-    this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
+    this.isMenu = Boolean(props()?.panelsMenu);
+    try { this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}") ?? {}; } catch (_) { this.panels = {}; }
+    if (typeof this.panels !== "object" || Array.isArray(this.panels)) this.panels = {};
     // keys.json binds ctrl-shift-y to `my-tabs.usage`, which toggles the usage panel like its tab-bar button.
-    cx.spawn(async (cx) => { for (;;) { if (await nextCommand() === "usage") this.toggle("omp-usage"); cx.notify(); } });
+    if (!this.isMenu) cx.spawn(async (cx) => {
+      for (;;) {
+        const c = await nextCommand();
+        if (c === "usage") this.toggle("omp-usage");
+        else if (OPTIONAL.some((p) => p.id === c)) this.openOptional(c);
+        else if (OPTIONAL.some((p) => `close-${p.id}` === c)) this.closeOptional(c.slice(6));
+        else if (c === "panels") this.openMenu();
+        cx.notify();
+      }
+    });
+  }
+
+  openMenu() {
+    openOverlay({ mod: "my-tabs", kind: "popup", width: 200, height: 36 + OPTIONAL.length * 29, props: { panelsMenu: true } });
+  }
+
+  openOptional(id) {
+    setShared(`${id}.open`, true);
+    run("layout.select", { stack: "panel-body", child: id });
+    run("layout.show", { id: "panel" });
+  }
+
+  closeOptional(id) {
+    setShared(`${id}.open`, false);
+    const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body");
+    if (panel && !panel.hidden && body?.active === id) run("layout.hide", { id: "panel" });
+  }
+
+  // The + panels menu, drawn by this mod as a popup.
+  renderMenu(t) {
+    return v_flex().size_full().p(4).gap(1).bg(t.popover ?? t.surface).text_size(12.5)
+      .child(div().px(8).h(24).flex().items_center().text_size(11).text_color(t.dim).child("패널 열기"))
+      .children(OPTIONAL.map((p) => h_flex().id(`panel-menu-${p.id}`).h(28).px(8).gap(8).items_center().rounded(5).cursor_pointer()
+        .text_color(t.foreground).hover(s => s.bg(t.hover))
+        .on_click(() => { this.openOptional(p.id); closeOverlay(props().overlay); })
+        .child(svg(p.icon).size(14).text_color(t.muted)).child(div().flex_1().child(p.label))
+        .when(isOpen(p.id), el => el.child(svg("mods/spotify/check.svg").size(13).text_color(t.dim)))));
   }
 
   toggle(id) {
@@ -55,6 +99,7 @@ export default class Tabs extends View {
 
   render() {
     const t = theme();
+    if (this.isMenu) return this.renderMenu(t);
     const space = spaces().find(p => p.active);
     const shown = space?.tabs ?? [];
     const stop = (_e, cx) => cx.stop_propagation();
@@ -86,7 +131,8 @@ export default class Tabs extends View {
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
     // Git covers what Changes showed, so Changes stays out of the panel.
-    const enabled = [...(shared("workspace.panels") ?? ["files"]).filter((id) => id !== "changes"), "omp-usage", "artifacts", "slack", "browser", "git"];
+    const enabled = [...(shared("workspace.panels") ?? ["files"]).filter((id) => id !== "changes"), "omp-usage", "artifacts", "slack", "browser", "git",
+      ...OPTIONAL.filter((p) => isOpen(p.id)).map((p) => p.id)];
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon) => {
       const on = panel && !panel.hidden && body?.active === id;
@@ -95,6 +141,11 @@ export default class Tabs extends View {
         .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
         .on_click(() => this.toggle(id)).child(svg(icon).size(14)).child(label);
     };
+    const closableButton = (p) => panelButton(p.id, p.label, p.icon).pr(4)
+      .child(div().id(`panel-close-${p.id}`).size(16).flex().items_center().justify_center().rounded(4).text_color(t.dim)
+        .hover(s => s.bg(t.raised).text_color(t.foreground)).tooltip(`${p.label} 닫기`)
+        .on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); this.closeOptional(p.id); })
+        .child(svg("mods/pane/close.svg").size(10)));
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_mouse_up("left", () => { this.pressed = null; })
       .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
@@ -107,6 +158,8 @@ export default class Tabs extends View {
       .child(panelButton("slack", "Slack", "mods/slack/message-square.svg"))
       .child(panelButton("browser", "Browser", "mods/slack/external-link.svg"))
       .child(panelButton("git", "Git", "mods/changes/changes.svg"))
+      .children(OPTIONAL.filter((p) => isOpen(p.id)).map(closableButton))
+      .child(button("panel-add", svg("mods/workspace-chrome/plus.svg").size(14), (_e, cx) => { cx.stop_propagation(); this.openMenu(); }).tooltip("패널 열기"))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/my-tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/my-tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/my-tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));

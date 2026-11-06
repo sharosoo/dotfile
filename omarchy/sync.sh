@@ -41,6 +41,7 @@ COPIED_DIRS=(
   .config/herdr-app/mods/my-tabs
   .config/herdr-app/mods/omp-usage
   .config/herdr-app/mods/slack
+  .config/herdr-app/mods/spotify
 )
 
 is_copied() {

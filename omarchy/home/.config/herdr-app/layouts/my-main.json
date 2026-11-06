@@ -178,6 +178,16 @@
                       "content": {
                         "mod": "git"
                       }
+                    },
+                    {
+                      "id": "spotify",
+                      "type": "block",
+                      "content": {
+                        "mod": "spotify",
+                        "props": {
+                          "panel": true
+                        }
+                      }
                     }
                   ],
                   "active": "files"
@@ -210,14 +220,14 @@
     {
       "id": "slack-bg",
       "type": "block",
-      "size": {
-        "px": 0
-      },
       "content": {
         "mod": "slack",
         "props": {
           "bg": true
         }
+      },
+      "size": {
+        "px": 0
       }
     }
   ],
