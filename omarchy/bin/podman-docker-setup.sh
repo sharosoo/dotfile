@@ -7,9 +7,10 @@ set -euo pipefail
 SOCK=/run/podman/podman.sock
 DROPIN=/etc/systemd/system/podman.socket.d/group.conf
 USER_STORE="$HOME/.local/share/containers"
+getent group docker >/dev/null || sudo groupadd docker
 
-# Rootful socket readable by the docker group, not only root.
-want=$'[Socket]\nSocketGroup=docker\nSocketMode=0660'
+# Socket permissions are insufficient when boot-time tmpfiles makes its parent root-only.
+want=$'[Socket]\nExecStartPre=/usr/bin/install -d -m 0710 -o root -g docker /run/podman\nSocketGroup=docker\nSocketMode=0660'
 if [[ ! -f $DROPIN || $(sudo cat "$DROPIN") != "$want" ]]; then
   sudo install -d -m 0755 "$(dirname "$DROPIN")"
   printf '%s\n' "$want" | sudo tee "$DROPIN" >/dev/null
@@ -29,8 +30,10 @@ if [[ ! -f $PIDS || $(sudo cat "$PIDS") != "$want" ]]; then
   sudo systemctl try-restart podman.service
   echo "wrote $PIDS"
 fi
-getent group docker >/dev/null || sudo groupadd docker
 id -nG "$USER" | tr ' ' '\n' | grep -qx docker || { sudo usermod -aG docker "$USER"; echo "added $USER to docker (re-login)"; }
+# Repair a running socket without restarting the API or any containers.
+[[ ! -L /run/podman && ( ! -e /run/podman || -d /run/podman ) ]] || { echo "unexpected /run/podman path" >&2; exit 1; }
+sudo install -d -m 0710 -o root -g docker /run/podman
 sudo systemctl enable --now podman.socket
 # Dori's sandbox bridge needs the rootful daemon (FUSE); keep the rootless socket off.
 systemctl --user disable --now podman.socket 2>/dev/null || true
