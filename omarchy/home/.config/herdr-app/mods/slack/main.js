@@ -1,6 +1,7 @@
-// slack: read and answer Slack from Herdr's side panel. A list of conversations in two
-// groups (direct messages, channels), newest first; a click opens one full height with the
-// reply box at the bottom, scrolling back through its history, and emoji reactions.
+// slack: read and answer Slack from Herdr's side panel. A list of conversations grouped like
+// Slack's sidebar (Unreads/Threads/Saved, your sections, Channels, Direct messages, Apps); a
+// click opens one full height with the reply box at the bottom, scrolling back through its
+// history, threads and emoji reactions.
 //
 // Two copies of this one mod, one Slack connection:
 //   props { bg: true }     a 0 px block in the layout. It holds the only connection: Slack's
@@ -22,18 +23,20 @@
 // Pictures (image files, link previews, app cards) are drawn in the messages from copies kept
 // in data/slack/media/ (bounded, oldest shown first to go). Links open in Herdr's browser panel
 // (the herdr-browser service on 127.0.0.1:47825), or the system browser when it isn't running.
-// The list's own sections, like Slack's sidebar sections, are kept here only.
+// Your own sidebar sections, rules included, are in data/slack/sections.json (README.md).
 import { View, div, svg, image } from "gpui-kit";
 import * as fs from "fs/promises";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { WebSocket } from "websocket";
 import EMOJI_NAMES from "./emoji-map.js";
 import { call, AUTH_ERRORS, missingScopes, newWizard, renderSetup, runCheck, saveTokens, removeTokens, button, lock } from "./setup.js";
-import { theme, settings, props as given, appHome, readTextFile, notify, shared, setShared, nextCommand, exec, home, window as appWindow, playSound, run, openOverlay, closeOverlay } from "herdr";
+import { theme, settings, props as given, appHome, readTextFile, writeTextFile, notify, shared, setShared, nextCommand, exec, home, window as appWindow, playSound, run, openOverlay, closeOverlay } from "herdr";
 
 const NAME = "slack";
 const ICON = (name) => `mods/${NAME}/${name}.svg`;
 const STATE = "slack.state", CMD = "slack.cmd", UNREAD = "slack.unread", PEOPLE = "slack.people";
+// What the panel shows or is about to: { n, items: [{ pic } | { face }] }, most wanted first.
+const WANT = "slack.want";
 const HYDRATE_DAYS = 60; // a conversation last heard from longer ago than this is not looked at again
 const HYDRATE_MS = 1500; // between those calls: Slack allows about 50 a minute
 const HISTORY = 40;
@@ -50,15 +53,97 @@ const EMOJI = {
 };
 const QUICK = ["+1", "heart", "joy", "tada", "eyes", "white_check_mark", "pray", "fire"];
 const emoji = (name) => { const n = String(name).split("::")[0]; return EMOJI_NAMES[n] ?? EMOJI[n] ?? `:${n}:`; };
-// Text as Slack writes it, made readable: :white_check_mark: → ✅ (a workspace's own emoji stay
-// as :name:), and *bold* / _italic_ / ~strike~ markers dropped, since a line here is one style.
-const pretty = (x) => x
-  .replace(/:([a-z0-9_+'-]+)(?:::skin-tone-\d)?:/g, (all, n) => EMOJI_NAMES[n] ?? EMOJI[n] ?? all)
+// Names and section titles: only :white_check_mark: → ✅ (a workspace's own emoji stay :name:).
+const emojiText = (x) => x.replace(/:([a-z0-9_+'-]+)(?:::skin-tone-\d)?:/g, (all, n) => EMOJI_NAMES[n] ?? EMOJI[n] ?? all);
+// Text as Slack writes it, made readable: emoji as characters, and *bold* / _italic_ / ~strike~
+// markers dropped, since a line here is one style.
+const pretty = (x) => emojiText(x)
   .replace(/(^|[\s(])\*([^*\n]+)\*(?=$|[\s).,:;!?-])/g, "$1$2")
   .replace(/(^|[\s(])_([^_\n]+)_(?=$|[\s).,:;!?-])/g, "$1$2")
   .replace(/(^|[\s(])~([^~\n]+)~(?=$|[\s).,:;!?-])/g, "$1$2");
 
 const dir = () => `${appHome().replace(/\\/g, "/")}/data/${NAME}`;
+const SECTIONS = () => `${dir()}/sections.json`;
+const secId = (name) => `s${hashOf(name).toString(36)}`;
+// A conversation as sections.json may name it: "C0123", "general" or "#general", any case.
+const refKey = (x) => String(x).trim().replace(/^#/, "").toLowerCase();
+const RULE_TYPES = new Set(["public", "private", "dm", "group", "app"]);
+// "gpai_dev_*|*deploy*": * any run, ? one character, | or; the whole name, any case. Only these
+// three are special and every other character is literal, so no pattern can make a slow
+// regular expression.
+function globOf(g) {
+  const alts = String(g).split("|").map((s) => s.trim()).filter(Boolean).slice(0, 20);
+  if (!alts.length) return null;
+  return new RegExp(`^(?:${alts.map((a) => a.replace(/\*+/g, "*").replace(/[.+^${}()[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")).join("|")})$`, "i");
+}
+const RULE_KEYS = new Set(["name", "type", "muted"]);
+// What's wrong with a rule as written, or null. A rule is a name pattern, or { name, type,
+// muted } with every given part having to hold.
+function ruleProblem(r) {
+  const pattern = (v) => typeof v === "string" && v.length <= 200 && v.split("|").some((s) => s.trim());
+  if (typeof r === "string") return pattern(r) ? null : "a name pattern must be 1–200 characters";
+  if (!r || typeof r !== "object" || Array.isArray(r)) return "must be a name pattern or { name, type, muted }";
+  for (const k of Object.keys(r)) if (!RULE_KEYS.has(k)) return k === "regex" ? `"regex" isn't supported: use "name" with * ? |` : `has an unknown key "${k}"`;
+  if (r.name !== undefined && !pattern(r.name)) return `"name" must be a pattern of 1–200 characters`;
+  if (r.type !== undefined && (typeof r.type !== "string" || !r.type.split("|").every((s) => RULE_TYPES.has(s.trim())))) return `"type" must be public, private, dm, group or app (several joined by |)`;
+  if (r.muted !== undefined && typeof r.muted !== "boolean") return `"muted" must be true or false`;
+  if (r.name === undefined && r.type === undefined && r.muted === undefined) return "is empty and would take every conversation";
+  return null;
+}
+// A rule that passed ruleProblem, ready to test names with.
+function ruleOf(r) {
+  if (typeof r === "string") r = { name: r };
+  return { name: r.name !== undefined ? globOf(r.name) : null, type: r.type !== undefined ? new Set(r.type.split("|").map((s) => s.trim())) : null, muted: r.muted ?? null };
+}
+// What's wrong with sections.json as { where, problem, name } (name: the section's, to find its
+// line by), or null. The file is taken whole or not at all.
+function sectionsProblem(doc) {
+  const isObj = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
+  const refs = (v) => Array.isArray(v) && v.every((x) => typeof x === "string");
+  if (!isObj(doc)) return { where: "the file", problem: "must be a JSON object" };
+  const entry = (e, at) => {
+    if (!isObj(e)) return { where: at || "the file", problem: "must be an object" };
+    if (e.sections !== undefined && !Array.isArray(e.sections)) return { where: `${at}sections`, problem: "must be a list" };
+    if (e.unsectioned !== undefined && !refs(e.unsectioned)) return { where: `${at}unsectioned`, problem: "must be a list of channel names or ids" };
+    const seen = new Set();
+    for (const [i, s] of (e.sections ?? []).entries()) {
+      const where = `${at}sections[${i}]`;
+      if (!isObj(s)) return { where, problem: "must be an object" };
+      const name = typeof s.name === "string" ? s.name.trim() : "";
+      const bad = (field, problem) => ({ where: `${where}.${field}`, problem, name });
+      if (!name) return bad("name", "is required");
+      if (name.length > 80) return bad("name", "is longer than 80 characters");
+      if (seen.has(name)) return bad("name", "is used by another section");
+      seen.add(name);
+      if (s.emoji != null && typeof s.emoji !== "string") return bad("emoji", "must be text");
+      if (s.collapsed !== undefined && typeof s.collapsed !== "boolean") return bad("collapsed", "must be true or false");
+      if (s.channels !== undefined && !refs(s.channels)) return bad("channels", "must be a list of channel names or ids");
+      if (s.rules !== undefined && !Array.isArray(s.rules)) return bad("rules", "must be a list");
+      for (const [j, r] of (s.rules ?? []).entries()) { const p = ruleProblem(r); if (p) return bad(`rules[${j}]`, p); }
+    }
+    return null;
+  };
+  if (doc.teams !== undefined) {
+    if (!isObj(doc.teams)) return { where: "teams", problem: "must be an object keyed by team id" };
+    for (const [id, e] of Object.entries(doc.teams)) { const p = entry(e, `teams.${id}.`); if (p) return p; }
+  }
+  return entry(doc, "");
+}
+// sections.json as text → the document, or an Error saying where it's wrong (with the line when
+// it can be found).
+function parseSections(text) {
+  const lineAt = (i) => (i >= 0 ? text.slice(0, i).split("\n").length : null);
+  const say = (line, what) => new Error(`sections.json${line ? ` line ${line}` : ""}: ${what}`);
+  let doc;
+  try { doc = JSON.parse(text); } catch (e) {
+    const msg = String(e?.message ?? e), line = /line (\d+)/.exec(msg)?.[1] ?? lineAt(Number(/position (\d+)/.exec(msg)?.[1] ?? -1));
+    throw say(line, `not valid JSON (${msg.replace(/^JSON\.parse: |^JSON Parse error: /, "").replace(/ in JSON at position \d+.*$| at line \d+.*$/, "")})`);
+  }
+  const p = sectionsProblem(doc);
+  if (!p) return doc;
+  const near = p.name ? text.indexOf(JSON.stringify(p.name)) : -1;
+  throw say(lineAt(near), `${p.where} ${p.problem}`);
+}
 const sleep = (cx, ms) => new Promise((done) => cx.timer.after(ms, () => done()));
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -86,6 +171,48 @@ const MENTION = {
   light: { fg: "#1264a3", bg: "#1d9bd11a", meFg: "#1d1c1d", meBg: "#f2c74466" },
 };
 const hashOf = (uid) => { let h = 0; for (const ch of String(uid)) h = (h * 31 + ch.codePointAt(0)) >>> 0; return h; };
+// SHA-256 as hex, for cache file names and folders: a 32-bit hash lets two addresses share a
+// file. Kept synchronous (pic() names files as messages are read) and in plain JS (the mod
+// runtime has no crypto API).
+const SHA_K = [
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+];
+function sha256(text) {
+  const bytes = [];
+  for (const ch of String(text)) {
+    const c = ch.codePointAt(0);
+    if (c < 0x80) bytes.push(c);
+    else if (c < 0x800) bytes.push(0xc0 | (c >> 6), 0x80 | (c & 63));
+    else if (c < 0x10000) bytes.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+    else bytes.push(0xf0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+  }
+  const bits = bytes.length * 8;
+  bytes.push(0x80);
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  for (let i = 7; i >= 0; i--) bytes.push(i >= 4 ? 0 : (bits >>> (i * 8)) & 255);
+  const H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19], W = new Array(64);
+  const rot = (x, n) => (x >>> n) | (x << (32 - n));
+  for (let o = 0; o < bytes.length; o += 64) {
+    for (let i = 0; i < 16; i++) W[i] = (bytes[o + 4 * i] << 24) | (bytes[o + 4 * i + 1] << 16) | (bytes[o + 4 * i + 2] << 8) | bytes[o + 4 * i + 3];
+    for (let i = 16; i < 64; i++) {
+      const s0 = rot(W[i - 15], 7) ^ rot(W[i - 15], 18) ^ (W[i - 15] >>> 3), s1 = rot(W[i - 2], 17) ^ rot(W[i - 2], 19) ^ (W[i - 2] >>> 10);
+      W[i] = (W[i - 16] + s0 + W[i - 7] + s1) | 0;
+    }
+    let [a, b, c, d, e, f, g, h] = H;
+    for (let i = 0; i < 64; i++) {
+      const t1 = (h + (rot(e, 6) ^ rot(e, 11) ^ rot(e, 25)) + ((e & f) ^ (~e & g)) + SHA_K[i] + W[i]) | 0;
+      const t2 = ((rot(a, 2) ^ rot(a, 13) ^ rot(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    [a, b, c, d, e, f, g, h].forEach((v, i) => { H[i] = (H[i] + v) | 0; });
+  }
+  return H.map((v) => (v >>> 0).toString(16).padStart(8, "0")).join("");
+}
+// Cache names: the first 128 bits of SHA-256.
+const digest = (text) => sha256(text).slice(0, 32);
 function chatColors(messages, dark) {
   const set = dark ? NAME_COLORS.dark : NAME_COLORS.light, used = new Set(), out = new Map();
   for (const m of messages) {
@@ -100,7 +227,7 @@ function chatColors(messages, dark) {
 }
 function faceFile(uid, url) {
   const ext = (String(url).match(/\.(png|jpe?g|gif)(?=\?|$)/i)?.[0] ?? ".jpg").toLowerCase();
-  return `${uid}-${hashOf(url).toString(36)}${ext}`;
+  return `${uid}-${digest(url)}${ext}`;
 }
 function sizeOf(n) {
   if (!n) return "";
@@ -117,20 +244,27 @@ function ago(ms) {
 // data/slack/media/, at most MEDIA_COUNT files and MEDIA_BYTES together, least recently shown
 // going first. Only files.slack.com gets the user token; other hosts are fetched without it.
 const MEDIA_COUNT = 400, MEDIA_BYTES = 96 * 1048576, MEDIA_FILE_MAX = "10M";
+// Downloads at once: enough that a screen of pictures arrives together, few enough that the
+// one at the bottom isn't queued behind a whole channel's history.
+const FETCHERS = 3;
 // The one host that gets the user token: exactly files.slack.com over https (no user part, no
 // port, not a longer name ending in it).
 const SLACK_FILES = /^https:\/\/files\.slack\.com(?=[/?#]|$)/;
 const WEB = /^https?:\/\/[^\s/?#@\\]+(?:[/?#][^\s]*)?$/i;
 const MAILTO = /^mailto:[^\s<>"'/\\]+@[^\s<>"'/\\]+$/i;
-const MEDIA_NAME = /^[a-z0-9]+\.(?:png|jpe?g|gif|webp)$/;
+const MEDIA_NAME = /^[0-9a-f]{32}\.(?:png|jpe?g|gif|webp)$/;
 // Avatars (faceFile names) are kept the same way, in data/slack/avatars/.
-const FACE_NAME = /^[UWB][A-Z0-9]{2,20}-[a-z0-9]+\.(?:png|jpe?g|gif)$/;
+const FACE_NAME = /^[UWB][A-Z0-9]{2,20}-[0-9a-f]{32}\.(?:png|jpe?g|gif)$/;
+// Names from before the SHA-256 ones (a 32-bit hash): removed with the old owner's folder.
+const OLD_MEDIA_NAME = /^[a-z0-9]+\.(?:png|jpe?g|gif|webp)$/, OLD_FACE_NAME = /^[UWB][A-Z0-9]{2,20}-[a-z0-9]+\.(?:png|jpe?g|gif)$/;
+// Pictures asked for outright waiting at once; past this the oldest request is dropped.
+const URGENT_MAX = 50;
 const FACE_COUNT = 2000, FACE_BYTES = 50 * 1048576;
 const LEVELS = new Set(["all", "mentions", "nothing"]);
 const TILE_W = 360; // widest a picture shows in a message
 function mediaKey(url) {
   const ext = (String(url).match(/\.(png|jpe?g|gif|webp)(?=[?#]|$)/i)?.[0] ?? ".jpg").toLowerCase();
-  return `${hashOf(url).toString(36)}${String(url).length.toString(36)}${ext}`;
+  return `${digest(url)}${ext}`;
 }
 const pic = (url, w, h) => (typeof url === "string" && url.length < 2048 && url.startsWith("https://") && WEB.test(url) ? { url, key: mediaKey(url), w: Number(w) || 0, h: Number(h) || 0 } : null);
 // A picture's box in a message: its own aspect, at most `max` wide and 360 high.
@@ -180,10 +314,11 @@ const openInBrowser = (url, cx) => cx.spawn(() => browse(url));
 const plainOf = (L) => (!L ? "" : L.s ?? L.lines.map((l) => (!l ? "" : l.s ?? l.w.map((w) => w.s ?? w.label ?? `:${w.name}:`).join(" "))).join("\n"));
 
 // Slack's mrkdwn as plain text: <@U1> → @name, <#C1|general> → #general, <url|label> → label.
-function plainText(text, names) {
+// `chans` names a <#C1> sent without its name.
+function plainText(text, names, chans) {
   return String(text ?? "")
     .replace(/<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g, (_m, id) => `@${names.get(id) ?? "someone"}`)
-    .replace(/<#[A-Z0-9]+\|([^>]+)>/g, "#$1")
+    .replace(/<#([A-Z0-9]+)(?:\|([^>]*))?>/g, (_m, id, label) => `#${label || chans?.get(id)?.title || id}`)
     .replace(/<!(here|channel|everyone)[^>]*>/g, "@$1")
     .replace(/<(?:mailto:|tel:)?([^>|]+)\|([^>]+)>/g, "$2")
     .replace(/<([^>|]+)>/g, "$1")
@@ -192,7 +327,8 @@ function plainText(text, names) {
 }
 
 // The same text as parts, so links keep their address: { t: "text", s } | { t: "link", url, label }.
-function segmentsOf(text, names) {
+// `chans` names a <#C123> that comes without its name (as one typed here is sent).
+function segmentsOf(text, names, chans) {
   const decode = (x) => pretty(x.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"));
   const out = [], src = String(text ?? "");
   let at = 0;
@@ -201,7 +337,7 @@ function segmentsOf(text, names) {
     at = m.index + m[0].length;
     const [target, label] = m[1].split("|");
     if (/^@[UW]/.test(target)) out.push({ t: "mention", id: target.slice(1), label: `@${names.get(target.slice(1)) ?? label ?? "someone"}` });
-    else if (target.startsWith("#")) out.push({ t: "mention", id: target.slice(1), channel: true, label: `#${label ?? target.slice(1)}` });
+    else if (target.startsWith("#")) out.push({ t: "mention", id: target.slice(1), channel: true, label: `#${label || chans?.get(target.slice(1))?.title || target.slice(1)}` });
     else if (/^!(here|channel|everyone)/.test(target)) out.push({ t: "mention", id: "!", label: `@${target.slice(1).split("^")[0].split("|")[0]}` });
     else if (target.startsWith("!")) out.push({ t: "text", s: label ?? `@${target.slice(1).split("^")[0]}` });
     else if (/^(https?:|mailto:)/.test(target)) out.push({ t: "link", url: decode(target), label: decode(label ?? target.replace(/^mailto:/, "")) });
@@ -223,8 +359,11 @@ export default class Slack extends View {
     if (this.isBg) return this.initBg(cx);
     // A third kind of copy: a picture shown larger, as a dialog over the window (openViewer).
     if (p.viewer) { this.viewer = p.viewer; this.overlayId = p.overlay ?? null; return; }
+    // Or someone's card, as a popup (openProfile).
+    if (p.profile) { this.profileUid = p.profile; this.overlayId = p.overlay ?? null; return; }
     // The panel: its own inputs, and the last command it waits on.
     this.filter = InputState.new();
+    cx.timer.every(100, () => this.flushWant());
     this.filterEmpty = true;
     this.filter.on("change", (_e, cx) => { this.filterEmpty = !this.filter.value(); cx.notify(); });
     this.reply = InputState.new();
@@ -259,21 +398,23 @@ export default class Slack extends View {
     this.closedGen = null;
     this.menu = false;
     this.signoutArmed = false;
-    // The list: collapsed sections, newest-first or A–Z, and the Unreads section, kept between
-    // starts; the row or section whose menu is open; a section being named.
+    // The list: collapsed built-in groups, A–Z (Slack's order) or newest first, kept between
+    // starts; the view above it (null, "unreads", "threads", "saved"); the row or section whose
+    // menu is open; a section being named or given an emoji.
     this.folded = new Set();
-    this.sortAlpha = false;
-    this.unreadsOn = true;
+    this.sortAlpha = true;
+    this.view = null;
     try { this.folded = new Set(JSON.parse(localStorage.getItem("folded") ?? "[]")); } catch (_) {}
-    try { this.sortAlpha = localStorage.getItem("sort") === "alpha"; this.unreadsOn = localStorage.getItem("unreads") !== "off"; } catch (_) {}
+    try { this.sortAlpha = localStorage.getItem("order") !== "recent"; } catch (_) {}
     this.rowMenu = null;
     this.rowHover = null;
+    this.secHover = null;
     this.secMenu = null;
-    this.secEdit = null; // { mode: "new" | "rename", sid?, move? }
+    this.secEdit = null; // { mode: "new" | "rename" | "emoji", sid?, move? }
     this.secIn = InputState.new();
     this.secIn.on("submit", (_e, cx) => this.submitSection(cx));
     this.groupCache = null;
-    this.chat = { id: null, off: 0, viewH: 0, contentH: 0, hover: null, pick: null, askedOlder: null };
+    this.chat = { id: null, off: 0, viewH: 0, contentH: 0, hover: null, pick: null, askedOlder: null, heights: {} };
     // herdr-app do slack.open-<name, _ for spaces> opens a conversation; slack.close goes back;
     // slack.thread / slack.unthread open and leave the newest thread there.
     cx.spawn(async (cx) => {
@@ -330,27 +471,41 @@ export default class Slack extends View {
     return n;
   }
 
-  // "@ra" at the end of the box: the list opens with the people that match.
+  // "@ra" or "#gp" at the end of the box: the list opens with the people or channels that match.
   findMention() {
-    const v = this.reply.value(), m = v.match(/(^|\s)@([^\s@]{0,30})$/);
-    const next = m ? { start: v.length - m[2].length - 1, q: m[2].toLowerCase() } : null;
-    if (next?.q !== this.mention?.q) this.mentionSel = 0;
+    const v = this.reply.value(), m = v.match(/(^|\s)([@#])([^\s@#]{0,40})$/);
+    const next = m ? { start: v.length - m[3].length - 1, q: m[3].toLowerCase(), kind: m[2] } : null;
+    if (next?.q !== this.mention?.q || next?.kind !== this.mention?.kind) this.mentionSel = 0;
     this.mention = next;
   }
 
-  // People for the @ list: who wrote in this conversation first, then by how well the name
-  // matches (start of the name, start of a word in it, anywhere).
+  // How well a name matches what was typed: its start, a word's start, anywhere, or its
+  // letters in order ("gdev" → "gpai_dev"); 9 is no match.
+  static matchScore(fields, q) {
+    if (!q) return 5;
+    if (fields.some((x) => x.startsWith(q))) return 1;
+    if (fields.some((x) => x.split(/[\s._-]+/).some((w) => w.startsWith(q)))) return 2;
+    if (fields.some((x) => x.includes(q))) return 3;
+    const inOrder = (x) => { let i = 0; for (const ch of x) if (ch === q[i]) i += 1; return i === q.length; };
+    return fields.some(inOrder) ? 4 : 9;
+  }
+
+  // For the @ list, people: who wrote in this conversation first, then by how well the name
+  // matches. For the # list, your channels by how well the name matches, then the most recent.
   mentionList() {
-    const q = this.mention?.q ?? "", people = shared(PEOPLE) ?? [];
+    const q = this.mention?.q ?? "";
+    if (this.mention?.kind === "#") {
+      const convs = ((this.S ?? shared(STATE))?.convs ?? []).filter((c) => (c.kind === "channel" || c.kind === "group") && c.title);
+      return convs.map((c) => [Slack.matchScore([c.title.toLowerCase()], q), c]).filter(([sc]) => sc < 9)
+        .sort((a, b) => a[0] - b[0] || (b[1].ts ?? 0) - (a[1].ts ?? 0)).slice(0, 6)
+        .map(([, c]) => ({ id: c.id, name: c.title, channel: true, private: c.kind === "group" }));
+    }
+    const people = shared(PEOPLE) ?? [];
     const o = shared(STATE)?.open, recent = new Map();
     [...(o?.messages ?? [])].reverse().forEach((m, i) => { if (!m.mine && m.uid && !recent.has(m.uid)) recent.set(m.uid, i); });
     const score = (p) => {
-      const fields = [p.name, p.real, p.handle].map((x) => String(x ?? "").toLowerCase());
-      if (!q) return recent.has(p.id) ? 0 : 5;
-      if (fields.some((x) => x.startsWith(q))) return recent.has(p.id) ? 0 : 1;
-      if (fields.some((x) => x.split(/[\s._-]+/).some((w) => w.startsWith(q)))) return 2;
-      if (fields.some((x) => x.includes(q))) return 3;
-      return 9;
+      const sc = Slack.matchScore([p.name, p.real, p.handle].map((x) => String(x ?? "").toLowerCase()), q);
+      return (sc <= 1 || !q) && recent.has(p.id) ? 0 : sc;
     };
     return people.map((p) => [score(p), p]).filter(([sc]) => sc < 9)
       .sort((a, b) => a[0] - b[0] || (recent.get(a[1].id) ?? 999) - (recent.get(b[1].id) ?? 999) || a[1].name.localeCompare(b[1].name))
@@ -359,8 +514,8 @@ export default class Slack extends View {
 
   pickMention(p, cx) {
     if (!this.mention || !p) return;
-    const v = this.reply.value(), label = `@${p.name}`, next = `${v.slice(0, this.mention.start)}${label} `;
-    this.picked.set(label, p.id);
+    const v = this.reply.value(), label = `${p.channel ? "#" : "@"}${p.name}`, next = `${v.slice(0, this.mention.start)}${label} `;
+    this.picked.set(label, p.channel ? `#${p.id}` : `@${p.id}`);
     this.mention = null;
     this.reply.set_value(next);
     this.reply.set_selected_range({ start: next.length, end: next.length });
@@ -369,9 +524,10 @@ export default class Slack extends View {
     cx.notify();
   }
 
-  // What Slack gets: picked names, and any @handle typed out in full, as <@id>.
+  // What Slack gets: picked names (and any @handle typed out in full) as <@id>, picked
+  // channels as <#id>, which Slack shows as a link to the channel.
   withMentions(text) {
-    for (const [label, id] of [...this.picked].sort((a, b) => b[0].length - a[0].length)) text = text.split(label).join(`<@${id}>`);
+    for (const [label, ref] of [...this.picked].sort((a, b) => b[0].length - a[0].length)) text = text.split(label).join(`<${ref}>`);
     const byHandle = new Map((shared(PEOPLE) ?? []).filter((p) => p.handle).map((p) => [p.handle.toLowerCase(), p.id]));
     return text.replace(/(^|\s)@([a-z0-9._-]+)/gi, (all, sp, h) => (byHandle.has(h.toLowerCase()) ? `${sp}<@${byHandle.get(h.toLowerCase())}>` : all));
   }
@@ -380,7 +536,9 @@ export default class Slack extends View {
     const S = shared(STATE), text = this.withMentions(this.reply.value().trim());
     if (!S?.open || !text || this.pending) return;
     this.mention = null;
-    this.pending = this.command({ type: "send", id: S.open.id, text, thread_ts: S.open.thread?.ts ?? null });
+    const thread = S.open.thread?.ts ?? null;
+    this.pending = this.command({ type: "send", id: S.open.id, text, thread_ts: thread, broadcast: Boolean(thread && this.alsoSend) });
+    this.alsoSend = false;
     cx.notify();
   }
 
@@ -432,6 +590,9 @@ export default class Slack extends View {
     this.users = new Map(); // id → name
     this.me = null;
     this.team = "";
+    this.teamUrl = null; // https://<workspace>.slack.com/, for links to people and channels
+    this.profiles = new Map(); // user id → { p, at }: profiles shown lately
+    this.profile = null; // the one the profile card asked for last
     this.status = "starting";
     this.error = null;
     this.open = null;
@@ -440,13 +601,12 @@ export default class Slack extends View {
     this.gen = 0;
     this.needs = null; // "app" | "user": the token setup asks for again
     this.has = { app: false, user: false };
-    this.missing = []; // the user token's missing permissions: [{ scope, what }]
+    this.missing = null; // the user token's missing permissions, [{ scope, what }]; null until checked
     // Profile pictures: Slack's address for each person (and app), and the ones downloaded
     // into data/slack/avatars/ (kept between starts), as paths image() takes.
     this.faces = new Map();
     this.avatars = {};
-    this.faceQueue = [];
-    this.faceAsked = new Set();
+    this.faceFailed = new Set();
     // The workspace's own emoji (emoji.list, needs emoji:read): name → picture address, or the
     // character of a standard emoji it is an alias of.
     this.customEmoji = new Map();
@@ -454,12 +614,17 @@ export default class Slack extends View {
     this.people = new Map();
     // Files downloaded or downloading: file id → { state: "busy" | "done" | "error", path, error }.
     this.downloads = {};
+    this.clips = {}; // file id → { state: "busy" | "done" | "error", error }: Copy image
     // Pictures shown in the open conversation: key → path for image(). mediaIndex is every
     // file kept in data/slack/media/ (key → { size, at }), saved between starts.
     this.media = {};
     this.mediaIndex = {};
-    this.mediaQueue = [];
-    this.mediaAsked = new Set();
+    // What to fetch: `want` is what the panel shows or is about to (WANT, newest first),
+    // `urgent` what was asked for outright (a larger view, a copy, a notification's face).
+    this.want = [];
+    this.urgent = new Map(); // job key → job, oldest request first
+    this.fetching = new Set();
+    this.mediaReady = false;
     this.mediaFailed = new Set();
     this.mediaIndexDirty = false;
     this.faceIndex = {};
@@ -478,16 +643,8 @@ export default class Slack extends View {
         if (MEDIA_NAME.test(k) && Number.isFinite(v?.size) && v.size >= 0 && Number.isFinite(v?.at)) this.mediaIndex[k] = { size: v.size, at: v.at };
       }
     } catch (_) {}
-    // Your own sidebar sections. Slack's sections aren't readable with an app's scopes, so
-    // these live here only: [{ id, name }] in order, and conversation id → section id.
-    this.sections = [];
-    this.placed = {};
-    try {
-      const { list, placed } = JSON.parse(localStorage.getItem("sections") ?? "{}") ?? {};
-      this.sections = (Array.isArray(list) ? list : []).filter((s) => /^s[a-z0-9]{1,24}$/.test(s?.id) && typeof s.name === "string").slice(0, 50).map((s) => ({ id: s.id, name: s.name.slice(0, 80) }));
-      const ids = new Set(this.sections.map((s) => s.id));
-      for (const [c, sid] of Object.entries(placed && typeof placed === "object" ? placed : {})) if (/^[CDG][A-Z0-9]+$/.test(c) && ids.has(sid)) this.placed[c] = sid;
-    } catch (_) {}
+    this.secQueue = Promise.resolve();
+    this.resetWorkspace();
     this.soundOn = true;
     try { this.soundOn = localStorage.getItem("sound") !== "off"; } catch (_) {}
     this.seen = {};
@@ -547,26 +704,48 @@ export default class Slack extends View {
     this.open = null;
     this.me = null;
     this.team = "";
+    this.teamUrl = null;
+    this.profiles = new Map();
+    this.profile = null;
     this.status = "starting";
     this.error = null;
     this.needs = null;
-    this.missing = [];
+    this.missing = null;
+    this.resetWorkspace();
     // Another token may be another person or workspace: nothing of the last one's stays shown.
     this.faces = new Map();
     this.avatars = {};
-    this.faceQueue = [];
-    this.faceAsked = new Set();
+    this.faceFailed = new Set();
     this.people = new Map();
     this.customEmoji = new Map();
     this.downloads = {};
+    this.clips = {};
     this.media = {};
-    this.mediaQueue = [];
-    this.mediaAsked = new Set();
+    this.urgent = new Map();
+    this.fetching = new Set();
+    this.mediaReady = false;
     this.mediaFailed = new Set();
     this.dirty = true;
     cx.spawn(async (cx) => {
       try { await this.boot(cx, gen); } catch (e) { if (gen === this.gen) this.fail(e); }
     });
+  }
+
+  // Everything tied to one workspace and person, emptied when the token changes. The sections
+  // file is read again (secText reset) once the new token says which team it is for.
+  resetWorkspace() {
+    this.secGen = (this.secGen ?? 0) + 1;
+    this.teamId = null;
+    this.secText = undefined;
+    this.sections = [];
+    this.unsectioned = [];
+    this.placed = {};
+    this.rank = {};
+    this.bots = new Set();
+    this.handles = new Map();
+    this.short = null;
+    this.counted = new Map(); // "<channel>:<thread ts>" → reply ts counted on that thread's first message
+    if (this.note?.sections) this.note = null;
   }
 
   needSetup(which, error) {
@@ -604,8 +783,11 @@ export default class Slack extends View {
     if (!who.ok) throw new Error(`Slack says ${who.error}`);
     this.me = { id: who.user_id, name: who.user };
     this.team = who.team ?? "";
+    this.teamUrl = /^https:\/\/[a-z0-9-]+\.(?:enterprise\.)?slack\.com\/$/.test(who.url ?? "") ? who.url : null;
     this.users.set(who.user_id, who.user);
-    this.owner = hashOf(`${who.team_id}:${who.user_id}`).toString(36);
+    this.owner = digest(`${who.team_id}:${who.user_id}`);
+    this.teamId = who.team_id;
+    cx.spawn((cx) => this.sectionsLoop(cx, gen));
     this.status = "loading";
     this.dirty = true;
     await this.loadConversations();
@@ -614,22 +796,85 @@ export default class Slack extends View {
     if (gen !== this.gen) return;
     for (const c of this.convs.values()) this.nameConv(c);
     setShared(PEOPLE, [...this.people.values()]);
-    this.needFace(this.me.id);
-    for (const c of this.convs.values()) if (c.kind === "im") this.needFace(c.user);
     this.dirty = true;
-    cx.spawn((cx) => this.faceLoop(cx, gen));
     cx.spawn((cx) => this.mediaLoop(cx, gen));
     cx.spawn((cx) => this.connectLoop(cx, gen));
-    cx.spawn(async () => {
-      const missing = await missingScopes(this.userToken).catch(() => []);
-      if (gen === this.gen) { this.missing = missing; this.dirty = true; }
-    });
+    cx.spawn((cx) => this.scopeLoop(cx, gen));
     cx.spawn(() => this.loadEmoji(gen));
     await this.hydrate(cx, gen);
   }
 
+  // The token's permissions, asked until Slack answers every probe (30 s, doubling to 10 min).
+  // Until then `missing` is null: Threads and Saved stay hidden and no warning shows.
+  async scopeLoop(cx, gen) {
+    if (this.scoping === gen) return;
+    this.scoping = gen;
+    try {
+      for (let wait = 30000; gen === this.gen; wait = Math.min(wait * 2, 600000)) {
+        const missing = await missingScopes(this.userToken).catch(() => null);
+        if (gen !== this.gen) return;
+        if (missing) { this.missing = missing; this.scopedAt = Date.now(); this.dirty = true; return; }
+        await sleep(cx, wait);
+      }
+    } finally {
+      if (this.scoping === gen) this.scoping = null;
+    }
+  }
+
   api(method, params, post) {
     return call(this.userToken, method, params, post);
+  }
+
+  // A person's card: users.info and users.getPresence, kept a few minutes. Their picture is
+  // fetched at once (it is what the card is for).
+  async loadProfile(uid) {
+    if (!/^[UW][A-Z0-9]{2,20}$/.test(uid ?? "")) return;
+    const kept = this.profiles.get(uid);
+    if (kept && Date.now() - kept.at < 5 * 60000) { this.profile = kept.p; this.needMedia(kept.p.pic, true); this.dirty = true; return; }
+    this.profile = { uid, loading: true };
+    this.dirty = true;
+    const fail = (e) => ({ ok: false, error: String(e?.message ?? e) });
+    const [u, pr] = await Promise.all([this.api("users.info", { user: uid }).catch(fail), this.api("users.getPresence", { user: uid }).catch(fail)]);
+    if (!u.ok) { if (this.profile?.uid === uid) { this.profile = { uid, error: `Couldn't load the profile (Slack says ${u.error}).` }; this.dirty = true; } return; }
+    const x = u.user ?? {}, f = x.profile ?? {};
+    if (f.image_48 && !this.faces.has(uid)) this.faces.set(uid, f.image_48);
+    const until = Number(f.status_expiration) * 1000 || 0;
+    const p = {
+      uid,
+      name: emojiText(f.display_name || f.real_name || x.name || "someone"),
+      real: f.real_name || "",
+      title: f.title || "",
+      status: until && until < Date.now() ? "" : `${emojiText(f.status_emoji ?? "")} ${f.status_text ?? ""}`.trim(),
+      tzLabel: x.tz_label ?? "",
+      tzOffset: Number.isFinite(x.tz_offset) ? x.tz_offset : null,
+      // Only there when the token has users:read.email.
+      email: f.email ?? "",
+      presence: pr.ok ? pr.presence : null,
+      bot: Boolean(x.is_bot), deleted: Boolean(x.deleted),
+      link: this.teamUrl ? `${this.teamUrl}team/${uid}` : null,
+      pic: this.needMedia(pic(f.image_192 ?? f.image_72, 192, 192), true),
+    };
+    this.profiles.set(uid, { p, at: Date.now() });
+    if (this.profiles.size > 300) this.profiles.delete(this.profiles.keys().next().value);
+    if (this.profile?.uid === uid) { this.profile = p; this.dirty = true; }
+  }
+
+  // The direct message with someone: the one you have, or a new one (conversations.open, which
+  // needs im:write), opened in the panel.
+  async openDm(uid) {
+    if (!/^[UW][A-Z0-9]{2,20}$/.test(uid ?? "")) return;
+    let c = [...this.convs.values()].find((x) => x.kind === "im" && x.user === uid);
+    if (!c) {
+      const j = await this.api("conversations.open", { users: uid, return_im: "true" }, true);
+      if (!j.ok) {
+        this.note = { text: j.error === "missing_scope" ? "Starting a direct message needs the im:write permission. Gear menu → Fix permissions." : `Couldn't open the direct message (Slack says ${j.error}).`, error: true, until: Date.now() + 8000 };
+        this.dirty = true;
+        return;
+      }
+      c = this.convs.get(j.channel.id) ?? this.addConv({ ...j.channel, is_im: true, user: j.channel.user ?? uid });
+      this.nameConv(c);
+    }
+    await this.openConv(c.id);
   }
 
   // The workspace's own emoji. Without emoji:read they stay :name: (the permission check in
@@ -648,6 +893,8 @@ export default class Slack extends View {
       if (v.startsWith("https://")) { if (pic(v)) out.set(name, v); } else out.set(name, v);
     }
     this.customEmoji = out;
+    // Names were worked out before the workspace's emoji were known.
+    for (const c of this.convs.values()) this.nameConv(c);
     this.dirty = true;
   }
 
@@ -699,8 +946,11 @@ export default class Slack extends View {
       const j = await this.api("users.list", { limit: "200", cursor });
       if (!j.ok) break;
       for (const u of j.members ?? []) {
-        const name = u.profile?.display_name || u.profile?.real_name || u.real_name || u.name;
+        const raw = u.profile?.display_name || u.profile?.real_name || u.real_name || u.name;
+        const name = emojiText(String(raw ?? ""));
         this.users.set(u.id, name);
+        if (u.name) this.handles.set(u.name, name);
+        if (u.is_bot || u.id === "USLACKBOT") this.bots.add(u.id);
         const url = u.profile?.image_48 || u.profile?.image_72;
         if (url) this.faces.set(u.id, url);
         if (!u.deleted && !u.is_bot && u.id !== "USLACKBOT") this.people.set(u.id, { id: u.id, name, real: u.profile?.real_name || u.real_name || "", handle: u.name ?? "" });
@@ -730,13 +980,17 @@ export default class Slack extends View {
   }
 
   nameConv(c) {
-    if (c.kind === "im") { c.title = this.users.get(c.user) ?? c.user ?? "Direct message"; return; }
-    if (c.kind === "mpim") {
+    if (c.kind === "im") c.title = this.users.get(c.user) ?? c.user ?? "Direct message";
+    // A group message without a name of its own is called after the people in it, A–Z as in
+    // Slack, with how many they are.
+    else if (c.kind === "mpim" && c.name.startsWith("mpdm-")) {
       const handles = c.name.replace(/^mpdm-/, "").replace(/-\d+$/, "").split("--").filter((h) => h && h !== this.me?.name);
-      c.title = handles.length > 3 ? `${handles.slice(0, 3).join(", ")} +${handles.length - 3}` : handles.join(", ") || "Group";
-      return;
-    }
-    c.title = c.name;
+      c.title = handles.map((h) => this.handles.get(h) ?? h).sort((a, b) => a.localeCompare(b)).join(", ") || "Group";
+      c.members = handles.length;
+    } else c.title = emojiText(c.name);
+    // A workspace emoji in a name is drawn as its picture, laid out here once.
+    const L = this.customEmoji.size && /:[^\s:]+:/.test(c.title) ? this.layout([{ t: "text", s: c.title }]) : null;
+    c.titleParts = L?.lines ? L : null;
   }
 
   // The conversations active lately get their last message and unread count, one every
@@ -798,7 +1052,7 @@ export default class Slack extends View {
   previewOf(c, m) {
     // An app's message often has no text of its own, only an attachment: its summary stands in.
     const a = m.attachments?.[0], card = a ? a.fallback || a.pretext || a.title || a.text : "";
-    const body = plainText(m.text || card, this.users).replace(/\s+/g, " ").trim() || (m.files?.length ? "[file]" : "[message]");
+    const body = plainText(m.text || card, this.users, this.convs).replace(/\s+/g, " ").trim() || (m.files?.length ? "[file]" : "[message]");
     const who = m.user === this.me.id ? "You" : this.users.get(m.user);
     return c.kind === "im" ? (m.user === this.me.id ? `You: ${body}` : body) : who ? `${who}: ${body}` : body;
   }
@@ -838,6 +1092,24 @@ export default class Slack extends View {
     }
   }
 
+  // A reply counted on its thread's first message once, whichever comes first: Slack's event or
+  // chat.postMessage's answer for one sent from here. One no newer than the last reply counted
+  // came with the history already.
+  countReply(channel, parent, ts, uid) {
+    const k = `${channel}:${parent.ts}`;
+    let got = this.counted.get(k);
+    if (!got) {
+      got = new Set();
+      this.counted.set(k, got);
+      if (this.counted.size > 200) this.counted.delete(this.counted.keys().next().value);
+    }
+    if (got.has(ts) || Number(ts) * 1000 <= (parent.lastReply ?? 0)) return;
+    got.add(ts);
+    parent.replies += 1;
+    parent.lastReply = Number(ts) * 1000;
+    if (uid && !parent.repliers.some((r) => r.id === uid)) parent.repliers = [...parent.repliers, { id: uid, name: uid === this.me.id ? "You" : this.users.get(uid) ?? "someone" }].slice(0, 4);
+  }
+
   async onEvent(ev, cx) {
     if (!ev || ev.type !== "message" || !ev.channel) return;
     // An app's message brings its icon: the toast shows it once downloaded.
@@ -848,26 +1120,23 @@ export default class Slack extends View {
     if (ev.subtype && !["thread_broadcast", "file_share", "me_message", "bot_message"].includes(ev.subtype)) return;
     let c = this.convs.get(ev.channel);
     // A reply in a thread: into the thread when it is open, a count on its first message, and
-    // a toast when it is for you. It doesn't go into the conversation itself.
-    if (ev.thread_ts && ev.thread_ts !== ev.ts && ev.subtype !== "thread_broadcast") {
+    // a toast when it is for you. Only one also sent to the conversation (thread_broadcast)
+    // goes on into it below.
+    if (ev.thread_ts && ev.thread_ts !== ev.ts) {
       if (ev.user && !this.users.has(ev.user)) await this.resolveUsers([ev.user]);
       const o = this.open?.id === ev.channel ? this.open : null;
       const parent = o?.messages.find((m) => m.ts === ev.thread_ts);
-      if (o?.thread?.ts === ev.thread_ts && !o.thread.messages.some((m) => m.ts === ev.ts)) {
-        o.thread.messages.push(this.normalize(ev));
-        if (parent) parent.replies += 1;
-      } else if (parent) parent.replies += 1;
-      if (parent) {
-        parent.lastReply = Number(ev.ts) * 1000;
-        if (ev.user && !parent.repliers.some((r) => r.id === ev.user)) parent.repliers = [...parent.repliers, { id: ev.user, name: ev.user === this.me.id ? "You" : this.users.get(ev.user) ?? "someone" }].slice(0, 4);
-      }
-      const mentioned = (ev.text ?? "").includes(`<@${this.me.id}>`) || /<!(here|channel|everyone)/.test(ev.text ?? "");
-      if (ev.user !== this.me.id && c && (mentioned || c.kind === "im" || c.kind === "mpim") && o?.thread?.ts !== ev.thread_ts && this.shouldNotify(c, mentioned)) {
-        const from = this.users.get(ev.user) ?? ev.username ?? ev.bot_profile?.name ?? "Slack";
-        this.toast(c, { thread: ev.thread_ts, title: from, where: c.kind === "im" ? "Reply in your thread" : `Thread in ${c.kind === "channel" ? "#" : ""}${c.title}`, body: plainText(ev.text, this.users).slice(0, 160) || "[file]", uid: ev.user, mention: mentioned });
-      }
+      if (o?.thread?.ts === ev.thread_ts && !o.thread.messages.some((m) => m.ts === ev.ts)) o.thread.messages.push(this.normalize(ev));
+      if (parent) this.countReply(ev.channel, parent, ev.ts, ev.user);
       this.dirty = true;
-      return;
+      if (ev.subtype !== "thread_broadcast") {
+        const mentioned = (ev.text ?? "").includes(`<@${this.me.id}>`) || /<!(here|channel|everyone)/.test(ev.text ?? "");
+        if (ev.user !== this.me.id && c && (mentioned || c.kind === "im" || c.kind === "mpim") && o?.thread?.ts !== ev.thread_ts && this.shouldNotify(c, mentioned)) {
+          const from = this.users.get(ev.user) ?? ev.username ?? ev.bot_profile?.name ?? "Slack";
+          this.toast(c, { thread: ev.thread_ts, title: from, where: c.kind === "im" ? "Reply in your thread" : `Thread in ${c.kind === "channel" ? "#" : ""}${c.title}`, body: plainText(ev.text, this.users, this.convs).slice(0, 160) || "[file]", uid: ev.user, mention: mentioned });
+        }
+        return;
+      }
     }
     if (!c) {
       const j = await this.api("conversations.info", { channel: ev.channel });
@@ -892,7 +1161,7 @@ export default class Slack extends View {
       if (mentioned) c.mention = true;
       if (this.shouldNotify(c, mentioned)) {
         const from = this.users.get(ev.user) ?? ev.username ?? ev.bot_profile?.name ?? "Slack";
-        this.toast(c, { title: from, where: c.kind === "im" ? "Direct message" : c.kind === "mpim" ? c.title : `${c.kind === "channel" ? "#" : ""}${c.title}`, body: plainText(ev.text, this.users).slice(0, 160) || "[file]", uid: ev.user ?? ev.bot_id, mention: mentioned });
+        this.toast(c, { title: from, where: c.kind === "im" ? "Direct message" : c.kind === "mpim" ? c.title : `${c.kind === "channel" ? "#" : ""}${c.title}`, body: plainText(ev.text, this.users, this.convs).slice(0, 160) || "[file]", uid: ev.user ?? ev.bot_id, mention: mentioned });
       }
     }
     this.dirty = true;
@@ -902,81 +1171,100 @@ export default class Slack extends View {
     for (const id of [...new Set(ids)].filter((i) => i && !this.users.has(i)).slice(0, 8)) {
       const j = await this.api("users.info", { user: id }).catch(() => null);
       const u = j?.ok ? j.user : null;
-      this.users.set(id, u ? u.profile?.display_name || u.real_name || u.name : "someone");
+      this.users.set(id, u ? emojiText(String(u.profile?.display_name || u.real_name || u.name)) : "someone");
+      if (u && (u.is_bot || id === "USLACKBOT")) this.bots.add(id);
       if (u?.profile?.image_48) this.faces.set(id, u.profile.image_48);
     }
   }
 
-  // Asks for a person's picture once; faceLoop downloads them one at a time with curl (on
-  // macOS, Linux and Windows 10+), skipping the ones already on disk.
-  needFace(uid) {
-    if (!uid || this.avatars[uid] || this.faceAsked.has(uid) || !this.faces.has(uid)) return;
-    this.faceAsked.add(uid);
-    this.faceQueue.push(uid);
+  // A person's picture file, from Slack's address for it; null when either part isn't what
+  // Slack gives (the file name is built from both).
+  faceName(uid) {
+    const url = this.faces.get(uid);
+    return /^[UWB][A-Z0-9]{2,20}$/.test(uid ?? "") && pic(url) ? faceFile(uid, url) : null;
   }
 
-  async faceLoop(cx, gen) {
-    const root = `${dir()}/avatars`, owner = this.owner, folder = `${root}/${owner}`, index = this.faceIndex;
-    await this.claimFolder(root, "faceOwner", FACE_NAME, index);
-    if (gen !== this.gen) return;
-    await this.reconcile(folder, FACE_NAME, index);
-    await this.prune(folder, index, null, FACE_COUNT, FACE_BYTES, (k) => this.dropFace(k));
-    this.faceIndexDirty = true;
-    while (gen === this.gen) {
-      const uid = this.faceQueue.shift();
-      if (!uid) { await sleep(cx, 400); continue; }
-      const url = this.faces.get(uid);
-      // The file name is built from these two, so both must be what Slack gives.
-      if (!/^[UWB][A-Z0-9]{2,20}$/.test(uid) || !pic(url)) continue;
-      const name = faceFile(uid, url);
-      if (index[name]) index[name].at = Date.now();
-      else {
-        const r = await exec("curl", ["-sf", "--proto", "=https", "--max-time", "20", "--max-filesize", "2M", "-o", `${folder}/${name}`, "-w", "%{size_download}", url]).catch(() => null);
-        if (gen !== this.gen) return;
-        if (!r || r.code !== 0) { await fs.unlink(`${folder}/${name}`).catch(() => {}); continue; }
-        index[name] = { size: Number(r.stdout) || 0, at: Date.now() };
-        await this.prune(folder, index, name, FACE_COUNT, FACE_BYTES, (k) => this.dropFace(k));
-      }
-      this.avatars[uid] = `data/${NAME}/avatars/${owner}/${name}`;
-      // Everyone ever shown is published with each state; past this many the oldest go.
-      const ids = Object.keys(this.avatars);
-      if (ids.length > 1500) for (const id of ids.slice(0, ids.length - 1500)) delete this.avatars[id];
-      this.faceIndexDirty = this.dirty = true;
-    }
+  // A person's picture when it is already on disk: shown now, with no request. Anything else
+  // waits until the panel shows that person, unless `now` (a notification's icon).
+  needFace(uid, now = false) {
+    if (!uid || this.avatars[uid] || !this.faces.has(uid)) return;
+    const name = this.mediaReady ? this.faceName(uid) : null;
+    if (name && this.faceIndex[name]) this.keepFace(uid, name);
+    else if (now) this.pushUrgent(`@${uid}`, { face: uid });
+  }
+
+  keepFace(uid, name) {
+    this.faceIndex[name].at = Date.now();
+    this.avatars[uid] = `data/${NAME}/avatars/${this.owner}/${name}`;
+    // Everyone ever shown is published with each state; past this many the oldest go.
+    const ids = Object.keys(this.avatars);
+    if (ids.length > 1500) for (const id of ids.slice(0, ids.length - 1500)) delete this.avatars[id];
+    this.faceIndexDirty = this.dirty = true;
   }
 
   dropFace(name) {
-    for (const [uid, path] of Object.entries(this.avatars)) if (path.endsWith(`/${name}`)) { delete this.avatars[uid]; this.faceAsked.delete(uid); }
+    for (const [uid, path] of Object.entries(this.avatars)) if (path.endsWith(`/${name}`)) delete this.avatars[uid];
   }
 
-  // A picture a message shows: queued once; mediaLoop fetches it, or finds it already kept.
-  // Returns the picture so normalize can keep it as it goes.
-  needMedia(p) {
+  // A picture a message shows. One already on disk is shown now, with no request; anything
+  // else waits until the panel scrolls near it, unless `now` (a larger view, a copy). Returns
+  // the picture so normalize can keep it as it goes.
+  needMedia(p, now = false) {
     if (!p) return null;
-    const kept = this.mediaIndex[p.key];
-    if (this.media[p.key]) { if (kept) kept.at = Date.now(); return p; }
-    if (this.mediaFailed.has(p.key) || this.mediaAsked.has(p.key)) return p;
-    this.mediaAsked.add(p.key);
-    this.mediaQueue.push(p);
-    // Scrolling far back in a busy channel shouldn't pile up work: the oldest asks go first.
-    while (this.mediaQueue.length > 200) this.mediaAsked.delete(this.mediaQueue.shift().key);
-    if (this.mediaFailed.size > 1000) this.mediaFailed.clear();
+    const kept = this.mediaReady ? this.mediaIndex[p.key] : null;
+    if (kept) {
+      kept.at = Date.now();
+      if (!this.media[p.key]) { this.media[p.key] = `data/${NAME}/media/${this.owner}/${p.key}`; this.dirty = true; }
+      this.mediaIndexDirty = true;
+    } else if (now) {
+      this.mediaFailed.delete(p.key);
+      this.pushUrgent(p.key, { pic: p });
+    }
     return p;
+  }
+
+  // Asked for again, a job moves to the back; past URGENT_MAX the oldest request is dropped.
+  pushUrgent(key, job) {
+    this.urgent.delete(key);
+    this.urgent.set(key, job);
+    if (this.urgent.size > URGENT_MAX) this.urgent.delete(this.urgent.keys().next().value);
+  }
+
+  // The panel's WANT, checked again here: each picture's key is worked out from its address
+  // (the panel's is not trusted to name a file) and each face must be a known person.
+  takeWant(w) {
+    const out = [];
+    for (const it of Array.isArray(w?.items) ? w.items.slice(0, 300) : []) {
+      if (typeof it?.face === "string") { if (this.faces.has(it.face)) out.push({ face: it.face }); continue; }
+      const p = pic(it?.pic?.url, it?.pic?.w, it?.pic?.h);
+      if (p) out.push({ pic: p });
+    }
+    this.want = out;
+  }
+
+  // The first job that still needs doing: what was asked for outright, then the panel's list in
+  // its order. A conversation left behind is no longer in that list, so its pictures stop.
+  nextFetch() {
+    const todo = (j) => (j.pic ? !this.media[j.pic.key] && !this.mediaFailed.has(j.pic.key) && !this.fetching.has(j.pic.key)
+      : !this.avatars[j.face] && !this.faceFailed.has(j.face) && !this.fetching.has(`@${j.face}`));
+    for (const [k, j] of this.urgent) { this.urgent.delete(k); if (todo(j)) return j; }
+    return this.want.find(todo) ?? null;
   }
 
   // Pictures and avatars are kept per workspace and person, in data/slack/<kind>/<owner>/.
   // When the token is someone else's, the last one's files (and those from before the folders)
   // are removed rather than shown, and the index starts empty. Only names this mod makes
-  // (nameRe) are ever deleted.
-  async claimFolder(root, key, nameRe, index) {
+  // (nameRe, or oldRe: its names before SHA-256) are ever deleted.
+  async claimFolder(root, key, nameRe, oldRe, index) {
+    const ours = (n) => nameRe.test(n) || oldRe.test(n);
     let was = null;
     try { was = localStorage.getItem(key); } catch (_) {}
     if (was !== this.owner) {
       for (const k of Object.keys(index)) delete index[k];
       for (const n of await fs.readdir(root).catch(() => [])) {
-        if (nameRe.test(n)) await fs.unlink(`${root}/${n}`).catch(() => {});
+        if (ours(n)) await fs.unlink(`${root}/${n}`).catch(() => {});
         else if (/^[a-z0-9]+$/.test(n) && n !== this.owner) {
-          for (const m of await fs.readdir(`${root}/${n}`).catch(() => [])) if (nameRe.test(m)) await fs.unlink(`${root}/${n}/${m}`).catch(() => {});
+          for (const m of await fs.readdir(`${root}/${n}`).catch(() => [])) if (ours(m)) await fs.unlink(`${root}/${n}/${m}`).catch(() => {});
           await fs.rmdir(`${root}/${n}`).catch(() => {});
         }
       }
@@ -985,11 +1273,25 @@ export default class Slack extends View {
     await fs.mkdir(`${root}/${this.owner}`, { recursive: true }).catch(() => {});
   }
 
-  // A file the index doesn't know is what an interrupted download left; an entry without its
-  // file was removed by hand.
+  // The folder holds only what the index knows. Anything else goes: a name this mod doesn't
+  // make now (an older hash, a stray file), or one an interrupted download left. Folders are
+  // left alone, and unlink removes a link itself, never what it points at. An index entry
+  // without its file was removed by hand.
   async reconcile(folder, nameRe, index) {
-    const onDisk = new Set((await fs.readdir(folder).catch(() => [])).filter((n) => nameRe.test(n)));
-    for (const name of onDisk) if (!index[name]) await fs.unlink(`${folder}/${name}`).catch(() => {});
+    const onDisk = new Set();
+    for (const e of await fs.readdir(folder, { withFileTypes: true }).catch(() => [])) {
+      // The runtime refuses to unlink a link pointing out of its folders: `rm` removes the link
+      // itself (never what it points at, and no folder without -r). One entry failing doesn't
+      // stop the rest.
+      const path = `${folder}/${e.name}`;
+      try {
+        if (e.isDirectory()) continue;
+        if (nameRe.test(e.name) && index[e.name]) { onDisk.add(e.name); continue; }
+        await fs.unlink(path);
+      } catch (_) {
+        if (appWindow().platform !== "windows") await exec("rm", ["-f", "--", path]).catch(() => null);
+      }
+    }
     for (const key of Object.keys(index)) if (!onDisk.has(key)) delete index[key];
   }
 
@@ -1010,39 +1312,72 @@ export default class Slack extends View {
     }
   }
 
+  // Both folders are checked first (owner, stray files, bounds); after that a picture already
+  // kept is shown the moment it is named, and FETCHERS workers download the rest in the order
+  // nextFetch gives, one request each at a time.
   async mediaLoop(cx, gen) {
-    const root = `${dir()}/media`, owner = this.owner, folder = `${root}/${owner}`, index = this.mediaIndex;
-    await this.claimFolder(root, "mediaOwner", MEDIA_NAME, index);
+    const owner = this.owner, mediaFolder = `${dir()}/media/${owner}`, faceFolder = `${dir()}/avatars/${owner}`;
+    await this.claimFolder(`${dir()}/media`, "mediaOwner", MEDIA_NAME, OLD_MEDIA_NAME, this.mediaIndex);
+    await this.claimFolder(`${dir()}/avatars`, "faceOwner", FACE_NAME, OLD_FACE_NAME, this.faceIndex);
     if (gen !== this.gen) return;
-    await this.reconcile(folder, MEDIA_NAME, index);
-    const drop = (k) => { delete this.media[k]; };
-    await this.prune(folder, index, null, MEDIA_COUNT, MEDIA_BYTES, drop);
-    this.mediaIndexDirty = true;
+    await this.reconcile(mediaFolder, MEDIA_NAME, this.mediaIndex);
+    await this.reconcile(faceFolder, FACE_NAME, this.faceIndex);
+    await this.prune(mediaFolder, this.mediaIndex, null, MEDIA_COUNT, MEDIA_BYTES, (k) => { delete this.media[k]; });
+    await this.prune(faceFolder, this.faceIndex, null, FACE_COUNT, FACE_BYTES, (k) => this.dropFace(k));
+    if (gen !== this.gen) return;
+    this.mediaIndexDirty = this.faceIndexDirty = true;
+    this.mediaReady = true;
+    this.needFace(this.me.id);
+    for (const c of this.convs.values()) if (c.kind === "im") this.needFace(c.user);
+    for (let i = 0; i < FETCHERS; i++) cx.spawn((cx) => this.fetchLoop(cx, gen));
+  }
+
+  async fetchLoop(cx, gen) {
     while (gen === this.gen) {
-      const p = this.mediaQueue.shift();
-      if (!p) { await sleep(cx, 300); continue; }
-      this.mediaAsked.delete(p.key);
-      const path = `data/${NAME}/media/${owner}/${p.key}`, file = `${folder}/${p.key}`;
-      if (index[p.key]) {
-        index[p.key].at = Date.now();
-        this.media[p.key] = path;
-        this.mediaIndexDirty = this.dirty = true;
-        continue;
-      }
-      const r = await this.slackCurl(gen, p.url, ["-sf", "--proto", "=https", "--max-time", "20", "--max-filesize", MEDIA_FILE_MAX, "-o", file], "%{size_download}\n%{content_type}");
-      if (gen !== this.gen) return;
-      const [bytes = "0", type = ""] = r?.rest ?? [];
-      // Slack answers a file this token may not see with its sign-in page, not an error.
-      if (!r || r.code !== 0 || !/^image\//.test(type)) {
-        await fs.unlink(file).catch(() => {});
-        this.mediaFailed.add(p.key);
-        continue;
-      }
-      index[p.key] = { size: Number(bytes) || 0, at: Date.now() };
-      this.media[p.key] = path;
-      await this.prune(folder, index, p.key, MEDIA_COUNT, MEDIA_BYTES, drop);
-      this.mediaIndexDirty = this.dirty = true;
+      const job = this.nextFetch();
+      if (!job) { await sleep(cx, 150); continue; }
+      const id = job.pic ? job.pic.key : `@${job.face}`;
+      this.fetching.add(id);
+      try { await (job.pic ? this.fetchPic(gen, job.pic) : this.fetchFace(gen, job.face)); } finally { this.fetching.delete(id); }
     }
+  }
+
+  // Prunes run one after another: two at once would each count files the other is removing.
+  pruneOnce(...args) {
+    this.pruning = (this.pruning ?? Promise.resolve()).then(() => this.prune(...args)).catch(() => {});
+    return this.pruning;
+  }
+
+  async fetchPic(gen, p) {
+    const owner = this.owner, index = this.mediaIndex, folder = `${dir()}/media/${owner}`, file = `${folder}/${p.key}`;
+    if (index[p.key]) { this.needMedia(p); return; }
+    const r = await this.slackCurl(gen, p.url, ["-sf", "--proto", "=https", "--max-time", "20", "--max-filesize", MEDIA_FILE_MAX, "-o", file], "%{size_download}\n%{content_type}");
+    if (gen !== this.gen) return;
+    const [bytes = "0", type = ""] = r?.rest ?? [];
+    // Slack answers a file this token may not see with its sign-in page, not an error.
+    if (!r || r.code !== 0 || !/^image\//.test(type)) {
+      await fs.unlink(file).catch(() => {});
+      this.mediaFailed.add(p.key);
+      if (this.mediaFailed.size > 1000) this.mediaFailed.clear();
+      return;
+    }
+    index[p.key] = { size: Number(bytes) || 0, at: Date.now() };
+    this.needMedia(p);
+    await this.pruneOnce(folder, index, p.key, MEDIA_COUNT, MEDIA_BYTES, (k) => { delete this.media[k]; });
+  }
+
+  async fetchFace(gen, uid) {
+    const name = this.faceName(uid), folder = `${dir()}/avatars/${this.owner}`;
+    if (!name) { this.faceFailed.add(uid); return; }
+    if (!this.faceIndex[name]) {
+      const r = await exec("curl", ["-sf", "--proto", "=https", "--max-time", "20", "--max-filesize", "2M", "-o", `${folder}/${name}`, "-w", "%{size_download}", this.faces.get(uid)]).catch(() => null);
+      if (gen !== this.gen) return;
+      if (!r || r.code !== 0) { await fs.unlink(`${folder}/${name}`).catch(() => {}); this.faceFailed.add(uid); return; }
+      this.faceIndex[name] = { size: Number(r.stdout) || 0, at: Date.now() };
+      await this.pruneOnce(folder, this.faceIndex, name, FACE_COUNT, FACE_BYTES, (k) => this.dropFace(k));
+      if (gen !== this.gen || !this.faceIndex[name]) return;
+    }
+    this.keepFace(uid, name);
   }
 
   // The token reaches curl in a header file only you can read, made for this one request (two
@@ -1133,6 +1468,54 @@ export default class Slack extends View {
     }
   }
 
+  // A picture onto the system clipboard as PNG: the full-size copy, fetched first through the
+  // same signed-in download the message pictures use, else the thumbnail. The app's clipboard
+  // takes text only, so the platform's own tool does it, each path handed over as an argument
+  // (the shell lines below are fixed text, never built from a path).
+  async copyImage(cx, f) {
+    const id = f?.id;
+    if (typeof id !== "string" || !id) return;
+    const set = (state, error = null) => { this.clips = { ...this.clips, [id]: { state, error } }; this.dirty = true; };
+    set("busy");
+    try {
+      const os = appWindow().platform;
+      if (os === "windows") throw new Error("Copying pictures isn't supported on Windows: use Download.");
+      let src = null;
+      for (const want of [f.full, f.big, f.thumb]) {
+        // Its key is worked out again here: the panel's is not trusted to name a file.
+        const p = want && pic(want.url, want.w, want.h);
+        if (!p) continue;
+        if (!this.media[p.key]) this.needMedia(p, true);
+        for (let i = 0; i < 120 && !this.media[p.key] && !this.mediaFailed.has(p.key); i++) await sleep(cx, 250);
+        if (this.media[p.key]) { src = `${appHome().replace(/\\/g, "/")}/${this.media[p.key]}`; break; }
+      }
+      if (!src) throw new Error("The picture couldn't be downloaded.");
+      const head = await fs.readFile(src).then((b) => b.subarray(0, 4)).catch(() => null);
+      const isPng = Boolean(head) && head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47;
+      let file = src;
+      if (!isPng) {
+        file = `${dir()}/.clipboard.png`;
+        // [0]: a GIF's first frame.
+        let made = os === "macos" ? await exec("sips", ["-s", "format", "png", src, "--out", file]).catch(() => null)
+          : await exec("magick", [`${src}[0]`, `png:${file}`]).catch(() => null);
+        if (os !== "macos" && made?.code !== 0) made = await exec("convert", [`${src}[0]`, `png:${file}`]).catch(() => null);
+        if (made?.code !== 0) throw new Error(os === "macos" ? "Couldn't make a PNG of it." : "Couldn't make a PNG of it: ImageMagick (magick) is needed.");
+      }
+      // wl-copy and xclip stay running to serve the clipboard: their output goes to /dev/null so
+      // exec isn't left waiting on them.
+      const r = os === "macos"
+        ? await exec("osascript", ["-e", "on run argv", "-e", "set the clipboard to (read (POSIX file (item 1 of argv)) as «class PNGf»)", "-e", "end run", file])
+        : await exec("sh", ["-c", 'if [ -n "$WAYLAND_DISPLAY" ] && command -v wl-copy >/dev/null; then wl-copy --type image/png <"$1"; elif command -v xclip >/dev/null; then xclip -selection clipboard -t image/png -i "$1"; else exit 3; fi >/dev/null 2>&1', "sh", file]);
+      if (r.code === 3) throw new Error("Needs wl-copy (Wayland) or xclip (X11).");
+      if (r.code !== 0) throw new Error(`The clipboard tool failed (${r.code}).`);
+      set("done");
+      await sleep(cx, 2500);
+      if (this.clips[id]?.state === "done") { const { [id]: _, ...rest } = this.clips; this.clips = rest; this.dirty = true; }
+    } catch (e) {
+      set("error", String(e?.message ?? e));
+    }
+  }
+
   // Whether a message makes a toast and a sound. A direct message counts as a mention.
   shouldNotify(c, mentioned) {
     if (Date.now() < this.pauseUntil) return false;
@@ -1146,30 +1529,235 @@ export default class Slack extends View {
     try { localStorage.setItem("prefs", JSON.stringify(this.prefs)); } catch (_) {}
   }
 
-  // Your sections: new (optionally moving a conversation in), rename, delete (its conversations
-  // go back to their usual group), move a conversation (sid null: out of any section), and
-  // order (dir -1 / 1).
-  editSections({ op, sid, name, id, dir }) {
-    const clean = String(name ?? "").trim().slice(0, 40);
-    if (id != null && !this.convs.has(id)) id = null;
-    if (op === "new" && clean && this.sections.length < 50) {
-      const s = { id: `s${Date.now().toString(36)}`, name: clean };
-      this.sections = [...this.sections, s];
-      if (id) this.placed[id] = s.id;
-    } else if (op === "rename" && clean) this.sections = this.sections.map((s) => (s.id === sid ? { ...s, name: clean } : s));
-    else if (op === "delete") {
-      this.sections = this.sections.filter((s) => s.id !== sid);
-      for (const [cid, at] of Object.entries(this.placed)) if (at === sid) delete this.placed[cid];
-    } else if (op === "move" && id) {
-      if (sid && this.sections.some((s) => s.id === sid)) this.placed[id] = sid; else delete this.placed[id];
-    } else if (op === "order") {
-      const i = this.sections.findIndex((s) => s.id === sid), j = i + (dir < 0 ? -1 : 1);
-      if (i < 0 || j < 0 || j >= this.sections.length) return;
-      const list = [...this.sections];
-      [list[i], list[j]] = [list[j], list[i]];
-      this.sections = list;
-    } else return;
-    try { localStorage.setItem("sections", JSON.stringify({ list: this.sections, placed: this.placed })); } catch (_) {}
+  // ── sections: data/slack/sections.json ─────────────────────────────────────────────────
+  // Read every 2 s and taken in only when its text changed, so a hand edit (or a file copied
+  // from another machine) shows at once; an edit made in the panel writes the same file.
+  async sectionsLoop(cx, gen) {
+    while (gen === this.gen) {
+      let text;
+      // readTextFile gives null for a missing file (no sections) and throws for anything else:
+      // then the last good sections stay, with a note, and the next good read is taken again.
+      try { text = await readTextFile(SECTIONS()); } catch (e) {
+        this.secText = undefined;
+        if (!this.note?.sections) { this.note = { text: `sections.json can't be read (${e?.message ?? e}). Keeping the sections as they were.`, error: true, until: Infinity, sections: true }; this.dirty = true; }
+        await sleep(cx, 2000);
+        continue;
+      }
+      if (gen !== this.gen) return;
+      if (text !== this.secText) {
+        this.secText = text;
+        if (text == null) { this.takeSections(null); await this.migrateSections(); }
+        else {
+          // A broken file (often one half typed in an editor) leaves the last good sections in
+          // place, with a note that stays until the file reads again.
+          try { this.takeSections(parseSections(text)); } catch (e) {
+            this.note = { text: `${e.message}. Keeping the sections as they were.`, error: true, until: Infinity, sections: true };
+            this.dirty = true;
+          }
+        }
+      }
+      await sleep(cx, 2000);
+    }
+  }
+
+  // Sections made before the file existed lived in this mod's storage: written to the file once,
+  // and forgotten here only once that write went through.
+  async migrateSections() {
+    let old = null;
+    try { old = JSON.parse(localStorage.getItem("sections") ?? "null"); } catch (_) {}
+    if (!Array.isArray(old?.list) || !old.list.length || !this.teamId) return;
+    const placed = old.placed && typeof old.placed === "object" ? Object.entries(old.placed) : [];
+    const byName = new Map(old.list.filter((s) => typeof s?.name === "string" && s.name.trim()).slice(0, 50).map((s) => [s.name.trim().slice(0, 80), s]));
+    const sections = [...byName].map(([name, s]) => ({ name, emoji: "", collapsed: false, rules: [], channels: placed.filter(([, sid]) => sid === s.id).map(([cid]) => this.refOf(cid)) }));
+    const wrote = await this.editFile((doc) => {
+      if (Object.keys(doc).length) return false;
+      doc.teams = { [this.teamId]: { sections } };
+    }).catch(() => false);
+    if (wrote) try { localStorage.removeItem("sections"); } catch (_) {}
+  }
+
+  // This workspace's entry (teams.<team id>) when there is one, else the file's own top level,
+  // which suits a file shared between machines or workspaces.
+  entryOf(doc) {
+    const own = doc?.teams?.[this.teamId];
+    return own && typeof own === "object" && !Array.isArray(own) ? own : doc;
+  }
+
+  // A document that passed parseSections (or null: no file) becomes the sections in use.
+  takeSections(doc) {
+    const entry = this.entryOf(doc);
+    const refs = (v) => (v ?? []).slice(0, 1000).map(refKey).filter(Boolean);
+    this.sections = (entry?.sections ?? []).slice(0, 50).map((s) => {
+      const name = s.name.trim();
+      return { id: secId(name), name, emoji: typeof s.emoji === "string" ? this.emojiIn(s.emoji) : "", collapsed: s.collapsed === true, rules: (s.rules ?? []).slice(0, 50).map(ruleOf), channels: refs(s.channels) };
+    });
+    this.unsectioned = refs(entry?.unsectioned);
+    if (this.note?.sections) this.note = null;
+    this.dirty = true;
+  }
+
+  // How the file names a conversation: a channel by its name (readable, the same on every
+  // machine), a direct message by its id (names of people change and repeat).
+  refOf(cid) {
+    const c = this.convs.get(cid);
+    return c && (c.kind === "channel" || c.kind === "group") && c.name ? c.name : cid;
+  }
+
+  kindOf(c) {
+    return c.kind === "channel" ? "public" : c.kind === "group" ? "private" : c.kind === "mpim" ? "group" : this.bots.has(c.user) ? "app" : "dm";
+  }
+
+  ruleSection(c) {
+    const name = c.kind === "channel" || c.kind === "group" ? c.name : c.title ?? "", kind = this.kindOf(c), muted = Boolean(this.prefs[c.id]?.muted);
+    return this.sections.find((s) => s.rules.some((r) => (!r.name || r.name.test(name)) && (!r.type || r.type.has(kind)) && (r.muted == null || r.muted === muted))) ?? null;
+  }
+
+  // Where each conversation goes: a section that lists it (in that order), else none when it
+  // is kept out on purpose, else the first section whose rule it matches.
+  placeAll() {
+    const listed = new Map(), out = new Set(this.unsectioned), placed = {}, rank = {};
+    for (const s of this.sections) s.channels.forEach((ref, i) => { if (!listed.has(ref)) listed.set(ref, [s.id, i]); });
+    for (const c of this.convs.values()) {
+      const keys = [c.id.toLowerCase(), refKey(c.kind === "channel" || c.kind === "group" ? c.name ?? "" : c.title ?? "")];
+      const hit = listed.get(keys[0]) ?? listed.get(keys[1]);
+      if (hit) { placed[c.id] = hit[0]; rank[c.id] = hit[1]; continue; }
+      if (out.has(keys[0]) || out.has(keys[1])) continue;
+      const s = this.ruleSection(c);
+      if (s) placed[c.id] = s.id;
+    }
+    this.placed = placed;
+    this.rank = rank;
+  }
+
+  // A change made from the panel, applied to the file as it is on disk right now, one at a time.
+  // writeTextFile replaces the file atomically and only while it still holds the text read, so
+  // an edit saved in an editor meanwhile is read again and the change applied on top of it,
+  // never overwritten. change(doc) edits the document in place, or returns false to leave it.
+  // Resolves true when written, false when nothing changed; a file that doesn't read (or a
+  // change that would break it) is never written. A job queued before the token changed
+  // (resetWorkspace) is dropped unwritten: its change was meant for the last workspace.
+  editFile(change) {
+    const secGen = this.secGen, team = this.teamId;
+    const stale = () => secGen !== this.secGen || team !== this.teamId;
+    const job = this.secQueue.then(async () => {
+      for (let tries = 0; ; tries++) {
+        if (stale()) return false;
+        const text = await readTextFile(SECTIONS());
+        const doc = text == null ? {} : parseSections(text);
+        if (stale() || change(doc) === false) return false;
+        if (sectionsProblem(doc)) throw new Error("the change would make the file invalid");
+        const out = `${JSON.stringify(doc, null, 2)}\n`;
+        try { await writeTextFile(SECTIONS(), out, text); } catch (e) {
+          if (tries < 3) continue;
+          throw e;
+        }
+        // The folder is private already; the file is kept so too, like the tokens beside it.
+        await exec("chmod", ["600", SECTIONS()]).catch(() => {});
+        if (stale()) return true;
+        this.secText = out;
+        this.takeSections(doc);
+        return true;
+      }
+    });
+    this.secQueue = job.catch(() => {});
+    return job;
+  }
+
+  // A section's emoji as typed: :name: becomes the character (a workspace's own stays :name:).
+  emojiIn(v) {
+    return emojiText(String(v ?? "").trim()).slice(0, 40);
+  }
+
+  async editSections(edit) {
+    await this.editFile((doc) => this.applyEdit(doc, edit)).catch((e) => {
+      this.note = { text: `Couldn't save sections.json: ${e?.message ?? e}.`, error: true, until: Date.now() + 10000 };
+    });
+    this.dirty = true;
+  }
+
+  // An edit from the panel: new (optionally moving a conversation in), rename, emoji, collapse,
+  // delete, order (dir -1 / 1), and move a conversation (sid null: back to its usual group,
+  // kept out explicitly when a rule would still pull it in). false: nothing to change.
+  applyEdit(doc, { op, sid, name, emoji, id, dir: step, collapsed }) {
+    let entry = doc.teams?.[this.teamId];
+    if (!entry) {
+      if (Array.isArray(doc.sections) || !this.teamId) entry = doc;
+      else {
+        doc.teams ??= {};
+        entry = doc.teams[this.teamId] = { sections: [] };
+      }
+    }
+    entry.sections ??= [];
+    const list = entry.sections, clean = String(name ?? "").trim().slice(0, 80);
+    const at = list.findIndex((s) => secId(s.name.trim()) === sid);
+    const taken = clean && list.some((s) => s.name.trim() === clean);
+    const conv = id != null ? this.convs.get(id) ?? null : null;
+    const drop = () => {
+      const keys = new Set([conv.id.toLowerCase(), refKey(this.refOf(conv.id))]);
+      const keep = (x) => !keys.has(refKey(x));
+      for (const s of list) if (s.channels) s.channels = s.channels.filter(keep);
+      if (entry.unsectioned) entry.unsectioned = entry.unsectioned.filter(keep);
+    };
+    if (op === "new") {
+      if (!clean || taken || list.length >= 50) return false;
+      const s = { name: clean, emoji: this.emojiIn(emoji), collapsed: false, rules: [], channels: [] };
+      if (conv) { drop(); s.channels.push(this.refOf(conv.id)); }
+      list.push(s);
+    } else if (op === "move") {
+      if (!conv) return false;
+      drop();
+      if (at >= 0) (list[at].channels ??= []).push(this.refOf(conv.id));
+      else if (this.ruleSection(conv)) (entry.unsectioned ??= []).push(this.refOf(conv.id));
+    } else if (at < 0) return false;
+    else if (op === "rename") { if (!clean || taken) return false; list[at].name = clean; }
+    else if (op === "emoji") list[at].emoji = this.emojiIn(emoji);
+    else if (op === "collapse") list[at].collapsed = Boolean(collapsed);
+    else if (op === "delete") list.splice(at, 1);
+    else if (op === "order") {
+      const j = at + (step < 0 ? -1 : 1);
+      if (j < 0 || j >= list.length) return false;
+      [list[at], list[j]] = [list[j], list[at]];
+    } else return false;
+  }
+
+  // The Threads and Saved views, asked for when the panel opens one: threads you wrote in or
+  // were mentioned in (search.messages, newest reply first) and your saved messages (stars.list).
+  async shortcut(kind) {
+    if (kind !== "threads" && kind !== "saved") return;
+    this.short = { kind, loading: true, items: [], error: null };
+    this.dirty = true;
+    const items = [];
+    let error = null;
+    const item = (cid, ts, thread, user, text) => {
+      const c = this.convs.get(cid);
+      return { id: cid, ts, thread, at: Number(ts) * 1000, where: c.kind === "channel" || c.kind === "group" ? `#${c.title}` : c.title ?? "", who: this.users.get(user) ?? "", text: plainText(text, this.users).replace(/\s+/g, " ").trim().slice(0, 160) };
+    };
+    if (kind === "threads") {
+      const me = this.me?.id, threads = new Map();
+      for (const query of [`is:thread from:<@${me}>`, `is:thread <@${me}>`]) {
+        const j = await this.api("search.messages", { query, sort: "timestamp", sort_dir: "desc", count: "40" }).catch(() => null);
+        if (!j?.ok) { error = j?.error ?? "no answer"; break; }
+        for (const m of j.messages?.matches ?? []) {
+          const cid = m.channel?.id;
+          if (!cid || !this.convs.has(cid) || !m.ts) continue;
+          const thread = /[?&]thread_ts=(\d+\.\d+)/.exec(m.permalink ?? "")?.[1] ?? m.ts, key = `${cid}:${thread}`;
+          if (!threads.has(key) || Number(m.ts) > Number(threads.get(key).ts)) threads.set(key, item(cid, m.ts, thread, m.user, m.text));
+        }
+      }
+      items.push(...[...threads.values()].sort((a, b) => b.at - a.at).slice(0, 40));
+    } else {
+      const j = await this.api("stars.list", { limit: "50" }).catch(() => null);
+      if (!j?.ok) error = j?.error ?? "no answer";
+      else {
+        for (const s of j.items ?? []) {
+          const m = s.message;
+          if (s.type !== "message" || !m?.ts || !this.convs.has(s.channel)) continue;
+          items.push(item(s.channel, m.ts, m.thread_ts && m.thread_ts !== m.ts ? m.thread_ts : null, m.user, m.text));
+        }
+      }
+    }
+    const scope = kind === "threads" ? "search:read" : "stars:read";
+    this.short = { kind, loading: false, items, error: error === "missing_scope" ? `This needs Slack's ${scope} permission: gear menu → Fix permissions.` : error ? `Slack says ${error}.` : null };
     this.dirty = true;
   }
 
@@ -1177,7 +1765,7 @@ export default class Slack extends View {
   // it hasn't downloaded), Slack's own sound, and a click that opens the conversation, or the
   // thread, in the side panel (slack.goto-<conversation>[-<thread ts, . as _>]).
   toast(c, n) {
-    this.needFace(n.uid);
+    this.needFace(n.uid, true);
     const go = `goto-${c.id}${n.thread ? `-${String(n.thread).replace(".", "_")}` : ""}`;
     notify({
       title: c.kind === "im" ? n.title : `${n.title} · ${n.where}`,
@@ -1209,7 +1797,7 @@ export default class Slack extends View {
   // Marks conversations read at their newest message, in Slack as well as here. The counts go
   // at once; a conversation Slack refuses comes back as it was, with a note. Without the
   // write scopes, read stays a Herdr-only mark (as before) and the note says how to get them.
-  async markRead(ids) {
+  async markRead(ids, quiet = false) {
     const marked = [];
     for (const id of [...new Set(Array.isArray(ids) ? ids : [])].slice(0, 200)) {
       const c = this.convs.get(id);
@@ -1243,7 +1831,7 @@ export default class Slack extends View {
     }
     this.saveSeen();
     if (failed) this.note = { text: `Couldn't mark ${failed === 1 ? "it" : `${failed} conversations`} read in Slack (${why}).`, error: true, until: Date.now() + 8000 };
-    else if (local) this.note = { text: "Marked read in Herdr only: Slack needs write permissions. Gear menu → Fix permissions.", until: Date.now() + 8000 };
+    else if (local && !quiet) this.note = { text: "Marked read in Herdr only: Slack needs write permissions. Gear menu → Fix permissions.", until: Date.now() + 8000 };
     this.dirty = true;
   }
 
@@ -1253,10 +1841,12 @@ export default class Slack extends View {
 
   // ── background: commands from the panel ───────────────────────────────────────────────
   poll(cx) {
+    const want = shared(WANT);
+    if (want?.n && want.n !== this.wantN) { this.wantN = want.n; this.takeWant(want); }
     const cmd = shared(CMD);
     if (!cmd || cmd.n === this.lastCmd) return;
     this.lastCmd = cmd.n;
-    cx.spawn(async () => {
+    cx.spawn(async (scx) => {
       try {
         if (cmd.type === "reload") this.reload(cx);
         else if (cmd.type === "open") await this.openConv(cmd.id);
@@ -1267,14 +1857,22 @@ export default class Slack extends View {
         else if (cmd.type === "thread") await this.openThread(cmd);
         else if (cmd.type === "unthread") { if (this.open) this.open.thread = null; this.dirty = true; }
         else if (cmd.type === "download") await this.download(cmd.file);
+        else if (cmd.type === "copyimage") await this.copyImage(scx, cmd.file);
         else if (cmd.type === "media") {
           // Its key is worked out again here: the panel's is not trusted to name a file.
           const p = pic(cmd.pic?.url, cmd.pic?.w, cmd.pic?.h);
-          if (p) { this.mediaFailed.delete(p.key); this.needMedia(p); }
+          if (p) this.needMedia(p, true);
         }
         else if (cmd.type === "goto") await this.goto(cmd.id, cmd.ts ?? null);
         else if (cmd.type === "markread") await this.markRead(cmd.ids ?? [cmd.id]);
-        else if (cmd.type === "section") this.editSections(cmd);
+        else if (cmd.type === "readbottom") {
+          // The open conversation's newest messages were on screen: read, here and in Slack.
+          if (this.open?.id === cmd.id && !this.open.bottomSeen) { this.open.bottomSeen = true; await this.markRead([cmd.id], true); }
+        }
+        else if (cmd.type === "profile") await this.loadProfile(cmd.uid);
+        else if (cmd.type === "dm") await this.openDm(cmd.uid);
+        else if (cmd.type === "section") await this.editSections(cmd);
+        else if (cmd.type === "shortcut") await this.shortcut(cmd.kind);
         else if (cmd.type === "sectionmute") {
           for (const [id, sid] of Object.entries(this.placed)) {
             if (sid !== cmd.sid) continue;
@@ -1291,7 +1889,8 @@ export default class Slack extends View {
           if (cmd.on) { this.dinged = 0; this.ding(); }
           this.dirty = true;
         } else if (cmd.type === "rescope") {
-          this.missing = await missingScopes(this.userToken).catch(() => this.missing);
+          this.missing = await missingScopes(this.userToken).catch(() => null);
+          if (this.missing === null) cx.spawn((cx) => this.scopeLoop(cx, this.gen));
           this.scopedAt = Date.now();
           this.dirty = true;
         } else if (cmd.type === "toasttest") {
@@ -1341,13 +1940,15 @@ export default class Slack extends View {
         big: !image ? null : f.mimetype === "image/gif" && f.url_private && (f.size ?? 0) <= 10 * 1024 * 1024
           ? pic(f.url_private, f.original_w, f.original_h)
           : big ? pic(f[`thumb_${big}`], f[`thumb_${big}_w`] ?? f.original_w, f[`thumb_${big}_h`] ?? f.original_h) : null,
+        // The original, fetched only when the picture is copied (within the cache's file limit).
+        full: image && f.url_private && (f.size ?? 0) <= 10 * 1024 * 1024 ? pic(f.url_private, f.original_w, f.original_h) : null,
       };
     });
     const blocks = this.blocksOf(m.blocks);
     const cards = (m.attachments ?? []).slice(0, 4).map((a) => this.cardOf(a)).filter(Boolean);
     // A message drawn from blocks carries its text only as the notification fallback.
     const fromBlocks = Boolean(blocks?.some((b) => b.t !== "divider"));
-    const text = fromBlocks ? "" : plainText(m.text, this.users).trim().slice(0, 4000);
+    const text = fromBlocks ? "" : plainText(m.text, this.users, this.convs).trim().slice(0, 4000);
     return {
       ts: m.ts,
       t: Number(m.ts) * 1000,
@@ -1363,6 +1964,8 @@ export default class Slack extends View {
       replies: m.reply_count ?? 0,
       repliers: (m.reply_users ?? []).slice(0, 4).map((id) => ({ id, name: id === this.me.id ? "You" : this.users.get(id) ?? "someone" })),
       lastReply: m.latest_reply ? Number(m.latest_reply) * 1000 : null,
+      // A thread reply also sent to the conversation: Slack labels it "replied to a thread".
+      broadcast: m.subtype === "thread_broadcast" && m.thread_ts ? { thread: m.thread_ts, root: plainText(m.root?.text ?? "", this.users, this.convs).replace(/\s+/g, " ").trim().slice(0, 90) } : null,
     };
   }
 
@@ -1376,7 +1979,7 @@ export default class Slack extends View {
       if (s.lastIndexOf("<") > s.lastIndexOf(">")) s = s.slice(0, s.lastIndexOf("<"));
       s += "…";
     }
-    return this.layout(segmentsOf(s, this.users));
+    return this.layout(segmentsOf(s, this.users, this.convs));
   }
 
   // Block Kit as Slack draws it in a message: header, section (text, fields, a picture beside
@@ -1445,14 +2048,21 @@ export default class Slack extends View {
   async openConv(id) {
     const c = this.convs.get(id);
     if (!c) return;
-    this.open = { id, title: c.title, kind: c.kind, messages: [], loading: true, error: null, notice: null, more: true };
+    const unread = c.unread, waiting = unread > 0 || c.mention;
+    // It is marked read once its newest messages have been on screen (readbottom), not here.
+    this.open = { id, n: Date.now(), title: c.title, kind: c.kind, messages: [], loading: true, error: null, notice: null, more: true, newFrom: null, newCount: 0, bottomSeen: !waiting };
     // Only the open conversation's pictures are published; the files stay kept on disk.
     this.media = {};
-    c.unread = 0;
-    c.mention = false;
     this.dirty = true;
-    let got;
-    try { got = await this.fetchMessages(id); } catch (e) {
+    let got, lastRead = null;
+    try {
+      // Where you had read up to, asked before anything marks it read.
+      if (waiting) {
+        const j = await this.api("conversations.info", { channel: id }).catch(() => null);
+        lastRead = (j?.ok ? j.channel.last_read : null) || this.seen[id] || null;
+      }
+      got = await this.fetchMessages(id);
+    } catch (e) {
       if (this.open?.id === id) { this.open.loading = false; this.open.error = String(e?.message ?? e); this.dirty = true; }
       return;
     }
@@ -1460,9 +2070,22 @@ export default class Slack extends View {
     this.open.messages = got.msgs.map((m) => this.normalize(m));
     this.open.more = got.more;
     this.open.loading = false;
+    Object.assign(this.open, this.newPart(got.msgs, lastRead, unread));
     const last = got.msgs[got.msgs.length - 1];
-    if (last) { this.seen[id] = last.ts; this.saveSeen(); c.ts = c.ts || Number(last.ts) * 1000; if (Number(last.ts) * 1000 >= c.ts) c.lastTs = last.ts; }
+    if (last) { c.ts = c.ts || Number(last.ts) * 1000; if (Number(last.ts) * 1000 >= c.ts) c.lastTs = last.ts; }
+    if (last && !waiting) { this.seen[id] = last.ts; this.saveSeen(); }
     this.dirty = true;
+  }
+
+  // The first message after `lastRead` that someone else wrote, and how many came after it
+  // (Slack's count when the unread part starts before the loaded messages do).
+  newPart(msgs, lastRead, unread = 0) {
+    if (!lastRead) return { newFrom: null, newCount: 0 };
+    const after = msgs.filter((m) => Number(m.ts) > Number(lastRead));
+    const first = after.find((m) => m.user !== this.me.id);
+    if (!first) return { newFrom: null, newCount: 0 };
+    const n = after.filter((m) => Number(m.ts) >= Number(first.ts)).length;
+    return { newFrom: first.ts, newCount: after.length === msgs.length ? Math.max(n, unread) : n };
   }
 
   // Scrolled to the top of what is loaded: the 40 messages before the oldest one.
@@ -1494,28 +2117,37 @@ export default class Slack extends View {
     const msgs = j.messages ?? [];
     await this.resolveUsers(msgs.map((m) => m.user));
     o.thread.messages = msgs.map((m) => this.normalize(m));
+    // Slack gives last_read on a thread you follow; the replies after it get the red line.
+    Object.assign(o.thread, this.newPart(msgs.slice(1), msgs[0]?.last_read ?? null));
     o.thread.loading = false;
     this.dirty = true;
   }
 
-  async sendMessage({ n, id, text, thread_ts }) {
-    const j = await this.api("chat.postMessage", thread_ts ? { channel: id, text, thread_ts } : { channel: id, text }, true);
+  // What chat.postMessage is sent: a thread reply may also go to the conversation itself.
+  postParams({ id, text, thread_ts, broadcast }) {
+    if (!thread_ts) return { channel: id, text };
+    return broadcast ? { channel: id, text, thread_ts, reply_broadcast: true } : { channel: id, text, thread_ts };
+  }
+
+  async sendMessage(cmd) {
+    const { n, id, text, thread_ts } = cmd, broadcast = Boolean(thread_ts && cmd.broadcast);
+    const params = this.postParams({ id, text, thread_ts, broadcast });
+    const j = await this.api("chat.postMessage", params, true);
     if (!j.ok) throw new Error(`Slack says ${j.error}`);
     this.result = { n, ok: true };
+    // Writing in it ends the "new messages" part, as in Slack.
+    if (this.open?.id === id) { if (thread_ts && this.open.thread) this.open.thread.newFrom = null; else this.open.newFrom = null; }
+    // Slack's event for this message may come before this answer or after it: both sides add
+    // it only where it isn't yet (by ts), and countReply counts a reply once.
+    const o = this.open?.id === id ? this.open : null;
     if (thread_ts) {
-      const o = this.open?.id === id ? this.open : null;
       if (o?.thread?.ts === thread_ts && !o.thread.messages.some((m) => m.ts === j.ts)) o.thread.messages.push(this.normalize({ ...j.message, ts: j.ts, user: this.me.id, text }));
       const parent = o?.messages.find((m) => m.ts === thread_ts);
-      if (parent) {
-        parent.replies += 1;
-        parent.lastReply = Number(j.ts) * 1000;
-        if (!parent.repliers.some((r) => r.id === this.me.id)) parent.repliers = [...parent.repliers, { id: this.me.id, name: "You" }].slice(0, 4);
-      }
-      this.dirty = true;
-      return;
-    }
-    if (this.open?.id === id && !this.open.messages.some((m) => m.ts === j.ts)) {
-      this.open.messages.push(this.normalize({ ...j.message, ts: j.ts, user: this.me.id, text }));
+      if (parent) this.countReply(id, parent, j.ts, this.me.id);
+      if (!broadcast) { this.dirty = true; return; }
+      if (o && !o.messages.some((m) => m.ts === j.ts)) o.messages.push(this.normalize({ ...j.message, ts: j.ts, user: this.me.id, text, subtype: "thread_broadcast", thread_ts, root: j.message?.root ?? { text: parent?.text ?? "" } }));
+    } else if (o && !o.messages.some((m) => m.ts === j.ts)) {
+      o.messages.push(this.normalize({ ...j.message, ts: j.ts, user: this.me.id, text }));
     }
     const c = this.convs.get(id);
     if (c) { c.ts = Number(j.ts) * 1000; c.lastTs = j.ts; c.preview = `You: ${text}`; this.cacheDirty = true; }
@@ -1577,15 +2209,20 @@ export default class Slack extends View {
     if (this.note && Date.now() > this.note.until) { this.note = null; this.dirty = true; }
     if (!this.dirty) return;
     this.dirty = false;
+    this.placeAll();
     const convs = [...this.convs.values()].map((c) => {
       const p = this.prefs[c.id] ?? {}, level = p.level ?? defaultLevel(c.kind), muted = Boolean(p.muted);
       const loud = muted ? c.mention : level === "all" || (level === "mentions" && (c.mention || c.kind === "im"));
-      return { id: c.id, kind: c.kind, title: c.title ?? c.name, unread: c.unread, loud: loud && c.unread > 0 ? c.unread : 0, mention: c.mention, preview: c.preview, ts: c.ts, user: c.user, muted, level };
+      return { id: c.id, kind: c.kind, title: c.title ?? c.name, titleParts: c.titleParts ?? null, members: c.members ?? 0, app: c.kind === "im" && this.bots.has(c.user), unread: c.unread, loud: loud && c.unread > 0 ? c.unread : 0, mention: c.mention, preview: c.preview, ts: c.ts, user: c.user, muted, level, rank: this.rank[c.id] ?? null };
     });
     const loud = convs.reduce((n, c) => n + c.loud, 0);
+    const sections = this.sections.map((s) => {
+      const custom = /^:([^\s:]+):$/.exec(s.emoji);
+      return { id: s.id, name: s.name, emoji: s.emoji, emojiPic: custom ? this.customOf(custom[1])?.pic ?? null : null, collapsed: s.collapsed, ruled: s.rules.length > 0 };
+    });
     // The list is grouped again only when this changes, not on every picture or download.
-    const listKey = hashOf(JSON.stringify([convs, this.sections, this.placed])).toString(36);
-    setShared(STATE, { listKey, note: this.note ? { text: this.note.text, error: Boolean(this.note.error) } : null, me: this.me?.id ?? null, status: this.status, error: this.error, team: this.team, convs, open: this.open, result: this.result, soundOn: this.soundOn, pauseUntil: this.pauseUntil, scopedAt: this.scopedAt ?? 0, avatars: this.avatars, media: this.media, sections: this.sections, placed: this.placed, downloads: this.downloads, gen: this.gen, needs: this.needs, has: this.has, missing: this.missing });
+    const listKey = hashOf(JSON.stringify([convs, sections, this.placed])).toString(36);
+    setShared(STATE, { listKey, note: this.note ? { text: this.note.text, error: Boolean(this.note.error) } : null, me: this.me?.id ?? null, status: this.status, error: this.error, team: this.team, teamUrl: this.teamUrl, convs, open: this.open, result: this.result, soundOn: this.soundOn, pauseUntil: this.pauseUntil, scopedAt: this.scopedAt ?? 0, avatars: this.avatars, media: this.media, sections, placed: this.placed, short: this.short, downloads: this.downloads, clips: this.clips, gen: this.gen, needs: this.needs, has: this.has, missing: this.missing, profile: this.profile });
     setShared(UNREAD, loud);
   }
 
@@ -1599,6 +2236,7 @@ export default class Slack extends View {
     this.dark = settings()?.dark !== false;
     this.av = S?.avatars ?? {};
     if (this.viewer) return this.viewerView(t, S);
+    if (this.profileUid) return this.profileView(t, S);
     const root = v_flex().id("slack").size_full().min_h(0).overflow_hidden().bg(t.background).text_size(13).text_color(t.muted);
     if (!S) return root.child(this.header(t, null)).child(this.message(t, "Connecting to Slack…"));
     // Setup opens by itself while a token is missing or rejected, unless closed for this start.
@@ -1607,12 +2245,16 @@ export default class Slack extends View {
     const setupButton = (label) => h_flex().px(16).child(button(t, "sl-setup-open", label, (_e, cx) => { this.wiz = newWizard(shared(STATE)); cx.notify(); }, { primary: true, icon: "key" }));
     if (S.status === "setup") return root.child(this.header(t, S)).child(v_flex().child(this.message(t, "Slack isn't set up.", S.error ?? "Two tokens connect this panel to your workspace.")).child(setupButton("Set up Slack")));
     if (S.status === "error") return root.child(this.header(t, S)).child(v_flex().child(this.message(t, "Couldn't connect to Slack.", S.error)).child(setupButton("Check the tokens")));
+    // The body says what it shows (this.wants) as it is built; the background fetches that.
+    this.wants = [];
+    const body = S.open ? this.conversation(t, S) : this.list(t, S);
+    this.wantNow(S);
     return root.child(this.header(t, S))
       .when(Boolean(S.open) && this.notifOpen === S.open?.id, (el) => el.child(this.notifMenu(t, S)))
       .when((S.pauseUntil ?? 0) > Date.now(), (el) => el.child(this.pausedBar(t, S)))
       .when(this.menu && !S.open, (el) => el.child(this.menuBar(t, S)))
       .when(!S.open && (S.missing?.length ?? 0) > 0, (el) => el.child(this.missingBar(t, S)))
-      .child(S.open ? this.conversation(t, S) : this.list(t, S));
+      .child(body);
   }
 
   // A conversation's notifications, as Slack offers them: every new message, just @mentions,
@@ -1669,6 +2311,8 @@ export default class Slack extends View {
       })
       .child(button(t, "sl-m-sound", S.soundOn === false ? "Sound off" : "Sound on", (_e, cx) => { this.command({ type: "sound", on: S.soundOn === false }); cx.notify(); }, { icon: S.soundOn === false ? "volume-x" : "volume-2" }))
       .child(button(t, "sl-m-fix", "Fix permissions…", (_e, cx) => { this.wiz = newWizard(S, true); this.menu = false; cx.notify(); }))
+      .child(button(t, "sl-m-secs", "Edit sections.json", (_e, cx) => { this.editSectionsFile(cx); this.menu = false; cx.notify(); }, { icon: "file" }))
+      .child(div().w_full().pl(4).text_size(11).text_color(t.dim).child("Sections are set up here: drag a conversation onto one, use the ⋯ menus, or edit sections.json."))
       .child(button(t, "sl-m-out", this.signoutArmed ? "Sure? Sign out" : "Sign out", (_e, cx) => {
         if (!this.signoutArmed) {
           this.signoutArmed = true;
@@ -1687,7 +2331,7 @@ export default class Slack extends View {
     const shape = v.big ?? v.thumb, area = this.viewSize ?? { width: 0, height: 0 };
     const k = shape?.w && shape?.h && area.width ? Math.min((area.width - 24) / shape.w, (area.height - 60) / shape.h, 2) : 0;
     const w = Math.max(1, Math.round((shape?.w ?? 0) * k)), h = Math.max(1, Math.round((shape?.h ?? 0) * k));
-    const d = S?.downloads?.[v.file?.id];
+    const d = S?.downloads?.[v.file?.id], clip = S?.clips?.[v.file?.id];
     const tool = (id, icon, tip, onClick) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(4).cursor_pointer()
       .text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(tip)
       .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); cx.notify(); })
@@ -1701,11 +2345,71 @@ export default class Slack extends View {
         .when(Boolean(v.big) && !big, (el) => el.child(div().flex_none().text_size(11.5).text_color(t.dim).child("Loading full size…")))
         .when(Boolean(d?.state), (el) => el.child(div().flex_none().text_size(11.5).text_color(d.state === "error" ? t.blocked : t.dim)
           .child(d.state === "busy" ? "Downloading…" : d.state === "done" ? "Saved to Downloads" : d.error)))
+        .when(Boolean(clip?.state), (el) => el.child(div().flex_none().max_w(320).truncate().text_size(11.5).text_color(clip.state === "error" ? t.blocked : t.dim)
+          .child(clip.state === "busy" ? "Copying…" : clip.state === "done" ? "Copied" : clip.error)))
         .when(Boolean(v.file?.url) && d?.state !== "busy", (el) => el.child(tool("sl-v-dl", "download", "Download to Downloads", () => this.command({ type: "download", file: v.file }))))
+        .when(Boolean(v.file?.id) && appWindow().platform !== "windows" && clip?.state !== "busy", (el) => el.child(tool("sl-v-copy", clip?.state === "done" ? "check" : "copy", "Copy image", () => this.command({ type: "copyimage", file: v.file }))))
+        .when(Boolean(v.link), (el) => el.child(tool("sl-v-link", this.linkCopied === v.file?.id ? "check" : "link", "Copy link", (cx) => this.copyLink(v.file?.id, v.link, cx))))
         .when(Boolean(v.link), (el) => el.child(tool("sl-v-open", "external-link", "Open in browser", (cx) => this.openLink(v.link, cx))))
         .child(tool("sl-v-close", "x", "Close (Esc)", () => { if (this.overlayId) closeOverlay(this.overlayId); })))
       .child(div().flex_1().min_h(0).flex().items_center().justify_center().overflow_hidden()
         .child(path && k ? image(path).w(w).h(h).flex_none() : div().text_size(12).text_color(t.dim).child(path ? "" : "Loading…")));
+  }
+
+  // Someone's card, in a popup by the pointer: picture, names, title, status, their local time,
+  // presence and email when Slack gives them; Message and Open in Slack.
+  profileView(t, S) {
+    const uid = this.profileUid, P = S?.profile?.uid === uid ? S.profile : null;
+    const close = () => { if (this.overlayId) closeOverlay(this.overlayId); };
+    const root = v_flex().id("sl-profile").size_full().p(14).gap(8).bg(t.background).text_size(12.5).text_color(t.muted);
+    if (!P || P.loading) return root.child(div().text_color(t.dim).child("Loading…"));
+    if (P.error) return root.child(div().text_color(t.blocked).child(P.error));
+    const path = P.pic && S.media?.[P.pic.key];
+    const picture = path ? image(path).size(72).flex_none().rounded(10) : this.face(t, uid, P.name, 72);
+    let local = null;
+    if (P.tzOffset != null) {
+      const d = new Date(Date.now() + P.tzOffset * 1000), h = d.getUTCHours(), mi = String(d.getUTCMinutes()).padStart(2, "0");
+      local = `${h % 12 || 12}:${mi} ${h < 12 ? "AM" : "PM"}${P.tzLabel ? ` · ${P.tzLabel}` : ""}`;
+    }
+    const line = (icon, text) => h_flex().gap(6).items_center().child(svg(ICON(icon)).size(12).flex_none().text_color(t.dim)).child(div().flex_1().min_w(0).truncate().child(text));
+    const act = (id, label, icon, onClick, primary) => div().id(id).h(28).px(10).flex().gap(6).items_center().rounded(5).cursor_pointer().text_size(12)
+      .when(primary, (e) => e.bg(t.solid ?? t.accent).text_color(t.solid_foreground ?? t.accent_foreground))
+      .when(!primary, (e) => e.bg(t.raised).border(1).border_color(t.input).text_color(t.foreground).hover((s) => s.bg(t.hover)))
+      .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); })
+      .child(svg(ICON(icon)).size(13)).child(label);
+    return root
+      .child(h_flex().gap(12).items_center()
+        .child(picture)
+        .child(v_flex().flex_1().min_w(0).gap(2)
+          .child(h_flex().gap(6).items_center()
+            .child(div().min_w(0).truncate().text_size(15).font_semibold().text_color(t.foreground).child(P.name))
+            .when(P.presence === "active", (el) => el.child(div().size(8).flex_none().rounded_full().bg(t.done).tooltip("Active")))
+            .when(P.presence === "away", (el) => el.child(div().size(8).flex_none().rounded_full().border(1).border_color(t.dim).tooltip("Away"))))
+          .when(Boolean(P.real) && P.real !== P.name, (el) => el.child(div().truncate().text_color(t.dim).child(P.real)))
+          .when(Boolean(P.title), (el) => el.child(div().truncate().child(P.title)))))
+      .when(Boolean(P.status), (el) => el.child(div().px(8).py(5).rounded(5).bg(t.raised).child(P.status)))
+      .when(Boolean(local), (el) => el.child(line("clock", `Local time ${local}`)))
+      .when(Boolean(P.email), (el) => el.child(line("at-sign", P.email)))
+      .when(P.deleted, (el) => el.child(div().text_color(t.dim).child("This account is deactivated.")))
+      .child(div().flex_1())
+      .child(h_flex().gap(6).flex_wrap()
+        .when(!P.deleted, (el) => el.child(act("sl-pr-dm", "메시지 보내기", "message-square", () => { this.command({ type: "dm", uid }); close(); }, true)))
+        .when(Boolean(P.link), (el) => el.child(act("sl-pr-open", "Slack에서 열기", "external-link", (cx) => { this.openLink(P.link, cx); close(); }, false))));
+  }
+
+  // A person's card opens by the pointer; the background loads it (loadProfile).
+  openProfile(uid, cx) {
+    if (!/^[UW][A-Z0-9]{2,20}$/.test(uid ?? "")) return;
+    this.command({ type: "profile", uid });
+    openOverlay({ mod: NAME, props: { profile: uid }, kind: "popup", width: 320, height: 300 });
+    cx.notify();
+  }
+
+  // A #channel in a message: opened here when it is one of yours, else its Slack page.
+  openChannel(id, cx) {
+    const S = this.S;
+    if (S?.convs?.some((c) => c.id === id)) { this.command({ type: "goto", id }); return; }
+    if (S?.teamUrl && /^[CG][A-Z0-9]{2,20}$/.test(id)) this.openLink(`${S.teamUrl}archives/${id}`, cx);
   }
 
   // The user token lacks a permission: say what is off, and offer the fix.
@@ -1775,7 +2479,7 @@ export default class Slack extends View {
           .on_click((_e, cx) => { this.command({ type: "close" }); cx.notify(); })
           .child(svg(ICON("chevron-left")).size(14)))
         .child(svg(ICON(KIND_ICON[open.kind] ?? "hash")).size(14).flex_none().text_color(t.dim))
-        .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).child(open.title))
+        .child(this.title(t, S.convs.find((x) => x.id === open.id) ?? open, { size: 13, bold: true }))
         .child((() => {
           const c = S.convs.find((x) => x.id === open.id) ?? {}, quiet = c.muted || c.level === "nothing", on = this.notifOpen === open.id;
           return div().id("sl-notif").size(22).flex_none().flex().items_center().justify_center().rounded(4).cursor_pointer()
@@ -1799,47 +2503,52 @@ export default class Slack extends View {
   keepList() {
     try {
       localStorage.setItem("folded", JSON.stringify([...this.folded]));
-      localStorage.setItem("sort", this.sortAlpha ? "alpha" : "recent");
-      localStorage.setItem("unreads", this.unreadsOn ? "on" : "off");
+      localStorage.setItem("order", this.sortAlpha ? "alpha" : "recent");
     } catch (_) {}
   }
 
-  // The sections, as in Slack's sidebar: Unreads (when on), your own sections, Channels,
-  // Direct messages, Group DMs. In each, unread ones first, muted ones last, then newest (or
-  // A–Z). Worked out again only when the published state, the filter or the sort changes.
+  // The groups, as in Slack's sidebar: your sections (sections.json), then Channels, Direct
+  // messages (group ones too) and Apps for the rest. A section keeps the order it lists its
+  // conversations in; the ones a rule brought in follow, A–Z or newest first, muted ones last.
+  // Worked out again only when the published state, the filter, the sort or the view changes.
   groupsOf(S, q) {
-    const key = `${S.listKey}|${q}|${this.sortAlpha}|${this.unreadsOn}`;
-    if (this.groupCache?.key === key) return this.groupCache.groups;
+    const onlyLit = this.view === "unreads" && !q;
+    const key = `${S.listKey}|${q}|${this.sortAlpha}|${onlyLit}`;
+    if (this.groupCache?.key === key) return this.groupCache;
     const quiet = (c) => c.muted || c.level === "nothing";
     // Bold when there is something new you'd want to see; the red count is only for what
     // would notify you (c.loud, worked out with the bell's own rule in publish).
     const lit = (c) => c.unread > 0 && (!quiet(c) || c.loud > 0);
-    const unreads = this.unreadsOn && !q;
     const groups = [
-      ...(unreads ? [{ id: "unreads", label: "Unreads" }] : []),
-      ...(S.sections ?? []).map((s) => ({ id: s.id, label: s.name, custom: true })),
-      { id: "ch", label: "Channels" }, { id: "dm", label: "Direct messages" }, { id: "gdm", label: "Group DMs" },
+      ...(S.sections ?? []).map((s) => ({ id: s.id, label: s.name, emoji: s.emoji, emojiPic: s.emojiPic, collapsed: s.collapsed, custom: true })),
+      { id: "ch", label: "Channels" }, { id: "dm", label: "Direct messages" }, { id: "app", label: "Apps" },
     ].map((g) => ({ ...g, rows: [], unread: 0, muted: 0 }));
     const byId = new Map(groups.map((g) => [g.id, g])), placed = S.placed ?? {};
-    // Conversations Slack has gone quiet in (no message found) stay out until you search for them.
+    let litCount = 0;
     for (const c of S.convs) {
-      if (q ? !c.title.toLowerCase().includes(q) : !(c.ts > 0)) continue;
-      const g = (unreads && lit(c) && byId.get("unreads")) || byId.get(placed[c.id]) || byId.get(c.kind === "im" ? "dm" : c.kind === "mpim" ? "gdm" : "ch");
-      g.rows.push({ ...c, quiet: quiet(c), lit: lit(c) });
+      const on = lit(c);
+      if (on) litCount += 1;
+      // Conversations Slack has gone quiet in (no message found) stay out until you search for
+      // them, unless a section lists them by name.
+      if (q ? !c.title.toLowerCase().includes(q) : !(c.ts > 0) && c.rank == null) continue;
+      if (onlyLit && !on) continue;
+      const g = byId.get(placed[c.id]) ?? byId.get(c.kind === "channel" || c.kind === "group" ? "ch" : c.app ? "app" : "dm");
+      g.rows.push({ ...c, quiet: quiet(c), lit: on });
       g.unread += c.loud ?? 0;
       if (c.muted) g.muted += 1;
     }
     const order = this.sortAlpha ? (a, b) => a.title.localeCompare(b.title) : (a, b) => b.ts - a.ts;
-    for (const g of groups) g.rows.sort((a, b) => a.quiet - b.quiet || (b.loud > 0) - (a.loud > 0) || b.lit - a.lit || b.mention - a.mention || order(a, b));
-    const out = groups.filter((g) => g.rows.length || (g.custom && !q));
-    this.groupCache = { key, groups: out };
-    return out;
+    for (const g of groups) g.rows.sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity) || a.quiet - b.quiet || order(a, b));
+    this.groupCache = { key, groups: groups.filter((g) => g.rows.length || (g.custom && !q && !onlyLit)), lit: litCount };
+    return this.groupCache;
   }
 
   submitSection(cx) {
     const E = this.secEdit, name = this.secIn.value().trim();
-    if (!E || !name) return;
-    this.command(E.mode === "new" ? { type: "section", op: "new", name, id: E.move ?? null } : { type: "section", op: "rename", sid: E.sid, name });
+    if (!E || (!name && E.mode !== "emoji")) return;
+    this.command(E.mode === "new" ? { type: "section", op: "new", name, id: E.move ?? null }
+      : E.mode === "emoji" ? { type: "section", op: "emoji", sid: E.sid, emoji: name }
+      : { type: "section", op: "rename", sid: E.sid, name });
     this.secEdit = null;
     this.secIn.set_value("");
     cx.notify();
@@ -1854,42 +2563,73 @@ export default class Slack extends View {
     cx.notify();
   }
 
+  // A conversation's name; one with a workspace emoji in it was laid out in publish.
+  title(t, c, { size = 13, color = t.foreground, bold = false } = {}) {
+    const words = c.titleParts?.lines?.[0]?.w;
+    const base = (el) => el.flex_1().min_w(0).text_size(size).text_color(color).when(bold, (e) => e.font_semibold());
+    if (!words) return base(div()).truncate().child(c.title ?? "");
+    return base(h_flex()).overflow_hidden().gap(3).items_center().children(words.map((w) => {
+      if (w.t !== "emoji") return div().flex_none().child(w.s ?? "");
+      const path = this.S?.media?.[w.pic?.key];
+      return path ? image(path).size(Math.round(size * 1.3)).flex_none() : div().flex_none().child(`:${w.name}:`);
+    }));
+  }
+
+  // The panel's own file editor hand-off: the file is made first when there is none yet, the
+  // same way edits save it (create-only, then only you can read it). A stale snapshot means
+  // someone else just made it, which is as good.
+  editSectionsFile(cx) {
+    cx.spawn(async (cx) => {
+      const path = SECTIONS();
+      if ((await readTextFile(path).catch(() => null)) == null) {
+        const made = await writeTextFile(path, `${JSON.stringify({ sections: [] }, null, 2)}\n`, null).then(() => true, () => false);
+        if (made && appWindow().platform !== "windows") await exec("chmod", ["600", path]).catch(() => null);
+      }
+      cx.open_url(fileUrl(path));
+    });
+  }
+
   list(t, S) {
     const q = this.filter.value().trim().toLowerCase();
-    const groups = this.groupsOf(S, q), children = [];
+    const { groups, lit } = this.groupsOf(S, q), children = [];
     const tool = (id, icon, tip, on, onClick) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(4).cursor_pointer()
       .text_color(on ? t.foreground : t.dim).when(on, (e) => e.bg(t.raised)).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(tip)
       .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); cx.notify(); })
       .child(svg(ICON(icon)).size(13));
-    if (this.secEdit) children.push(this.sectionInput(t));
-    for (const g of groups) {
-      const open = Boolean(q) || !this.folded.has(g.id), menu = this.secMenu === g.id;
-      children.push(h_flex().id(`sl-g-${g.id}`).flex_none().h(28).px(8).gap(6).items_center().rounded(4).cursor_pointer().text_size(11.5).text_color(t.dim)
-        .hover((s) => s.text_color(t.foreground))
-        .on_click((_e, cx) => { this.folded.has(g.id) ? this.folded.delete(g.id) : this.folded.add(g.id); this.keepList(); cx.notify(); })
-        // Right-click marks everything in the section read; Shift+right-click (or ⋯) opens the
-        // menu of one of your sections.
-        .on_mouse_down("right", (e, cx) => {
-          cx.stop_propagation();
-          if (g.custom && e.modifiers?.shift) { this.secMenu = menu ? null : g.id; this.rowMenu = null; cx.notify(); return; }
-          const ids = g.rows.filter((c) => c.unread > 0 || c.mention).map((c) => c.id);
-          if (ids.length) this.command({ type: "markread", ids });
-        })
-        .when(g.rows.some((c) => c.unread > 0 || c.mention), (el) => el.tooltip("Right-click to mark all read"))
-        .child(svg(ICON(open ? "chevron-down" : "chevron-right")).size(11).flex_none())
-        .child(div().min_w(0).truncate().font_semibold().child(g.label))
-        .child(div().flex_none().child(String(g.rows.length)))
-        .when(Boolean(g.custom) && g.rows.length > 0 && g.muted === g.rows.length, (el) => el.child(svg(ICON("bell-off")).size(10).flex_none()))
-        .child(div().flex_1())
-        .when(!open && g.unread > 0, (el) => el.child(div().px(5).rounded(8).bg(t.blocked).text_size(10.5).font_semibold().text_color("#ffffff").child(String(g.unread))))
-        .when(Boolean(g.custom), (el) => el.child(tool(`sl-gm-${g.id}`, "ellipsis", "Section options", menu, () => { this.secMenu = menu ? null : g.id; this.rowMenu = null; }))));
-      if (menu) children.push(this.sectionMenu(t, g));
-      if (!open) continue;
-      if (g.custom && !g.rows.length) children.push(div().flex_none().px(26).pb(4).text_size(11.5).text_color(t.dim).child("Empty. Use a conversation's ⋯ menu to move it here."));
-      for (const c of g.rows.slice(0, SHOWN)) {
-        children.push(this.row(t, c));
-        if (this.rowMenu === c.id) children.push(this.rowMenuView(t, S, c));
+    const line = (text, color = t.dim) => div().flex_none().px(10).py(8).text_size(12).text_color(color).child(text);
+    // Threads and Saved need a permission the token may not have; they show only once the check
+    // has said it's there.
+    const granted = (scope) => Array.isArray(S.missing) && !S.missing.some((m) => m.scope === scope);
+    const views = [["unreads", "message-square-dot", "Unreads", lit], ...(granted("search:read") ? [["threads", "message-square-reply", "Threads", 0]] : []), ...(granted("stars:read") ? [["saved", "bookmark", "Saved", 0]] : [])];
+    if (this.view && !views.some(([id]) => id === this.view)) this.view = null;
+    if (!q) {
+      for (const [id, icon, label, count] of views) {
+        const on = this.view === id;
+        children.push(h_flex().id(`sl-v-${id}`).flex_none().h(28).px(8).gap(8).items_center().rounded(4).cursor_pointer()
+          .text_size(13).text_color(on || count ? t.foreground : t.muted).when(on, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => {
+            this.view = on ? null : id;
+            this.rowMenu = null;
+            this.secMenu = null;
+            if (!on && id !== "unreads") this.command({ type: "shortcut", kind: id });
+            cx.notify();
+          })
+          .child(div().w(18).flex_none().flex().items_center().justify_center().child(svg(ICON(icon)).size(15)))
+          .child(div().flex_1().min_w(0).truncate().when(count > 0, (el) => el.font_semibold()).child(label))
+          .when(count > 0, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(String(count)))));
       }
+      children.push(div().flex_none().h(1).mx(8).my(6).bg(t.border));
+    }
+    if (this.secEdit) children.push(this.sectionInput(t));
+    if (!q && (this.view === "threads" || this.view === "saved")) {
+      const R = S.short?.kind === this.view ? S.short : null;
+      if (!R || R.loading) children.push(line("Loading…"));
+      else if (R.error) children.push(line(R.error, t.blocked));
+      else if (!R.items.length) children.push(line(this.view === "threads" ? "No threads with you in them yet." : "Nothing saved yet."));
+      else R.items.forEach((it, i) => children.push(this.shortRow(t, it, i)));
+    } else {
+      if (this.view === "unreads" && !q && !groups.length) children.push(line("Nothing unread."));
+      for (const g of groups) this.groupRows(t, S, g, q, children);
     }
     return v_flex().flex_1().min_h(0)
       .child(h_flex().flex_none().mx(8).mt(8).mb(4).gap(4).items_center()
@@ -1897,23 +2637,123 @@ export default class Slack extends View {
           .child(Input.new(this.filter).h(26).px(9).rounded(4).border(1).border_color(t.input).bg(t.canvas ?? t.background).text_size(12).text_color(t.foreground))
           .when(this.filterEmpty, (el) => el.child(div().absolute().left(10).top(0).h(26).flex().items_center().text_size(12).text_color(t.dim).child("Filter conversations"))))
         .child(tool("sl-sort", this.sortAlpha ? "arrow-down-a-z" : "clock", this.sortAlpha ? "Sorted A–Z (click for newest first)" : "Newest first (click for A–Z)", false, () => { this.sortAlpha = !this.sortAlpha; this.keepList(); }))
-        .child(tool("sl-unreads", "message-square", this.unreadsOn ? "Hide the Unreads section" : "Show an Unreads section", this.unreadsOn, () => { this.unreadsOn = !this.unreadsOn; this.keepList(); }))
         .child(tool("sl-newsec", "plus", "New section", false, (cx) => this.startSection({ mode: "new" }, "", cx))))
       .when(Boolean(S.note), (el) => el.child(div().flex_none().mx(8).mb(4).text_size(11.5).text_color(S.note.error ? t.blocked : t.dim).child(S.note.text)))
+      // gpui-kit has no drag and drop between elements, so a drag is followed by hand: a press on
+      // a row, a move of a few pixels, then a release over a section (its header or any of its
+      // rows) moves the conversation there.
       .child(v_flex().id("sl-rows").flex_1().min_h(0).overflow_y_scroll().px(4).pb(6)
+        .on_mouse_move((e, cx) => {
+          const d = this.drag;
+          if (d && !d.live && Math.hypot(e.position.x - d.x, e.position.y - d.y) > 6) { d.live = true; this.rowMenu = null; this.secMenu = null; cx.notify(); }
+        })
+        .on_mouse_up("left", (_e, cx) => this.endDrag(S, cx))
+        .on_hover((on, cx) => { if (!on && this.drag) { this.drag = null; this.dropOn = null; cx.notify(); } })
         .children(children)
-        .when(!groups.length && !this.secEdit, (el) => el.child(div().p(12).text_size(12).text_color(t.dim).child(q ? "No conversation matches." : S.status === "starting" || S.status === "loading" ? "Loading conversations…" : "No conversations yet."))));
+        .when(!groups.length && !this.secEdit && !this.view, (el) => el.child(line(q ? "No conversation matches." : S.status === "starting" || S.status === "loading" ? "Loading conversations…" : "No conversations yet."))));
   }
 
-  // Naming a new section (or renaming one): Enter saves, Esc cancels.
+  // Where a dragged conversation may go: one of your sections, or back to its usual group.
+  dropSid(S, cid, gid) {
+    const c = S.convs.find((x) => x.id === cid);
+    if (!c || !gid) return undefined;
+    if ((S.sections ?? []).some((s) => s.id === gid)) return gid;
+    const home = c.kind === "channel" || c.kind === "group" ? "ch" : c.app ? "app" : "dm";
+    return gid === home ? null : undefined;
+  }
+
+  endDrag(S, cx) {
+    const d = this.drag, gid = this.dropOn;
+    this.drag = null;
+    this.dropOn = null;
+    if (!d?.live) return;
+    // The release also ends as a click on the row under it; that click must not open it.
+    this.dragEnded = Date.now();
+    const sid = this.dropSid(S, d.id, gid);
+    if (sid !== undefined && (S.placed?.[d.id] ?? null) !== sid) this.command({ type: "section", op: "move", id: d.id, sid });
+    cx.notify();
+  }
+
+  // While a drag is on, the pointer over a group (its header or one of its rows) marks it.
+  dragOver(gid, on, cx) {
+    if (!this.drag?.live) return;
+    if (on) this.dropOn = gid;
+    else if (this.dropOn === gid) this.dropOn = null;
+    cx.notify();
+  }
+
+  // A group's header and rows. Clicking the header folds it (one of your sections remembers
+  // that in sections.json); folded, it still shows its unread conversations, as Slack does.
+  groupRows(t, S, g, q, children) {
+    const folded = g.custom ? g.collapsed : this.folded.has(g.id);
+    const open = Boolean(q) || this.view === "unreads" || !folded, menu = this.secMenu === g.id, over = this.secHover === g.id || menu;
+    const allMuted = Boolean(g.custom) && g.rows.length > 0 && g.muted === g.rows.length;
+    const toggleMenu = (cx) => { this.secMenu = menu ? null : g.id; this.rowMenu = null; cx.notify(); };
+    const pic = g.emojiPic && S.media?.[g.emojiPic.key];
+    if (g.emojiPic && !pic) this.wants.push({ pic: g.emojiPic });
+    const icon = pic ? image(pic).size(15).flex_none()
+      : g.emoji ? div().text_size(13).child(g.emoji)
+      : svg(ICON("list")).size(14).text_color(t.dim);
+    const target = Boolean(this.drag?.live) && this.dropOn === g.id && this.dropSid(S, this.drag.id, g.id) !== undefined;
+    children.push(h_flex().id(`sl-g-${g.id}`).flex_none().h(28).mt(4).px(8).gap(8).items_center().rounded(4).cursor_pointer().text_size(13).text_color(t.muted)
+      .hover((s) => s.bg(t.hover).text_color(t.foreground)).when(target, (el) => el.bg(t.selected).text_color(t.foreground))
+      .on_hover((on, cx) => { if (on) this.secHover = g.id; else if (this.secHover === g.id) this.secHover = null; this.dragOver(g.id, on, cx); cx.notify(); })
+      .on_click((_e, cx) => {
+        // The release that ends a drag onto this header is not a click on it.
+        if (Date.now() - (this.dragEnded ?? 0) < 400) return;
+        if (g.custom) this.command({ type: "section", op: "collapse", sid: g.id, collapsed: !folded });
+        else { if (folded) this.folded.delete(g.id); else this.folded.add(g.id); this.keepList(); }
+        cx.notify();
+      })
+      // Right-click marks everything in the group read; Shift+right-click (or ⋯) opens the
+      // menu of one of your sections.
+      .on_mouse_down("right", (e, cx) => {
+        cx.stop_propagation();
+        if (g.custom && e.modifiers?.shift) return toggleMenu(cx);
+        const ids = g.rows.filter((c) => c.unread > 0 || c.mention).map((c) => c.id);
+        if (ids.length) this.command({ type: "markread", ids });
+      })
+      .when(g.rows.some((c) => c.unread > 0 || c.mention), (el) => el.tooltip("Right-click to mark all read"))
+      .child(div().w(18).flex_none().flex().items_center().justify_center().child(icon))
+      .child(div().min_w(0).truncate().font_medium().child(g.label))
+      .when(folded && !q, (el) => el.child(svg(ICON("chevron-right")).size(11).flex_none().text_color(t.dim)))
+      .when(allMuted, (el) => el.child(svg(ICON("bell-off")).size(10).flex_none().text_color(t.dim)))
+      .child(div().flex_1())
+      .when(!open && g.unread > 0, (el) => el.child(div().flex_none().px(5).rounded(8).bg(t.blocked).text_size(10.5).font_semibold().text_color("#ffffff").child(String(g.unread))))
+      .when(Boolean(g.custom) && over, (el) => el.child(div().id(`sl-gm-${g.id}`).size(18).flex_none().flex().items_center().justify_center().rounded(4).text_color(t.dim)
+        .hover((s) => s.bg(t.selected).text_color(t.foreground)).tooltip("Section options")
+        .on_click((_e, cx) => { cx.stop_propagation(); toggleMenu(cx); })
+        .child(svg(ICON("ellipsis")).size(13)))));
+    if (menu) children.push(this.sectionMenu(t, g, folded, allMuted));
+    const rows = open ? g.rows : g.rows.filter((c) => c.lit);
+    if (open && g.custom && !g.rows.length) children.push(div().flex_none().px(34).pb(4).text_size(11.5).text_color(t.dim).child("Empty. Drag a conversation here, or use its ⋯ menu."));
+    for (const c of rows.slice(0, SHOWN)) {
+      children.push(this.row(t, c, g));
+      this.wants.push(...this.rowWants(c));
+      if (this.rowMenu === c.id) children.push(this.rowMenuView(t, S, c));
+    }
+  }
+
+  // One thread or saved message: where, who and what; a click opens it (the thread, if any).
+  shortRow(t, it, i) {
+    return v_flex().id(`sl-si-${i}`).flex_none().px(8).py(6).gap(1).rounded(4).cursor_pointer().hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { this.command({ type: "goto", id: it.id, ts: it.thread }); cx.notify(); })
+      .child(h_flex().gap(8).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(12.5).font_medium().text_color(t.foreground).child(it.where))
+        .child(div().flex_none().text_size(11).text_color(t.dim).child(ago(it.at))))
+      .child(div().truncate().text_size(12).text_color(t.dim).child(it.who ? `${it.who}: ${it.text}` : it.text));
+  }
+
+  // Naming a section, renaming one or giving it an emoji: Enter saves, Esc cancels.
   sectionInput(t) {
     const E = this.secEdit;
+    const title = E.mode === "new" ? (E.move ? "New section for this conversation" : "New section") : E.mode === "emoji" ? "Section emoji (🚨 or :rotating_light:; empty for none)" : "Rename section";
     return v_flex().flex_none().mx(4).my(4).p(8).gap(6).rounded(6).bg(t.chrome).border(1).border_color(t.border)
       .on_key_down((e, cx) => { if (e.keystroke === "escape") { cx.stop_propagation(); this.secEdit = null; cx.notify(); } })
-      .child(div().text_size(11.5).font_semibold().text_color(t.dim).child(E.mode === "new" ? (E.move ? "New section for this conversation" : "New section") : "Rename section"))
+      .child(div().text_size(11.5).font_semibold().text_color(t.dim).child(title))
       .child(Input.new(this.secIn).h(26).px(8).rounded(4).border(1).border_color(t.input).bg(t.canvas ?? t.background).text_size(12).text_color(t.foreground))
       .child(h_flex().gap(6)
-        .child(this.chip(t, "sl-se-save", E.mode === "new" ? "Create" : "Rename", true, (cx) => this.submitSection(cx)))
+        .child(this.chip(t, "sl-se-save", E.mode === "new" ? "Create" : "Save", true, (cx) => this.submitSection(cx)))
         .child(this.chip(t, "sl-se-cancel", "Cancel", false, () => { this.secEdit = null; })));
   }
 
@@ -1931,7 +2771,7 @@ export default class Slack extends View {
   rowMenuView(t, S, c) {
     const close = () => { this.rowMenu = null; };
     const set = (patch) => { this.command({ type: "notif", id: c.id, ...patch }); };
-    const home = c.kind === "im" ? "Direct messages" : c.kind === "mpim" ? "Group DMs" : "Channels";
+    const home = c.kind === "channel" || c.kind === "group" ? "Channels" : c.app ? "Apps" : "Direct messages";
     const at = S.placed?.[c.id] ?? null;
     const label = (s) => div().w(52).flex_none().text_size(11).text_color(t.dim).child(s);
     return v_flex().flex_none().mx(4).mb(4).p(8).gap(6).rounded(6).bg(t.chrome).border(1).border_color(t.border)
@@ -1947,52 +2787,62 @@ export default class Slack extends View {
       .child(h_flex().gap(6).flex_wrap().items_center()
         .child(label("Section"))
         .child(this.chip(t, "sl-rm-home", home, !at, () => { this.command({ type: "section", op: "move", id: c.id, sid: null }); close(); }))
-        .children((S.sections ?? []).map((s) => this.chip(t, `sl-rm-s-${s.id}`, s.name, at === s.id, () => { this.command({ type: "section", op: "move", id: c.id, sid: s.id }); close(); })))
+        .children((S.sections ?? []).map((s) => this.chip(t, `sl-rm-s-${s.id}`, s.emoji && !s.emojiPic ? `${s.emoji} ${s.name}` : s.name, at === s.id, () => { this.command({ type: "section", op: "move", id: c.id, sid: s.id }); close(); })))
         .child(this.chip(t, "sl-rm-new", "New section…", false, (cx) => this.startSection({ mode: "new", move: c.id }, "", cx), "plus")));
   }
 
-  // One of your sections' menu: rename, order, mute everything in it, delete.
-  sectionMenu(t, g) {
+  // One of your sections' menu: rename, emoji, fold, order, mute everything in it, delete.
+  // Rules that pull new conversations in are written in sections.json.
+  sectionMenu(t, g, folded, allMuted) {
     const list = this.S?.sections ?? [], i = list.findIndex((s) => s.id === g.id);
-    const allMuted = g.rows.length > 0 && g.muted === g.rows.length;
     const done = () => { this.secMenu = null; };
+    const order = (dir) => () => this.command({ type: "section", op: "order", sid: g.id, dir });
     return h_flex().flex_none().mx(4).mb(4).p(8).gap(6).flex_wrap().rounded(6).bg(t.chrome).border(1).border_color(t.border)
       .child(this.chip(t, "sl-sm-ren", "Rename…", false, (cx) => this.startSection({ mode: "rename", sid: g.id }, g.label, cx)))
+      .child(this.chip(t, "sl-sm-emo", "Emoji…", false, (cx) => this.startSection({ mode: "emoji", sid: g.id }, g.emoji ?? "", cx)))
+      .child(this.chip(t, "sl-sm-fold", folded ? "Expand" : "Collapse", false, () => { this.command({ type: "section", op: "collapse", sid: g.id, collapsed: !folded }); done(); }))
       .when(g.rows.length > 0, (el) => el.child(this.chip(t, "sl-sm-mute", allMuted ? "Unmute all" : "Mute all", false, () => { this.command({ type: "sectionmute", sid: g.id, muted: !allMuted }); done(); }, allMuted ? "bell" : "bell-off")))
-      .when(i > 0, (el) => el.child(this.chip(t, "sl-sm-up", "Move up", false, () => this.command({ type: "section", op: "order", sid: g.id, dir: -1 }))))
-      .when(i >= 0 && i < list.length - 1, (el) => el.child(this.chip(t, "sl-sm-down", "Move down", false, () => this.command({ type: "section", op: "order", sid: g.id, dir: 1 }))))
+      .when(i > 0, (el) => el.child(this.chip(t, "sl-sm-up", "Move up", false, order(-1))))
+      .when(i >= 0 && i < list.length - 1, (el) => el.child(this.chip(t, "sl-sm-down", "Move down", false, order(1))))
+      .child(this.chip(t, "sl-sm-file", "Rules in sections.json…", false, (cx) => { this.editSectionsFile(cx); done(); }, "file"))
       .child(this.chip(t, "sl-sm-del", "Delete section", false, () => { this.command({ type: "section", op: "delete", sid: g.id }); done(); }, "x"));
   }
 
-  // A conversation in the list. Right-click marks it read; Shift+right-click, or ⋯ while the
-  // pointer is on it, opens its menu.
-  row(t, c) {
-    const quiet = c.quiet, unread = c.lit, menu = this.rowMenu === c.id, over = this.rowHover === c.id || menu;
+  // A conversation in the list, one line as in Slack's sidebar. Right-click marks it read;
+  // Shift+right-click, or ⋯ while the pointer is on it, opens its menu.
+  row(t, c, g) {
+    const quiet = c.quiet, unread = c.lit, menu = this.rowMenu === c.id, over = this.rowHover === c.id || menu, dragged = this.drag?.live && this.drag.id === c.id;
     const toggle = (cx) => { this.rowMenu = menu ? null : c.id; this.secMenu = null; cx.notify(); };
-    return div().id(`sl-${c.id}`).flex_none().px(8).py(6).rounded(4).cursor_pointer().flex().flex_col().gap(1)
-      .when(menu, (el) => el.bg(t.hover)).hover((s) => s.bg(t.hover))
-      .on_hover((on, cx) => { if (on) this.rowHover = c.id; else if (this.rowHover === c.id) this.rowHover = null; cx.notify(); })
-      .on_click((_e, cx) => { this.rowMenu = null; this.command({ type: "open", id: c.id }); cx.notify(); })
+    const lead = c.kind === "im" && this.av?.[c.user] ? div().id(`sl-rf-${c.id}`).flex_none().cursor_pointer().tooltip("Profile")
+      .on_click((_e, cx) => { cx.stop_propagation(); this.openProfile(c.user, cx); }).child(this.face(t, c.user, c.title, 18))
+      // A group message shows how many others are in it, as Slack does.
+      : c.kind === "mpim" && c.members > 0 ? div().size(18).flex_none().rounded(4).border(1).border_color(t.input).bg(t.raised).flex().items_center().justify_center().text_size(10.5).font_semibold().text_color(t.muted).child(String(c.members))
+      : svg(ICON(KIND_ICON[c.kind] ?? "hash")).size(14).flex_none().text_color(unread ? t.foreground : t.dim);
+    // Indented so its icon sits under the section's name, as in Slack's sidebar.
+    return h_flex().id(`sl-${c.id}`).flex_none().h(28).pl(34).pr(8).gap(8).items_center().rounded(4).cursor_pointer()
+      .when(menu, (el) => el.bg(t.hover)).hover((s) => s.bg(t.hover)).when(quiet && !unread, (el) => el.opacity(0.75)).when(dragged, (el) => el.opacity(0.45))
+      .when(Boolean(c.preview) && !this.drag?.live, (el) => el.tooltip(c.preview))
+      .on_hover((on, cx) => { if (on) this.rowHover = c.id; else if (this.rowHover === c.id) this.rowHover = null; this.dragOver(g.id, on, cx); cx.notify(); })
+      .on_mouse_down("left", (e) => { this.drag = { id: c.id, x: e.position.x, y: e.position.y, live: false }; })
+      .on_click((_e, cx) => {
+        if (Date.now() - (this.dragEnded ?? 0) < 400) return;
+        this.rowMenu = null;
+        this.command({ type: "open", id: c.id });
+        cx.notify();
+      })
       .on_mouse_down("right", (e, cx) => {
         cx.stop_propagation();
         if (e.modifiers?.shift) return toggle(cx);
         if (c.unread > 0 || c.mention) this.command({ type: "markread", id: c.id });
       })
-      .child(h_flex().gap(8).items_center()
-        .child(div().w(18).flex_none().flex().items_center().justify_center()
-          .child(c.kind === "im" && this.av?.[c.user]
-            ? this.face(t, c.user, c.title, 18)
-            : svg(ICON(KIND_ICON[c.kind] ?? "hash")).size(14).flex_none().text_color(t.dim)))
-        .child(div().flex_1().min_w(0).truncate().text_color(unread ? t.foreground : quiet ? t.dim : t.muted).when(unread, (el) => el.font_semibold()).child(c.title))
-        .when(c.loud > 0, (el) => el.child(div().flex_none().px(5).rounded(8).bg(t.blocked).text_size(10.5).font_semibold().text_color("#ffffff").child(String(c.loud))))
-        .when(quiet, (el) => el.child(svg(ICON("bell-off")).size(11).flex_none().text_color(t.dim)))
-        .child(over
-          ? div().id(`sl-rmb-${c.id}`).size(18).flex_none().flex().items_center().justify_center().rounded(4).text_color(t.dim)
-            .hover((s) => s.bg(t.selected).text_color(t.foreground)).tooltip("Mute, notifications, section")
-            .on_click((_e, cx) => { cx.stop_propagation(); toggle(cx); })
-            .child(svg(ICON("ellipsis")).size(13))
-          : div().flex_none().text_size(11).text_color(t.dim).child(ago(c.ts))))
-      .when(Boolean(c.preview), (el) => el.child(div().pl(26).truncate().text_size(12).text_color(t.dim).when(quiet, (e) => e.opacity(0.7)).child(c.preview)));
+      .child(div().w(18).flex_none().flex().items_center().justify_center().child(lead))
+      .child(this.title(t, c, { color: unread ? t.foreground : quiet ? t.dim : t.muted, bold: unread }))
+      .when(c.loud > 0, (el) => el.child(div().flex_none().px(6).rounded(8).bg(t.blocked).text_size(10.5).font_semibold().text_color("#ffffff").child(String(c.loud))))
+      .when(quiet && !over, (el) => el.child(svg(ICON("bell-off")).size(11).flex_none().text_color(t.dim)))
+      .when(over, (el) => el.child(div().id(`sl-rmb-${c.id}`).size(18).flex_none().flex().items_center().justify_center().rounded(4).text_color(t.dim)
+        .hover((s) => s.bg(t.selected).text_color(t.foreground)).tooltip("Mute, notifications, section")
+        .on_click((_e, cx) => { cx.stop_propagation(); toggle(cx); })
+        .child(svg(ICON("ellipsis")).size(13))));
   }
 
   // The one gate for links: a conversation of this workspace opens here, a web page in Herdr's
@@ -2033,7 +2883,10 @@ export default class Slack extends View {
         }
         if (w.t === "mention") {
           const mine = w.id === me || w.id === "!";
-          return div().flex_none().px(2).rounded(3).font_medium().bg(mine ? M.meBg : M.bg).text_color(mine ? M.meFg : M.fg).child(w.label);
+          const chip = (el) => el.flex_none().px(2).rounded(3).font_medium().bg(mine ? M.meBg : M.bg).text_color(mine ? M.meFg : M.fg).child(w.label);
+          if (w.id === "!") return chip(div());
+          return chip(div().id(`sl-mn-${key}:${li}:${wi}`)).cursor_pointer().hover((s) => s.underline())
+            .on_click((_e, cx) => { cx.stop_propagation(); if (w.channel) this.openChannel(w.id, cx); else this.openProfile(w.id, cx); });
         }
         const k = `${key}:${li}:${wi}`, hovered = C.link === k, copied = C.copied === k;
         return h_flex().id(`sl-l-${k}`).max_w_full().min_w(0).gap(3).items_center()
@@ -2074,12 +2927,100 @@ export default class Slack extends View {
       .child(this.picture(t, p, box.w, box.h));
   }
 
-  // An image file: its name, then the picture; a click shows it larger.
+  // An image file: its name, then the picture; a click shows it larger. Right-click (or ⋯ beside
+  // the name) opens its menu: copy the picture or its link, open it in Slack, download it.
   imageFile(t, f) {
-    const max = this.tileMax();
+    const max = this.tileMax(), C = this.chat, menu = C.imgMenu === f.id, clip = this.S?.clips?.[f.id], d = this.S?.downloads?.[f.id];
+    const toggle = (cx) => { C.imgMenu = menu ? null : f.id; cx.notify(); };
+    const done = () => { C.imgMenu = null; };
     return v_flex().mt(4).gap(2)
-      .child(div().max_w(max).truncate().text_size(11).text_color(t.dim).child(f.name))
-      .child(this.tile(t, f.thumb, max, `sl-img-${f.id}`, "View larger", (cx) => this.openViewer(f, cx)));
+      .child(h_flex().max_w(max).gap(4).items_center()
+        .child(div().min_w(0).truncate().text_size(11).text_color(t.dim).child(f.name))
+        .child(div().id(`sl-imm-${f.id}`).size(16).flex_none().flex().items_center().justify_center().rounded(4).cursor_pointer().text_color(t.dim)
+          .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Copy, link, download")
+          .on_click((_e, cx) => { cx.stop_propagation(); toggle(cx); })
+          .child(svg(ICON("ellipsis")).size(12))))
+      .child(div().id(`sl-imr-${f.id}`).on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); toggle(cx); })
+        .child(this.tile(t, f.thumb, max, `sl-img-${f.id}`, "View larger · right-click for more", (cx) => this.openViewer(f, cx))))
+      .when(menu, (el) => el.child(h_flex().max_w(max).p(6).gap(6).flex_wrap().items_center().rounded(6).bg(t.chrome).border(1).border_color(t.border)
+        .when(appWindow().platform !== "windows", (e) => e.child(this.chip(t, `sl-imc-${f.id}`, clip?.state === "busy" ? "Copying…" : clip?.state === "done" ? "Copied" : "Copy image", false,
+          () => { if (clip?.state !== "busy") this.command({ type: "copyimage", file: f }); }, clip?.state === "done" ? "check" : "copy")))
+        .when(Boolean(f.link), (e) => e.child(this.chip(t, `sl-iml-${f.id}`, this.linkCopied === f.id ? "Copied" : "Copy link", false, (cx) => this.copyLink(f.id, f.link, cx), this.linkCopied === f.id ? "check" : "link")))
+        .when(Boolean(f.link), (e) => e.child(this.chip(t, `sl-imo-${f.id}`, "Open in browser", false, (cx) => { this.openLink(f.link, cx); done(); }, "external-link")))
+        .when(Boolean(f.url) && d?.state !== "busy", (e) => e.child(this.chip(t, `sl-imd-${f.id}`, "Download", false, () => { this.command({ type: "download", file: f }); done(); }, "download")))
+        .when(clip?.state === "error", (e) => e.child(div().w_full().text_size(11).text_color(t.blocked).child(clip.error)))));
+  }
+
+  // A link onto the clipboard; its button says Copied for a moment.
+  copyLink(id, url, cx) {
+    cx.write_to_clipboard(url);
+    this.linkCopied = id;
+    cx.timer.after(1500, (cx) => { if (this.linkCopied === id) { this.linkCopied = null; cx.notify(); } });
+  }
+
+  // What the messages on screen show, then those up to a screen above it, then a screen below:
+  // each band newest (bottom) first, as Slack fills a channel in. C.off is how far the view is
+  // scrolled up from the bottom; a message not measured yet counts as 80px.
+  nearWants(list, C) {
+    const vh = C.viewH || 800, off = Math.min(C.off, Math.max(0, C.contentH - C.viewH));
+    const seen = [], above = [], below = [];
+    let y = 0;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i], lo = y;
+      y += C.heights?.[m.ts] ?? 80;
+      if (lo >= off + 2 * vh) break;
+      if (y > off && lo < off + vh) seen.push(m);
+      else if (lo >= off + vh) above.push(m);
+      else if (y > off - vh) below.push(m);
+    }
+    return [...seen, ...above, ...below.reverse()].flatMap((m) => this.msgWants(m));
+  }
+
+  // A message's faces and every picture it draws (files, cards, blocks, workspace emoji,
+  // reactions) not shown yet. A file's larger copy and original are asked for only when opened.
+  msgWants(m) {
+    const out = [], media = this.S?.media ?? {};
+    const face = (id) => { if (id && !this.av[id]) out.push({ face: id }); };
+    const walk = (v, depth) => {
+      if (!v || typeof v !== "object" || depth > 8) return;
+      if (Array.isArray(v)) { for (const x of v) walk(x, depth + 1); return; }
+      if (typeof v.key === "string" && typeof v.url === "string" && MEDIA_NAME.test(v.key)) { if (!media[v.key]) out.push({ pic: v }); return; }
+      for (const [k, x] of Object.entries(v)) if (k !== "big" && k !== "full") walk(x, depth + 1);
+    };
+    face(m.uid);
+    walk(m, 0);
+    for (const r of m.repliers ?? []) face(r.id);
+    return out;
+  }
+
+  // A list row's face and the workspace emoji in its name.
+  rowWants(c) {
+    const out = [], media = this.S?.media ?? {};
+    if (c.kind === "im" && c.user && !this.av[c.user]) out.push({ face: c.user });
+    for (const w of c.titleParts?.lines?.[0]?.w ?? []) if (w.pic?.key && !media[w.pic.key]) out.push({ pic: w.pic });
+    return out;
+  }
+
+  // Notes what this render showed; flushWant hands it to the background when it changed. Not
+  // from render itself: setShared re-renders every mod.
+  wantNow(S) {
+    if (S.me && !this.av[S.me]) this.wants.push({ face: S.me });
+    const ids = new Set(), items = [];
+    for (const w of this.wants) {
+      const id = w.face ? `@${w.face}` : w.pic.key;
+      if (ids.has(id) || items.length >= 200) continue;
+      ids.add(id);
+      items.push(w.face ? { face: w.face } : { pic: { url: w.pic.url, w: w.pic.w, h: w.pic.h } });
+    }
+    const key = [...ids].join(",");
+    if (key !== this.wantKey) { this.wantKey = key; this.wantItems = items; }
+  }
+
+  flushWant() {
+    if (!this.wantItems) return;
+    this.wantSeq = (this.wantSeq ?? 0) + 1;
+    setShared(WANT, { n: `${Date.now()}.${this.wantSeq}`, items: this.wantItems });
+    this.wantItems = null;
   }
 
   openViewer(f, cx) {
@@ -2161,8 +3102,16 @@ export default class Slack extends View {
     const nameColor = m.mine ? t.done : colors.get(m.uid || m.who) ?? t.foreground;
     const body = v_flex().flex_1().min_w(0).gap(2)
       .when(head, (el) => el.child(h_flex().gap(8).items_baseline()
-        .child(div().text_size(12.5).font_semibold().text_color(nameColor).child(m.who))
+        .child(/^[UW]/.test(m.uid ?? "") ? div().id(`sl-mw-${inThread ? "t" : ""}${m.ts}`).text_size(12.5).font_semibold().text_color(nameColor).cursor_pointer().hover((s) => s.underline())
+          .on_click((_e, cx) => { cx.stop_propagation(); this.openProfile(m.uid, cx); }).child(m.who)
+          : div().text_size(12.5).font_semibold().text_color(nameColor).child(m.who))
         .child(div().text_size(11).text_color(t.dim).child(clock(m.t)))))
+      .when(Boolean(m.broadcast) && !inThread, (el) => el.child(h_flex().id(`sl-bc-${m.ts}`).min_w(0).gap(4).items_center().cursor_pointer().text_size(11.5).text_color(t.dim)
+        .hover((s) => s.text_color(t.foreground))
+        .on_click((_e, cx) => { cx.stop_propagation(); this.command({ type: "thread", id: o.id, ts: m.broadcast.thread }); cx.notify(); })
+        .child(div().flex_none().child("replied to a thread:"))
+        .child(div().min_w(0).truncate().text_color(LINK).child(m.broadcast.root || "view thread"))))
+      .when(Boolean(m.broadcast) && inThread, (el) => el.child(div().text_size(11.5).text_color(t.dim).child(o.kind === "im" ? "Also sent as direct message" : `Also sent to ${o.kind === "mpim" ? "the group" : `#${o.title}`}`)))
       .when(Boolean(m.text), (el) => el.child(this.textView(t, m)))
       .when(Boolean(m.blocks), (el) => el.child(this.blocksView(t, m.blocks, `${m.ts}-b`)))
       .children((m.files ?? []).map((f) => (f.thumb ? this.imageFile(t, f) : this.fileCard(t, f))))
@@ -2197,7 +3146,8 @@ export default class Slack extends View {
       .on_hover((on, cx) => { if (on) C.hover = m.ts; else if (C.hover === m.ts) C.hover = null; cx.notify(); })
       .when(hovered || picking, (el) => el.bg(t.hover))
       .child(h_flex().gap(8).items_start()
-        .child(head ? div().flex_none().pt(2).child(this.face(t, m.uid || m.who, m.who, 30, nameColor)) : div().w(30).flex_none())
+        .child(head ? div().id(`sl-mf-${inThread ? "t" : ""}${m.ts}`).flex_none().pt(2).when(/^[UW]/.test(m.uid ?? ""), (el) => el.cursor_pointer()
+          .on_click((_e, cx) => { cx.stop_propagation(); this.openProfile(m.uid, cx); })).child(this.face(t, m.uid || m.who, m.who, 30, nameColor)) : div().w(30).flex_none())
         .child(body))
       .when(hovered || picking, (el) => {
         const tool = (id, icon, tip, on, onClick) => div().id(id).size(22).flex().items_center().justify_center().rounded(4).cursor_pointer()
@@ -2214,8 +3164,9 @@ export default class Slack extends View {
     const o = S.open, C = this.chat, th = o.thread;
     // In a thread the same view shows the thread: its first message, then the replies.
     const list = th ? th.messages : o.messages;
-    const viewKey = th ? `${o.id}:${th.ts}` : o.id;
-    if (C.id !== viewKey) Object.assign(C, { id: viewKey, off: 0, viewH: 0, contentH: 0, hover: null, pick: null, askedOlder: null, link: null });
+    // Each opening is its own view (o.n): coming back starts again at the bottom or the red line.
+    const viewKey = th ? `${o.id}.${o.n}:${th.ts}` : `${o.id}.${o.n}`;
+    if (C.id !== viewKey) Object.assign(C, { id: viewKey, off: 0, viewH: 0, contentH: 0, hover: null, pick: null, askedOlder: null, link: null, heights: {}, jumped: null, readFor: null, bottomTs: null });
     // A send answered: the box empties when it went through, and keeps the text when it didn't.
     if (this.pending && S.result?.n === this.pending) {
       if (S.result.ok) { this.reply.set_value(""); this.replyEmpty = true; this.picked.clear(); this.mention = null; C.off = 0; }
@@ -2242,15 +3193,48 @@ export default class Slack extends View {
     const colorKey = `${viewKey}|${list.length}|${list[0]?.ts}|${list[list.length - 1]?.ts}|${this.dark}`;
     if (this.colorMemo?.key !== colorKey) this.colorMemo = { key: colorKey, colors: chatColors(list, this.dark) };
     const colors = this.colorMemo.colors;
+    // Where the unread part starts (Slack's last_read when it was opened): a red line above it.
+    const newFrom = th ? th.newFrom : o.newFrom, newCount = th ? th.newCount : o.newCount;
+    const newAt = newFrom ? list.findIndex((m) => m.ts === newFrom) : -1;
     list.forEach((m, i) => {
       const prev = list[i - 1];
       const newDay = !prev || dayLabel(prev.t) !== dayLabel(m.t);
-      if (newDay) content.child(h_flex().flex_none().gap(8).items_center().px(12).pt(i ? 10 : 4).pb(2)
+      // A message with the lines above it, measured together: the scroll position of any one
+      // is the sum of the heights below it.
+      const block = v_flex().flex_none().w_full()
+        .on_size_change((s, cx) => { if (Math.abs((C.heights[m.ts] ?? -1) - s.height) > 0.5) { C.heights[m.ts] = s.height; cx.notify(); } });
+      if (newDay) block.child(h_flex().flex_none().gap(8).items_center().px(12).pt(i ? 10 : 4).pb(2)
         .child(div().flex_1().h(1).bg(t.border)).child(div().text_size(11).text_color(t.dim).child(dayLabel(m.t))).child(div().flex_1().h(1).bg(t.border)));
-      content.child(this.messageView(t, o, m, newDay || prev.who !== m.who || m.t - prev.t > 300000, colors, Boolean(th)));
-      if (th && i === 0 && list.length > 1) content.child(h_flex().flex_none().gap(8).items_center().px(12).pt(8).pb(2)
+      if (i === newAt) block.child(h_flex().flex_none().gap(8).items_center().px(12).pt(6).pb(2)
+        .child(div().flex_1().h(1).bg(t.blocked)).child(div().flex_none().text_size(11).font_semibold().text_color(t.blocked).child("새 메시지")));
+      block.child(this.messageView(t, o, m, newDay || i === newAt || prev.who !== m.who || m.t - prev.t > 300000, colors, Boolean(th)));
+      if (th && i === 0 && list.length > 1) block.child(h_flex().flex_none().gap(8).items_center().px(12).pt(8).pb(2)
         .child(div().text_size(11).text_color(t.dim).child(`${list.length - 1} ${list.length === 2 ? "reply" : "replies"}`)).child(div().flex_1().h(1).bg(t.border)));
+      content.child(block);
     });
+    // How far up from the bottom the red line sits; null until every message below it is measured.
+    let newUp = null;
+    if (newAt >= 0) {
+      newUp = 6;
+      for (let i = newAt; i < list.length && newUp != null; i++) newUp = C.heights[list[i].ts] == null ? null : newUp + C.heights[list[i].ts];
+    }
+    // The red line a little below the top, so pictures still arriving above it don't push it out.
+    const toNew = () => Math.min(max(), Math.max(0, newUp - C.viewH + Math.min(120, C.viewH / 4)));
+    // Opened with unread messages: the view starts at the red line rather than the bottom.
+    const jumpKey = newAt >= 0 ? `${viewKey}:${newFrom}` : null;
+    if (jumpKey && C.jumped !== jumpKey && newUp != null && C.viewH > 0 && C.contentH > 0) { C.jumped = jumpKey; C.off = toNew(); }
+    const settled = !jumpKey || C.jumped === jumpKey;
+    // Read once the newest messages have been on screen, not merely because it was opened.
+    if (!th && !o.loading && settled && !o.bottomSeen && C.viewH > 0 && C.off <= 40 && C.readFor !== viewKey) {
+      C.readFor = viewKey;
+      this.command({ type: "readbottom", id: o.id });
+    }
+    const lastTs = list[list.length - 1]?.ts ?? null;
+    if (C.off <= 40) C.bottomTs = lastTs;
+    const newBelow = C.off > 40 && lastTs && C.bottomTs && Number(lastTs) > Number(C.bottomTs);
+    const pill = (id, label, onClick) => div().id(id).h(24).px(10).flex().items_center().rounded(12).cursor_pointer()
+      .bg(t.raised).border(1).border_color(t.input).text_size(11.5).text_color(t.foreground).hover((s) => s.bg(t.selected))
+      .on_click((_e, cx) => { onClick(); cx.notify(); }).child(label);
     const view = v_flex().id("sl-view").flex_1().min_h(0).overflow_hidden().justify_end().relative()
       .on_size_change((s, cx) => {
         if (Math.abs(s.height - C.viewH) > 0.5 || Math.abs(s.width - (C.viewW ?? 0)) > 0.5) { C.viewH = s.height; C.viewW = s.width; cx.notify(); }
@@ -2261,9 +3245,11 @@ export default class Slack extends View {
         cx.notify();
       })
       .child(v_flex().flex_none().relative().top(Math.min(C.off, max())).child(content))
-      .when(C.off > 40, (el) => el.child(div().id("sl-down").absolute().right(12).bottom(10).h(24).px(9).flex().items_center().rounded(12).cursor_pointer()
-        .bg(t.raised).border(1).border_color(t.input).text_size(11.5).text_color(t.foreground).hover((s) => s.bg(t.selected))
-        .on_click((_e, cx) => { C.off = 0; cx.notify(); }).child("Latest ↓")));
+      .when(settled && newUp != null && newUp > C.off + C.viewH, (el) => el.child(h_flex().absolute().top(8).left(0).right(0).justify_center()
+        .child(pill("sl-up-new", `↑ ${newCount || list.length - newAt}개의 새 메시지`, () => { C.off = toNew(); }))))
+      .when(C.off > 40, (el) => el.child(div().absolute().right(12).bottom(10)
+        .child(pill("sl-down", newBelow ? "↓ 새 메시지" : "Latest ↓", () => { C.off = 0; }))));
+    this.wants.push(...this.nearWants(list, C));
     const sending = Boolean(this.pending);
     return v_flex().flex_1().min_h(0)
       .when(Boolean(th), (el) => el.child(h_flex().flex_none().h(30).px(12).gap(8).items_center().bg(t.chrome).border_b(1).border_color(t.border)
@@ -2278,17 +3264,19 @@ export default class Slack extends View {
       .when(Boolean(this.mention), (el) => {
         const list = this.mentionList();
         if (!list.length) return el;
+        if (!list[0].channel) this.wants.unshift(...list.filter((p) => !this.av[p.id]).map((p) => ({ face: p.id })));
         const sel = Math.min(this.mentionSel, list.length - 1);
         const palette = settings()?.dark !== false ? NAME_COLORS.dark : NAME_COLORS.light;
         return el.child(v_flex().flex_none().py(4).bg(t.popover ?? t.raised).border_t(1).border_color(t.border)
-          .child(div().px(12).pb(2).text_size(10.5).font_semibold().text_color(t.dim).child("PEOPLE  ·  ↑↓ to move, Enter or Tab to pick"))
+          .child(div().px(12).pb(2).text_size(10.5).font_semibold().text_color(t.dim).child(`${list[0].channel ? "CHANNELS" : "PEOPLE"}  ·  ↑↓ to move, Enter or Tab to pick`))
           .children(list.map((p, i) => h_flex().id(`sl-at-${p.id}`).h(30).mx(4).px(8).gap(8).items_center().rounded(4).cursor_pointer()
             .when(i === sel, (e) => e.bg(t.selected))
             .on_hover((on, cx) => { if (on && this.mentionSel !== i) { this.mentionSel = i; cx.notify(); } })
             .on_click((_e, cx) => this.pickMention(p, cx))
-            .child(this.face(t, p.id, p.name, 20, palette[hashOf(p.id) % palette.length]))
+            .child(p.channel ? div().size(20).flex_none().flex().items_center().justify_center().text_color(t.dim).child(svg(ICON(p.private ? "lock" : "hash")).size(13))
+              : this.face(t, p.id, p.name, 20, palette[hashOf(p.id) % palette.length]))
             .child(div().flex_none().text_size(12.5).font_semibold().text_color(t.foreground).child(p.name))
-            .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(p.real && p.real !== p.name ? p.real : p.handle ? `@${p.handle}` : "")))));
+            .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(p.channel ? "" : p.real && p.real !== p.name ? p.real : p.handle ? `@${p.handle}` : "")))));
       })
       .child(h_flex().flex_none().gap(6).items_center().p(8).bg(t.chrome).border_t(1).border_color(t.border)
         .child(div().relative().flex_1().min_w(0)
@@ -2310,6 +3298,14 @@ export default class Slack extends View {
           .when(sending || this.replyEmpty, (el) => el.opacity(0.45))
           .when(!sending && !this.replyEmpty, (el) => el.cursor_pointer().hover((s) => s.opacity(0.88)).on_click((_e, cx) => this.send(cx)))
           .tooltip("Send (Enter)")
-          .child(svg(ICON("send")).size(14))));
+          .child(svg(ICON("send")).size(14))))
+      // Slack's "Also send to #channel": the reply goes into the thread and the conversation.
+      .when(Boolean(th), (el) => el.child(h_flex().id("sl-bcast").flex_none().px(10).pb(8).gap(6).items_center().bg(t.chrome).cursor_pointer().text_size(12).text_color(t.muted)
+        .hover((s) => s.text_color(t.foreground))
+        .on_click((_e, cx) => { this.alsoSend = !this.alsoSend; cx.notify(); })
+        .child(div().size(14).flex_none().rounded(3).border(1).flex().items_center().justify_center()
+          .border_color(this.alsoSend ? t.solid ?? t.accent : t.input).bg(this.alsoSend ? t.solid ?? t.accent : t.canvas ?? t.background).text_color(t.solid_foreground ?? t.accent_foreground)
+          .when(Boolean(this.alsoSend), (e) => e.child(svg(ICON("check")).size(11))))
+        .child(o.kind === "im" ? "Also send as direct message" : o.kind === "mpim" ? "Also send to the group" : `Also send to #${o.title}`)));
   }
 }

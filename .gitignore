@@ -75,6 +75,9 @@ local/
 *.local
 # omarchy/home mirrors $HOME, so its .local/ is tracked config, not machine-local state.
 !omarchy/home/.local
+# herdr-app's data/ holds tokens and personal state (data/slack/sections.json): sync.sh never
+# captures it, and this keeps a copy made by hand out too.
+omarchy/home/.config/herdr-app/data/
 
 # Claude Code
 .claude/*

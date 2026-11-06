@@ -43,6 +43,8 @@ export const SCOPES = [
   ["groups:write", "marking private channels read in Slack"],
   ["im:write", "marking direct messages read in Slack"],
   ["mpim:write", "marking group messages read in Slack"],
+  ["search:read", "Threads view"],
+  ["stars:read", "Saved view"],
 ];
 
 // The Slack app's settings. Slack doesn't allow "Slack" in an app name.
@@ -89,7 +91,9 @@ export async function checkUser(token) {
 
 // Slack has no call that lists a token's permissions, but a call it refuses for a missing
 // one names all the permissions the token has. These calls change nothing: the file, the
-// reaction's, the message's and the marked conversation don't exist.
+// reaction's, the message's and the marked conversation don't exist. Every probe answered
+// without missing_scope means nothing is missing; one that failed to answer (network, rate
+// limit, Slack's own error) leaves it unknown: null, checked again later.
 export async function missingScopes(token) {
   const probes = [
     ["files.info", { file: "F0000000000" }, false],
@@ -99,16 +103,21 @@ export async function missingScopes(token) {
     ["users.list", { limit: "1" }, false],
     ["emoji.list", {}, false],
     ["conversations.mark", { channel: "C0000000000", ts: "1.000001" }, true],
+    ["stars.list", { limit: "1" }, false],
+    ["search.messages", { query: "herdr", count: "1" }, false],
   ];
+  let unsure = false;
   for (const [method, params, post] of probes) {
     const j = await call(token, method, params, post).catch(() => null);
     if (j?.error === "missing_scope" && j.provided != null) {
       const have = new Set(String(j.provided).split(",").map((s) => s.trim()));
       return SCOPES.filter(([s]) => !have.has(s)).map(([scope, what]) => ({ scope, what }));
     }
+    if (!j || typeof j.ok !== "boolean" || j.error === "missing_scope" || UNSURE.has(j.error)) unsure = true;
   }
-  return [];
+  return unsure ? null : [];
 }
+const UNSURE = new Set(["ratelimited", "rate_limited", "fatal_error", "internal_error", "request_timeout", "service_unavailable", "team_added_to_org", "accesslimited"]);
 
 // ── files ────────────────────────────────────────────────────────────────────────────────
 // Only this user may read the tokens: chmod on macOS and Linux, icacls on Windows (the
@@ -179,7 +188,9 @@ function status(t, check) {
       .child(check.user ? `Signed in as ${check.user}${check.team ? ` · ${check.team}` : ""}` : "Token works"))
     .children((check.missing ?? []).map((m) => h_flex().gap(6).items_start().text_size(12).text_color(t.working)
       .child(svg(ICON("triangle-alert")).size(13).flex_none().mt(1))
-      .child(div().flex_1().min_w(0).child(`${m.scope} is missing: no ${m.what}`))));
+      .child(div().flex_1().min_w(0).child(`${m.scope} is missing: no ${m.what}`))))
+    .when(Boolean(check.user) && check.missing === null, (el) => el.child(div().text_size(12).text_color(t.dim)
+      .child("Couldn't check the permissions: Slack didn't answer. The panel checks again once connected.")));
 }
 
 function field(v, t, key, cx) {
@@ -273,13 +284,15 @@ export function renderSetup(v, t, S, cx) {
   } else if (W.step === 3 && W.fix) {
     // Fixing permissions keeps the token: reinstalling the app adds the new permissions to
     // the token it already gave, so all that's left is to check again.
-    const missing = S?.missing ?? [];
+    const missing = S?.missing ?? [], unknown = S?.missing == null;
     const checking = Boolean(W.rescope) && !((S?.scopedAt ?? 0) >= W.rescope);
     const checked = Boolean(W.rescope) && !checking;
     body = v_flex().gap(12)
       .child(div().font_medium().text_color(t.foreground).child("Add the missing permissions"))
       .child(para(t, "Your token stays the same: Slack adds the permissions to it when you reinstall the app."))
-      .child(missing.length
+      .child(unknown
+        ? div().text_size(12).text_color(t.dim).child("Couldn't check the permissions yet: Slack didn't answer. Check again in a moment.")
+        : missing.length
         ? v_flex().gap(4).children(missing.map((m) => h_flex().gap(6).items_start().text_size(12).text_color(t.working)
           .child(svg(ICON("triangle-alert")).size(13).flex_none().mt(1))
           .child(div().flex_1().min_w(0).child(`${m.scope}: ${m.what}`))))
@@ -299,7 +312,7 @@ export function renderSetup(v, t, S, cx) {
       .child(div().id("sl-su-newtok").text_size(11.5).text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground).underline())
         .on_click((_e, cx) => { W.fix = false; cx.notify(); })
         .child("Slack gave you a new token? Paste it instead"))
-      .child(footer(missing.length === 0
+      .child(footer(missing.length === 0 && !unknown
         ? button(t, "sl-su-done", "Done", (_e, cx) => v.closeSetup(cx), { primary: true })
         : button(t, "sl-su-rescope", checking ? "Checking…" : "Check permissions", (_e, cx) => {
           W.rescope = Date.now();
