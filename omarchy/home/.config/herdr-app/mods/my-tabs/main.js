@@ -5,7 +5,7 @@ import { spaces, panes, run, openOverlay, closeOverlay, props, theme, window, sh
 // Panels that get a tab-bar button only while opened from the + panels menu (or the
 // `my-tabs.<id>` command); their × closes them. Open ones are kept in shared `<id>.open`,
 // which the panel's mod also reads to stop its work while closed.
-const OPTIONAL = [{ id: "spotify", label: "Spotify", icon: "mods/spotify/music.svg" }];
+const OPTIONAL = [{ id: "spotify", label: "Music", icon: "mods/spotify/music.svg" }];
 const isOpen = (id) => shared(`${id}.open`) === true;
 
 function find(node, id) {
@@ -156,7 +156,7 @@ export default class Tabs extends View {
       .child(panelButton("omp-usage", "Usage", "mods/omp-usage/refresh.svg"))
       .child(panelButton("artifacts", "Artifacts", "mods/files/file.svg"))
       .child(panelButton("slack", "Slack", "mods/slack/message-square.svg"))
-      .child(panelButton("browser", "Browser", "mods/slack/external-link.svg"))
+      .child(panelButton("browser", "Browser", "mods/browser/globe.svg"))
       .child(panelButton("git", "Git", "mods/changes/changes.svg"))
       .children(OPTIONAL.filter((p) => isOpen(p.id)).map(closableButton))
       .child(button("panel-add", svg("mods/workspace-chrome/plus.svg").size(14), (_e, cx) => { cx.stop_propagation(); this.openMenu(); }).tooltip("패널 열기"))
