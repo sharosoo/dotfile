@@ -47,6 +47,8 @@ MIN_SEED_BYTES = 10
 # http is only accepted for loopback dev servers; anything else must be https.
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 ENROLL_MODES = ("confirm", "auto")
+# CSS selectors login.mjs types into on sites without a built-in adapter (sites.<name>.login_selectors).
+LOGIN_SELECTOR_KEYS = ("username", "password", "otp", "submit")
 
 EXIT_DENIED = 4
 EXIT_CONFIRM = 3
@@ -100,6 +102,9 @@ def toml_value(v):
         return str(v)
     if isinstance(v, list):
         return "[" + ", ".join(toml_value(x) for x in v) + "]"
+    if isinstance(v, dict):
+        # Keys are restricted to LOGIN_SELECTOR_KEYS (bare TOML keys).
+        return "{ " + ", ".join(f"{k} = {toml_value(x)}" for k, x in v.items()) + " }"
     # JSON string escapes (\", \\, \uXXXX) are valid TOML basic-string escapes.
     return json.dumps(str(v), ensure_ascii=False)
 
@@ -408,17 +413,47 @@ def cmd_add(args):
     if created and not domains:
         die("a new site needs at least one --domain (host or URL)")
     entry["domains"] = union(entry.get("domains", []), domains)
+    if args.session_domain is not None:
+        session_domains = [host_of(d) for d in args.session_domain if d]
+        if session_domains:
+            entry["session_domains"] = union(entry.get("session_domains", []), session_domains)
+        else:
+            entry.pop("session_domains", None)
     if args.login_url:
         entry["login_url"] = args.login_url
     base_fields = list(DEFAULT_FIELDS) if created else entry.get("fields", [])
     entry["fields"] = union(base_fields, [f for f in args.field if f != TOTP_FIELD])
     if TOTP_FIELD in args.field:
         args.otp = True
-    for key in ("otp", "otp_replace", "otp_enroll", "otp_issuer", "ignore_port", "session"):
+    for key in ("otp", "otp_replace", "otp_enroll", "otp_issuer", "ignore_port", "session", "identity_selector"):
         if getattr(args, key) == "":
             entry.pop(key, None)
         elif getattr(args, key) is not None:
             entry[key] = getattr(args, key)
+    for arg, key in (("login_path", "login_paths"), ("identity_path", "identity_paths")):
+        if getattr(args, arg) is None:
+            continue
+        paths = [x for x in getattr(args, arg) if x]
+        if any(not x.startswith("/") for x in paths):
+            die(f"--{arg.replace('_', '-')} must start with '/'")
+        if paths:
+            entry[key] = paths
+        else:
+            entry.pop(key, None)
+    if args.login_selector is not None:
+        selectors = dict(entry.get("login_selectors", {}))
+        for item in args.login_selector:
+            key, sep, css = item.partition("=")
+            if not sep or key not in LOGIN_SELECTOR_KEYS:
+                die(f"--login-selector takes KEY=CSS with KEY one of {', '.join(LOGIN_SELECTOR_KEYS)}")
+            if css:
+                selectors[key] = css
+            else:
+                selectors.pop(key, None)
+        if selectors:
+            entry["login_selectors"] = selectors
+        else:
+            entry.pop("login_selectors", None)
     entry.setdefault("otp", False)
     entry.setdefault("session", True)
     if args.session_ttl_days is not None:
@@ -757,7 +792,20 @@ def main():
     p = sub.add_parser("add", help="register or update a site, then prompt for an account's secrets (no TOML editing)")
     p.add_argument("ref", metavar="SITE[:ACCOUNT]")
     p.add_argument("--domain", action="append", default=[], help="host or URL credentials may be typed into (repeatable)")
+    p.add_argument("--session-domain", action="append",
+                   help="host whose cookies a saved session may keep (repeatable; '*.example.com' for subdomains; "
+                        "'' clears; default: --domain). Never used for typing.")
     p.add_argument("--login-url")
+    p.add_argument("--login-path", action="append",
+                   help="path (exact, or prefix ending in '/') where login.mjs may type credentials (repeatable; "
+                        "'' clears; default: the login_url path)")
+    p.add_argument("--login-selector", action="append", metavar="KEY=CSS",
+                   help=f"CSS selector login.mjs types into for sites without an adapter; KEY: "
+                        f"{', '.join(LOGIN_SELECTOR_KEYS)} (repeatable; KEY= removes one)")
+    p.add_argument("--identity-selector", help="CSS selector whose text is exactly the signed-in username ('' removes it)")
+    p.add_argument("--identity-path", action="append",
+                   help="path (exact, or prefix ending in '/'; '/' = the root page only) where identity_selector is read "
+                        "(repeatable; '' clears; default: '/')")
     p.add_argument("--field", action="append", default=[],
                    help=f"extra allowed field (repeatable; new sites start with {', '.join(DEFAULT_FIELDS)}; 'totp' implies --otp)")
     p.add_argument("--otp", action=argparse.BooleanOptionalAction, default=None, help="allow TOTP codes")

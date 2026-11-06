@@ -7,10 +7,17 @@ login_url = "https://accounts.google.com"
 fields = ["username", "password"]
 otp = true
 session = true
+session_domains = ["google.com", "*.google.com"]
 
 [sites.korail]
 domains = ["korail.com", "www.korail.com"]
 login_url = "https://www.korail.com"
+fields = ["username", "password"]
+otp = false
+session = true
+
+[sites.opnsense]
+domains = ["192.168.0.1"]
 fields = ["username", "password"]
 otp = false
 session = true

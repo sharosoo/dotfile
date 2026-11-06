@@ -41,6 +41,12 @@ deny = ["change_password", "disable_2fa", "export_secrets"]
 # [sites.<name>]
 # domains = ["example.com"]           # hosts (optionally host:port, or "*.example.com" for subdomains only) credentials may be typed into
 # login_url = "https://example.com/login"
+# login_paths = ["/login", "/2fa/"]   # where login.mjs may type (exact, or prefix ending in "/"); default: login_url path
+# login_selectors = { username = "#email", password = "#password", otp = "#code", submit = "button[type=submit]" }
+#                                     # CSS fields login.mjs types into on sites without a built-in adapter
+# identity_selector = "#who"          # element whose text is exactly the signed-in username (identity proof)
+# identity_paths = ["/dashboard"]     # where identity_selector is read (exact, or prefix ending in "/"; "/" = root page only); default ["/"]
+# session_domains = ["example.com", "*.example.com"]  # hosts whose cookies a saved session keeps (never typing); default: domains
 # fields = ["username", "password"]   # fields `browser-vault get` may return
 # otp = true                          # allow `browser-vault otp` and `otp-enroll` (seed stored as field "totp")
 # otp_replace = true                  # allow `otp-enroll --replace` to overwrite a stored seed
