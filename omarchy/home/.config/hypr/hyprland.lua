@@ -69,6 +69,3 @@ do
   end
   hl.env("PATH", table.concat(entries, ":"))
 end
-
--- cua-driver Hyprland plugin (local build). autostart loads it and reloads; pcall keeps startup clean before the plugin exists.
-pcall(hl.config, {plugin = {cua = {enabled = true}}})
