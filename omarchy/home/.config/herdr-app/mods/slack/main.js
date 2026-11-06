@@ -16,8 +16,8 @@
 //   app-token   xapp-…  Socket Mode connection (scope connections:write)
 //   user-token  xoxp-…  reading and replying as you (reacting also needs reactions:write)
 //
-// Slack gives this token no way to mark a conversation read, so "read" is kept here:
-// opening a conversation clears its count in Herdr only.
+// "Read" is marked in Slack too (conversations.mark) when the token has the four *:write
+// scopes; without them it is kept here only and the list says so.
 //
 // Pictures (image files, link previews, app cards) are drawn in the messages from copies kept
 // in data/slack/media/ (bounded, oldest shown first to go). Links open in Herdr's browser panel
@@ -769,6 +769,7 @@ export default class Slack extends View {
     const latest = h.messages?.[0];
     if (!latest) return;
     c.ts = Number(latest.ts) * 1000;
+    c.lastTs = latest.ts;
     if (latest.user && !this.users.has(latest.user)) await this.resolveUsers([latest.user]);
     c.preview = this.previewOf(c, latest);
     this.cacheDirty = true;
@@ -870,6 +871,7 @@ export default class Slack extends View {
     const mine = ev.user === this.me.id;
     const shown = this.open?.id === c.id;
     c.ts = Number(ev.ts) * 1000;
+    c.lastTs = ev.ts;
     c.preview = this.previewOf(c, ev);
     this.cacheDirty = true;
     if (shown) {
@@ -1196,6 +1198,47 @@ export default class Slack extends View {
     if (ts) await this.openThread({ id, ts });
   }
 
+  // Marks conversations read at their newest message, in Slack as well as here. The counts go
+  // at once; a conversation Slack refuses comes back as it was, with a note. Without the
+  // write scopes, read stays a Herdr-only mark (as before) and the note says how to get them.
+  async markRead(ids) {
+    const marked = [];
+    for (const id of [...new Set(Array.isArray(ids) ? ids : [])].slice(0, 200)) {
+      const c = this.convs.get(id);
+      if (!c) continue;
+      marked.push({ c, unread: c.unread, mention: c.mention, seen: this.seen[id] });
+      c.unread = 0;
+      c.mention = false;
+    }
+    if (!marked.length) return;
+    this.dirty = true;
+    this.publish();
+    let local = 0, failed = 0, why = "";
+    for (const m of marked) {
+      const c = m.c;
+      let ts = c.lastTs;
+      if (!ts) {
+        const h = await this.api("conversations.history", { channel: c.id, limit: "1" }).catch(() => null);
+        ts = h?.ok ? h.messages?.[0]?.ts : null;
+        if (ts) c.lastTs = ts;
+      }
+      if (!ts) continue;
+      this.seen[c.id] = ts;
+      const j = await this.api("conversations.mark", { channel: c.id, ts }, true).catch((e) => ({ ok: false, error: String(e?.message ?? e) }));
+      if (j?.ok) continue;
+      if (j?.error === "missing_scope") { local += 1; continue; }
+      failed += 1;
+      why = j?.error ?? "no answer";
+      c.unread = m.unread;
+      c.mention = m.mention;
+      if (m.seen == null) delete this.seen[c.id]; else this.seen[c.id] = m.seen;
+    }
+    this.saveSeen();
+    if (failed) this.note = { text: `Couldn't mark ${failed === 1 ? "it" : `${failed} conversations`} read in Slack (${why}).`, error: true, until: Date.now() + 8000 };
+    else if (local) this.note = { text: "Marked read in Herdr only: Slack needs write permissions. Gear menu → Fix permissions.", until: Date.now() + 8000 };
+    this.dirty = true;
+  }
+
   saveSeen() {
     try { localStorage.setItem("seen", JSON.stringify(this.seen)); } catch (_) {}
   }
@@ -1222,15 +1265,8 @@ export default class Slack extends View {
           if (p) { this.mediaFailed.delete(p.key); this.needMedia(p); }
         }
         else if (cmd.type === "goto") await this.goto(cmd.id, cmd.ts ?? null);
-        else if (cmd.type === "markread") {
-          const c = this.convs.get(cmd.id);
-          if (c) {
-            c.unread = 0;
-            c.mention = false;
-            if (c.ts) { this.seen[c.id] = (c.ts / 1000).toFixed(6); this.saveSeen(); }
-            this.dirty = true;
-          }
-        } else if (cmd.type === "section") this.editSections(cmd);
+        else if (cmd.type === "markread") await this.markRead(cmd.ids ?? [cmd.id]);
+        else if (cmd.type === "section") this.editSections(cmd);
         else if (cmd.type === "sectionmute") {
           for (const [id, sid] of Object.entries(this.placed)) {
             if (sid !== cmd.sid) continue;
@@ -1417,7 +1453,7 @@ export default class Slack extends View {
     this.open.more = got.more;
     this.open.loading = false;
     const last = got.msgs[got.msgs.length - 1];
-    if (last) { this.seen[id] = last.ts; this.saveSeen(); c.ts = c.ts || Number(last.ts) * 1000; }
+    if (last) { this.seen[id] = last.ts; this.saveSeen(); c.ts = c.ts || Number(last.ts) * 1000; if (Number(last.ts) * 1000 >= c.ts) c.lastTs = last.ts; }
     this.dirty = true;
   }
 
@@ -1474,7 +1510,7 @@ export default class Slack extends View {
       this.open.messages.push(this.normalize({ ...j.message, ts: j.ts, user: this.me.id, text }));
     }
     const c = this.convs.get(id);
-    if (c) { c.ts = Number(j.ts) * 1000; c.preview = `You: ${text}`; this.cacheDirty = true; }
+    if (c) { c.ts = Number(j.ts) * 1000; c.lastTs = j.ts; c.preview = `You: ${text}`; this.cacheDirty = true; }
     this.seen[id] = j.ts;
     this.saveSeen();
     this.dirty = true;
@@ -1530,6 +1566,7 @@ export default class Slack extends View {
       this.faceIndexDirty = false;
       try { localStorage.setItem("faceIndex", JSON.stringify(this.faceIndex)); } catch (_) {}
     }
+    if (this.note && Date.now() > this.note.until) { this.note = null; this.dirty = true; }
     if (!this.dirty) return;
     this.dirty = false;
     const convs = [...this.convs.values()].map((c) => {
@@ -1540,7 +1577,7 @@ export default class Slack extends View {
     const loud = convs.reduce((n, c) => n + c.loud, 0);
     // The list is grouped again only when this changes, not on every picture or download.
     const listKey = hashOf(JSON.stringify([convs, this.sections, this.placed])).toString(36);
-    setShared(STATE, { listKey, me: this.me?.id ?? null, status: this.status, error: this.error, team: this.team, convs, open: this.open, result: this.result, soundOn: this.soundOn, pauseUntil: this.pauseUntil, scopedAt: this.scopedAt ?? 0, avatars: this.avatars, media: this.media, sections: this.sections, placed: this.placed, downloads: this.downloads, gen: this.gen, needs: this.needs, has: this.has, missing: this.missing });
+    setShared(STATE, { listKey, note: this.note ? { text: this.note.text, error: Boolean(this.note.error) } : null, me: this.me?.id ?? null, status: this.status, error: this.error, team: this.team, convs, open: this.open, result: this.result, soundOn: this.soundOn, pauseUntil: this.pauseUntil, scopedAt: this.scopedAt ?? 0, avatars: this.avatars, media: this.media, sections: this.sections, placed: this.placed, downloads: this.downloads, gen: this.gen, needs: this.needs, has: this.has, missing: this.missing });
     setShared(UNREAD, loud);
   }
 
@@ -1822,7 +1859,15 @@ export default class Slack extends View {
       children.push(h_flex().id(`sl-g-${g.id}`).flex_none().h(28).px(8).gap(6).items_center().rounded(4).cursor_pointer().text_size(11.5).text_color(t.dim)
         .hover((s) => s.text_color(t.foreground))
         .on_click((_e, cx) => { this.folded.has(g.id) ? this.folded.delete(g.id) : this.folded.add(g.id); this.keepList(); cx.notify(); })
-        .when(Boolean(g.custom), (el) => el.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.secMenu = menu ? null : g.id; this.rowMenu = null; cx.notify(); }))
+        // Right-click marks everything in the section read; Shift+right-click (or ⋯) opens the
+        // menu of one of your sections.
+        .on_mouse_down("right", (e, cx) => {
+          cx.stop_propagation();
+          if (g.custom && e.modifiers?.shift) { this.secMenu = menu ? null : g.id; this.rowMenu = null; cx.notify(); return; }
+          const ids = g.rows.filter((c) => c.unread > 0 || c.mention).map((c) => c.id);
+          if (ids.length) this.command({ type: "markread", ids });
+        })
+        .when(g.rows.some((c) => c.unread > 0 || c.mention), (el) => el.tooltip("Right-click to mark all read"))
         .child(svg(ICON(open ? "chevron-down" : "chevron-right")).size(11).flex_none())
         .child(div().min_w(0).truncate().font_semibold().child(g.label))
         .child(div().flex_none().child(String(g.rows.length)))
@@ -1846,6 +1891,7 @@ export default class Slack extends View {
         .child(tool("sl-sort", this.sortAlpha ? "arrow-down-a-z" : "clock", this.sortAlpha ? "Sorted A–Z (click for newest first)" : "Newest first (click for A–Z)", false, () => { this.sortAlpha = !this.sortAlpha; this.keepList(); }))
         .child(tool("sl-unreads", "message-square", this.unreadsOn ? "Hide the Unreads section" : "Show an Unreads section", this.unreadsOn, () => { this.unreadsOn = !this.unreadsOn; this.keepList(); }))
         .child(tool("sl-newsec", "plus", "New section", false, (cx) => this.startSection({ mode: "new" }, "", cx))))
+      .when(Boolean(S.note), (el) => el.child(div().flex_none().mx(8).mb(4).text_size(11.5).text_color(S.note.error ? t.blocked : t.dim).child(S.note.text)))
       .child(v_flex().id("sl-rows").flex_1().min_h(0).overflow_y_scroll().px(4).pb(6)
         .children(children)
         .when(!groups.length && !this.secEdit, (el) => el.child(div().p(12).text_size(12).text_color(t.dim).child(q ? "No conversation matches." : S.status === "starting" || S.status === "loading" ? "Loading conversations…" : "No conversations yet."))));
@@ -1910,7 +1956,8 @@ export default class Slack extends View {
       .child(this.chip(t, "sl-sm-del", "Delete section", false, () => { this.command({ type: "section", op: "delete", sid: g.id }); done(); }, "x"));
   }
 
-  // A conversation in the list. Right-click, or ⋯ while the pointer is on it, opens its menu.
+  // A conversation in the list. Right-click marks it read; Shift+right-click, or ⋯ while the
+  // pointer is on it, opens its menu.
   row(t, c) {
     const quiet = c.quiet, unread = c.lit, menu = this.rowMenu === c.id, over = this.rowHover === c.id || menu;
     const toggle = (cx) => { this.rowMenu = menu ? null : c.id; this.secMenu = null; cx.notify(); };
@@ -1918,7 +1965,11 @@ export default class Slack extends View {
       .when(menu, (el) => el.bg(t.hover)).hover((s) => s.bg(t.hover))
       .on_hover((on, cx) => { if (on) this.rowHover = c.id; else if (this.rowHover === c.id) this.rowHover = null; cx.notify(); })
       .on_click((_e, cx) => { this.rowMenu = null; this.command({ type: "open", id: c.id }); cx.notify(); })
-      .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); toggle(cx); })
+      .on_mouse_down("right", (e, cx) => {
+        cx.stop_propagation();
+        if (e.modifiers?.shift) return toggle(cx);
+        if (c.unread > 0 || c.mention) this.command({ type: "markread", id: c.id });
+      })
       .child(h_flex().gap(8).items_center()
         .child(div().w(18).flex_none().flex().items_center().justify_center()
           .child(c.kind === "im" && this.av?.[c.user]

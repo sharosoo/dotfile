@@ -39,6 +39,10 @@ export const SCOPES = [
   ["reactions:write", "reactions"],
   ["files:read", "file downloads"],
   ["emoji:read", "workspace emoji"],
+  ["channels:write", "marking public channels read in Slack"],
+  ["groups:write", "marking private channels read in Slack"],
+  ["im:write", "marking direct messages read in Slack"],
+  ["mpim:write", "marking group messages read in Slack"],
 ];
 
 // The Slack app's settings. Slack doesn't allow "Slack" in an app name.
@@ -85,7 +89,7 @@ export async function checkUser(token) {
 
 // Slack has no call that lists a token's permissions, but a call it refuses for a missing
 // one names all the permissions the token has. These calls change nothing: the file, the
-// reaction's channel and the message's channel don't exist.
+// reaction's, the message's and the marked conversation don't exist.
 export async function missingScopes(token) {
   const probes = [
     ["files.info", { file: "F0000000000" }, false],
@@ -94,6 +98,7 @@ export async function missingScopes(token) {
     ["conversations.list", { types: "public_channel,private_channel,mpim,im", limit: "1" }, false],
     ["users.list", { limit: "1" }, false],
     ["emoji.list", {}, false],
+    ["conversations.mark", { channel: "C0000000000", ts: "1.000001" }, true],
   ];
   for (const [method, params, post] of probes) {
     const j = await call(token, method, params, post).catch(() => null);
