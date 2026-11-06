@@ -1,0 +1,933 @@
+#!/usr/bin/env python3
+"""slack: read Slack (and, with --yes, write to it) as you, from a terminal or an agent.
+
+Uses the user token (xoxp-) that the herdr Slack panel saved. Reads never change anything in
+Slack. Writes (post, reply, react) send as you, so without --yes they only print what would be
+sent and exit 3.
+
+Exit codes: 0 ok, 1 Slack/network error, 2 usage error, 3 dry run (write without --yes).
+"""
+
+import argparse
+import datetime as dt
+import html
+import json
+import os
+import re
+import signal
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+TOKEN_FILE = os.path.expanduser("~/.config/herdr-app/data/slack/user-token")
+API = "https://slack.com/api/"
+FILES_HOST = "files.slack.com"
+MAX_RETRIES = 5
+PAGE = 200
+MAX_PAGES = 250
+# Untrusted Slack text meets a user-supplied regex: bound both, so catastrophic backtracking
+# fails fast instead of hanging an agent.
+GREP_MAX_CHARS = 200_000
+GREP_MESSAGE_SECONDS = 1.0
+GREP_TOTAL_SECONDS = 30.0
+CHANNEL_ID = re.compile(r"^[CGD][A-Z0-9]{6,}$")
+USER_ID = re.compile(r"^[UW][A-Z0-9]{6,}$")
+TYPE_ALIASES = {"public": "public_channel", "private": "private_channel", "mpim": "mpim", "im": "im",
+                "public_channel": "public_channel", "private_channel": "private_channel"}
+
+
+class SlackError(Exception):
+    pass
+
+
+class DryRun(Exception):
+    pass
+
+
+def die(msg, code=1):
+    print(f"slack: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+class Pages:
+    """Cursor bookkeeping that cannot loop: a cursor Slack hands back twice, or more than
+    MAX_PAGES pages, is an error rather than an endless crawl."""
+
+    def __init__(self, method):
+        self.method, self.cursor, self.seen, self.count = method, None, set(), 0
+
+    def advance(self, body):
+        cursor = (body.get("response_metadata") or {}).get("next_cursor")
+        if not cursor:
+            return False
+        self.count += 1
+        if cursor in self.seen:
+            raise SlackError(f"{self.method}: Slack repeated a page cursor; stopped paging")
+        if self.count >= MAX_PAGES:
+            raise SlackError(f"{self.method}: more than {MAX_PAGES} pages; narrow the request")
+        self.seen.add(cursor)
+        self.cursor = cursor
+        return True
+
+
+class GrepTimeout(Exception):
+    pass
+
+
+class Grep:
+    """--grep with a time budget per message and in total. The `regex` module has a native
+    timeout; plain `re` checks for signals while matching, so SIGALRM can interrupt it."""
+
+    def __init__(self, pattern, case_sensitive):
+        try:
+            import regex as engine
+        except ImportError:
+            engine = None
+        self.native = engine is not None
+        engine = engine or re
+        try:
+            self.rx = engine.compile(pattern, 0 if case_sensitive else engine.IGNORECASE)
+        except engine.error as e:
+            die(f"bad --grep regex: {e}", 2)
+        self.spent = 0.0
+
+    def search(self, text):
+        text = text[:GREP_MAX_CHARS]
+        budget = min(GREP_MESSAGE_SECONDS, GREP_TOTAL_SECONDS - self.spent)
+        if budget <= 0:
+            die(f"--grep used its {GREP_TOTAL_SECONDS:.0f}s budget; use a simpler regex or a shorter --since", 2)
+        start = time.monotonic()
+        try:
+            if self.native:
+                return self.rx.search(text, timeout=budget) is not None
+            old = signal.signal(signal.SIGALRM, self._alarm)
+            signal.setitimer(signal.ITIMER_REAL, budget)
+            try:
+                return self.rx.search(text) is not None
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, old)
+        except (TimeoutError, GrepTimeout):
+            die(f"--grep took over {budget:.1f}s on one message (catastrophic backtracking?); simplify the regex", 2)
+        finally:
+            self.spent += time.monotonic() - start
+
+    @staticmethod
+    def _alarm(signum, frame):
+        raise GrepTimeout()
+
+
+def read_token():
+    try:
+        with open(TOKEN_FILE, encoding="utf-8") as f:
+            token = f.read().strip()
+    except FileNotFoundError:
+        die(f"no user token at {TOKEN_FILE}; sign in once from the herdr Slack panel (gear menu → Change tokens)")
+    if not token.startswith("xoxp-"):
+        die(f"{TOKEN_FILE} does not hold a user token (xoxp-)")
+    return token
+
+
+class OnlyFilesHostRedirect(urllib.request.HTTPRedirectHandler):
+    """The token sits in an unredirected header, so a redirect drops it; it is put back only for a
+    hop from https://files.slack.com to https://files.slack.com, never for any other host."""
+
+    def __init__(self, token):
+        self.token = token
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None:
+            src, dst = urllib.parse.urlsplit(req.full_url), urllib.parse.urlsplit(newurl)
+            if all(u.scheme == "https" and u.hostname == FILES_HOST for u in (src, dst)):
+                new.add_unredirected_header("Authorization", f"Bearer {self.token}")
+        return new
+
+
+class Slack:
+    def __init__(self):
+        self.token = read_token()
+        self.opener = urllib.request.build_opener(OnlyFilesHostRedirect(self.token))
+        self.users = {}
+        self.channels = {}
+        self._auth = None
+        self._member = None
+        self._all_users = None
+
+    # --- transport ---------------------------------------------------------------------------
+
+    def _send(self, req):
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                return self.opener.open(req, timeout=60)
+            except urllib.error.HTTPError as e:
+                if e.code == 429 and attempt < MAX_RETRIES:
+                    try:
+                        wait = min(max(int(e.headers.get("Retry-After") or 5), 1), 60)
+                    except ValueError:
+                        wait = 5
+                    print(f"slack: rate limited, waiting {wait}s", file=sys.stderr)
+                    time.sleep(wait)
+                    continue
+                raise SlackError(f"HTTP {e.code} from {urllib.parse.urlsplit(req.full_url).hostname}") from None
+            except urllib.error.URLError as e:
+                raise SlackError(f"network error: {e.reason}") from None
+
+    def call(self, method, params=None, write=False):
+        params = {k: v for k, v in (params or {}).items() if v is not None}
+        if write:
+            req = urllib.request.Request(API + method, data=json.dumps(params).encode(),
+                                         headers={"Content-Type": "application/json; charset=utf-8"})
+        else:
+            req = urllib.request.Request(API + method, data=urllib.parse.urlencode(params).encode(),
+                                         headers={"Content-Type": "application/x-www-form-urlencoded"})
+        req.add_unredirected_header("Authorization", f"Bearer {self.token}")
+        with self._send(req) as r:
+            body = json.load(r)
+        if not body.get("ok"):
+            err = body.get("error", "unknown_error")
+            if err == "missing_scope":
+                err += f" (needs {body.get('needed')}; token has {body.get('provided')})"
+            raise SlackError(f"{method}: {err}")
+        return body
+
+    def paginate(self, method, key, params, cap=None):
+        pages, out = Pages(method), []
+        while True:
+            body = self.call(method, {**params, "cursor": pages.cursor, "limit": PAGE})
+            out.extend(body.get(key, []))
+            if not pages.advance(body) or (cap and len(out) >= cap):
+                return out
+
+    # --- lookups -----------------------------------------------------------------------------
+
+    def auth(self):
+        if self._auth is None:
+            self._auth = self.call("auth.test")
+        return self._auth
+
+    def user(self, uid):
+        if uid not in self.users:
+            try:
+                self.users[uid] = self.call("users.info", {"user": uid})["user"]
+            except SlackError:
+                self.users[uid] = {"id": uid, "name": uid}
+        return self.users[uid]
+
+    def user_name(self, uid):
+        u = self.user(uid)
+        p = u.get("profile") or {}
+        return p.get("display_name") or p.get("real_name") or u.get("real_name") or u.get("name") or uid
+
+    def all_users(self):
+        if self._all_users is None:
+            self._all_users = self.paginate("users.list", "members", {})
+            for u in self._all_users:
+                self.users[u["id"]] = u
+        return self._all_users
+
+    def member_conversations(self, types="public_channel,private_channel,mpim,im"):
+        if self._member is None:
+            self._member = self.paginate("users.conversations", "channels",
+                                         {"types": "public_channel,private_channel,mpim,im", "exclude_archived": "true"})
+            for c in self._member:
+                self.channels[c["id"]] = c
+        wanted = set(types.split(","))
+        return [c for c in self._member if conv_type(c) in wanted]
+
+    def channel(self, cid):
+        if cid not in self.channels:
+            self.channels[cid] = self.call("conversations.info", {"channel": cid})["channel"]
+        return self.channels[cid]
+
+    def channel_label(self, c):
+        if c.get("is_im"):
+            return "@" + self.user_name(c["user"])
+        return ("#" if not c.get("is_mpim") else "") + (c.get("name") or c["id"])
+
+    def find_users(self, query):
+        q = query.lstrip("@").lower()
+        if USER_ID.match(query):
+            return [self.user(query)]
+        hits = []
+        for u in self.all_users():
+            p = u.get("profile") or {}
+            names = {u.get("name", ""), u.get("real_name", ""), p.get("display_name", ""), p.get("real_name", "")}
+            if q in {n.lower() for n in names if n}:
+                hits.append(u)
+        return hits
+
+    def resolve_channel(self, ref):
+        ref = ref.strip()
+        if CHANNEL_ID.match(ref):
+            return self.channel(ref)
+        if ref.startswith("@"):
+            users = self.find_users(ref)
+            ids = {u["id"] for u in users}
+            for c in self.member_conversations("im"):
+                if c.get("user") in ids:
+                    return c
+            if users:
+                # No DM yet: chat.postMessage takes a user id as the channel and opens the DM
+                # itself, so a dry run never opens one. There is no history to read either way.
+                return {"id": users[0]["id"], "is_im": True, "user": users[0]["id"]}
+            raise SlackError(f"no user named {ref}")
+        name = ref.lstrip("#").lower()
+        for c in self.member_conversations():
+            if (c.get("name") or "").lower() == name:
+                return c
+        # Public channels you have not joined are still readable with channels:history.
+        for c in self.paginate("conversations.list", "channels",
+                               {"types": "public_channel", "exclude_archived": "true"}):
+            if (c.get("name") or "").lower() == name:
+                self.channels[c["id"]] = c
+                return c
+        raise SlackError(f"no channel named {ref} (try `slack channels`)")
+
+    def permalink(self, cid, ts, thread_ts=None):
+        base = self.auth().get("url", "https://slack.com/")
+        link = f"{base}archives/{cid}/p{ts.replace('.', '')}"
+        if thread_ts and thread_ts != ts:
+            link += f"?thread_ts={thread_ts}&cid={cid}"
+        return link
+
+    # --- rendering ---------------------------------------------------------------------------
+
+    def mrkdwn(self, text):
+        if not text:
+            return ""
+
+        def sub(m):
+            inner = m.group(1)
+            target, _, label = inner.partition("|")
+            if target.startswith("@"):
+                return "@" + (label or self.user_name(target[1:]))
+            if target.startswith("#"):
+                if label:
+                    return "#" + label
+                try:
+                    return "#" + (self.channel(target[1:]).get("name") or target[1:])
+                except SlackError:
+                    return "#" + target[1:]
+            if target.startswith("!subteam^"):
+                return label or "@" + target[9:]
+            if target.startswith("!date^"):
+                return label or target
+            if target.startswith("!"):
+                return "@" + target[1:]
+            if target.startswith("mailto:"):
+                return label or target[7:]
+            return f"{label} ({target})" if label and label != target else target
+
+        return html.unescape(re.sub(r"<([^<>]+)>", sub, text))
+
+    def rich(self, el):
+        t = el.get("type")
+        kids = lambda sep="": sep.join(self.rich(e) for e in el.get("elements", []))
+        if t == "text":
+            return el.get("text", "")
+        if t == "link":
+            label = el.get("text")
+            return f"{label} ({el['url']})" if label and label != el.get("url") else el.get("url", "")
+        if t == "user":
+            return "@" + self.user_name(el["user_id"])
+        if t == "usergroup":
+            return "@" + el.get("usergroup_id", "")
+        if t == "channel":
+            try:
+                return "#" + (self.channel(el["channel_id"]).get("name") or el["channel_id"])
+            except SlackError:
+                return "#" + el["channel_id"]
+        if t == "emoji":
+            return f":{el.get('name', '')}:"
+        if t == "broadcast":
+            return "@" + el.get("range", "")
+        if t == "date":
+            return el.get("fallback") or str(el.get("timestamp", ""))
+        if t == "rich_text_preformatted":
+            return "```\n" + kids() + "\n```"
+        if t == "rich_text_quote":
+            return "\n".join("> " + line for line in kids().split("\n"))
+        if t == "rich_text_list":
+            return "\n".join("- " + self.rich(e) for e in el.get("elements", []))
+        if t == "rich_text":
+            return kids("\n")
+        return kids()
+
+    def blocks_text(self, blocks, skip_rich_text=False):
+        out = []
+        for b in blocks or []:
+            t = b.get("type")
+            if t == "rich_text":
+                if not skip_rich_text:
+                    out.append(self.rich(b))
+            elif t in ("section", "header"):
+                if b.get("text"):
+                    out.append(self.mrkdwn(b["text"].get("text", "")))
+                for f in b.get("fields") or []:
+                    out.append(self.mrkdwn(f.get("text", "")))
+            elif t == "context":
+                parts = [self.mrkdwn(e.get("text", "")) for e in b.get("elements", []) if e.get("text")]
+                if parts:
+                    out.append(" | ".join(parts))
+            elif t == "markdown":
+                out.append(b.get("text", ""))
+        return "\n".join(s for s in out if s)
+
+    def attachment_text(self, a):
+        parts = []
+        if a.get("pretext"):
+            parts.append(self.mrkdwn(a["pretext"]))
+        if a.get("author_name"):
+            parts.append(a["author_name"])
+        if a.get("title"):
+            parts.append(a["title"] + (f" ({a['title_link']})" if a.get("title_link") else ""))
+        if a.get("text"):
+            parts.append(self.mrkdwn(a["text"]))
+        for f in a.get("fields") or []:
+            parts.append(f"{f.get('title', '')}: {self.mrkdwn(str(f.get('value', '')))}".strip(": "))
+        if a.get("blocks"):
+            parts.append(self.blocks_text(a["blocks"]))
+        for mb in a.get("message_blocks") or []:
+            parts.append(self.blocks_text((mb.get("message") or {}).get("blocks")))
+        if a.get("footer"):
+            parts.append(self.mrkdwn(a["footer"]))
+        if not any(parts) and a.get("fallback"):
+            parts.append(self.mrkdwn(a["fallback"]))
+        return "\n".join(p for p in parts if p)
+
+    def message(self, cid, m):
+        if m.get("user"):
+            author = self.user_name(m["user"])
+        else:
+            author = m.get("username") or (m.get("bot_profile") or {}).get("name") or m.get("bot_id") or "?"
+        text = self.mrkdwn(m.get("text", ""))
+        out = {
+            "ts": m["ts"],
+            "time": dt.datetime.fromtimestamp(float(m["ts"])).astimezone().isoformat(timespec="seconds"),
+            "user_id": m.get("user"),
+            "user": author,
+            "bot": bool(m.get("bot_id")),
+            "subtype": m.get("subtype"),
+            "text": text,
+            # A person's message repeats its text as a rich_text block; bots often put
+            # everything in blocks/attachments instead, so only the non-duplicate part is kept.
+            "blocks_text": self.blocks_text(m.get("blocks"), skip_rich_text=bool(text)),
+            "attachments": [s for s in (self.attachment_text(a) for a in m.get("attachments") or []) if s],
+            "files": [{"id": f.get("id"), "name": f.get("name") or f.get("title"), "mimetype": f.get("mimetype"),
+                       "size": f.get("size"), "url": f.get("url_private_download") or f.get("url_private")}
+                      for f in m.get("files") or [] if f.get("id")],
+            "reactions": [{"name": r["name"], "count": r.get("count", 0)} for r in m.get("reactions") or []],
+            "thread_ts": m.get("thread_ts"),
+            "reply_count": m.get("reply_count", 0),
+            "latest_reply": m.get("latest_reply"),
+            "permalink": self.permalink(cid, m["ts"], m.get("thread_ts")),
+        }
+        return out
+
+    # --- reading -----------------------------------------------------------------------------
+
+    def history(self, cid, oldest=None, latest=None, limit=50, keep=None, max_scan=1000):
+        """Newest `limit` messages that pass `keep`, returned oldest first."""
+        pages, kept, scanned, more = Pages("conversations.history"), [], 0, False
+        page = PAGE if keep else min(PAGE, limit)
+        while True:
+            body = self.call("conversations.history", {"channel": cid, "oldest": oldest, "latest": latest,
+                                                       "inclusive": "true", "cursor": pages.cursor, "limit": page})
+            msgs = body.get("messages", [])
+            for i, m in enumerate(msgs):
+                scanned += 1
+                r = self.message(cid, m)
+                if keep is None or keep(r, m):
+                    kept.append(r)
+                    if len(kept) >= limit:
+                        more = i < len(msgs) - 1
+                        break
+            if len(kept) >= limit or scanned >= max_scan:
+                more = more or bool((body.get("response_metadata") or {}).get("next_cursor"))
+                break
+            if not pages.advance(body):
+                break
+        kept.reverse()
+        return kept, scanned, more
+
+    def replies(self, cid, ts, cap=1000):
+        msgs = self.paginate("conversations.replies", "messages", {"channel": cid, "ts": ts}, cap=cap)
+        return [self.message(cid, m) for m in msgs[:cap]]
+
+
+# --- time and text helpers -------------------------------------------------------------------
+
+def parse_time(s):
+    if s is None:
+        return None
+    m = re.fullmatch(r"(\d+)([smhdw])", s.strip())
+    if m:
+        secs = int(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}[m.group(2)]
+        return f"{time.time() - secs:.6f}"
+    if re.fullmatch(r"\d+(\.\d+)?", s):
+        return s
+    try:
+        t = dt.datetime.fromisoformat(s)
+    except ValueError:
+        die(f"bad time {s!r}: use 24h, 7d, 30m, an ISO date/time or an epoch", 2)
+    if t.tzinfo is None:
+        t = t.astimezone()
+    return f"{t.timestamp():.6f}"
+
+
+def conv_type(c):
+    if c.get("is_im"):
+        return "im"
+    if c.get("is_mpim"):
+        return "mpim"
+    return "private_channel" if c.get("is_private") or c.get("is_group") else "public_channel"
+
+
+def full_text(r):
+    return "\n".join([r["text"], r["blocks_text"], *r["attachments"], *[f["name"] or "" for f in r["files"]]])
+
+
+def human_size(n):
+    if not n:
+        return "?"
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+
+
+def print_message(r, indent=""):
+    when = r["time"][:19].replace("T", " ")
+    head = f"{indent}[{when}] {r['user']}{' (bot)' if r['bot'] else ''}  ts={r['ts']}"
+    if r["subtype"]:
+        head += f"  ({r['subtype']})"
+    if r["reply_count"]:
+        head += f"  · {r['reply_count']} replies"
+    print(head)
+    pad = indent + "  "
+    for chunk in [r["text"], r["blocks_text"]]:
+        for line in chunk.splitlines():
+            print(pad + line)
+    for a in r["attachments"]:
+        for i, line in enumerate(a.splitlines()):
+            print(pad + "| " + line)
+    for f in r["files"]:
+        print(f"{pad}file {f['id']}: {f['name']} ({f['mimetype']}, {human_size(f['size'])})")
+    if r["reactions"]:
+        print(pad + " ".join(f":{x['name']}: {x['count']}" for x in r["reactions"]))
+    print(pad + r["permalink"])
+    for rep in r.get("replies") or []:
+        print_message(rep, indent + "    ")
+
+
+def emit(args, data, text_fn):
+    if args.json:
+        json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
+        print()
+    else:
+        text_fn()
+
+
+# --- commands --------------------------------------------------------------------------------
+
+def cmd_whoami(s, args):
+    a = s.auth()
+    u = s.user(a["user_id"])
+    data = {"user_id": a["user_id"], "user": a.get("user"), "name": s.user_name(a["user_id"]),
+            "team": a.get("team"), "team_id": a.get("team_id"), "url": a.get("url"),
+            "timezone": u.get("tz")}
+    emit(args, data, lambda: print(f"{data['name']} (@{data['user']}, {data['user_id']}) in {data['team']} "
+                                   f"({data['team_id']}) {data['url']}"))
+
+
+def cmd_channels(s, args):
+    types = ",".join(TYPE_ALIASES.get(t.strip(), t.strip()) for t in args.type.split(","))
+    bad = set(types.split(",")) - set(TYPE_ALIASES.values())
+    if bad:
+        die(f"unknown --type {','.join(sorted(bad))}: use public, private, mpim, im", 2)
+    rows = []
+    if "im" in types.split(","):
+        # One paged users.list beats a users.info call per DM (Tier 4, slow with many DMs).
+        s.all_users()
+    for c in s.member_conversations(types):
+        rows.append({"id": c["id"], "name": s.channel_label(c), "type": conv_type(c),
+                     "topic": ((c.get("topic") or {}).get("value") or "")[:200]})
+    rows.sort(key=lambda r: (r["type"], r["name"].lower()))
+
+    def text():
+        for r in rows:
+            print(f"{r['id']}  {r['type']:<15} {r['name']}" + (f"  — {r['topic']}" if r["topic"] else ""))
+        print(f"({len(rows)} conversations)", file=sys.stderr)
+
+    emit(args, rows, text)
+
+
+def build_filter(s, args):
+    rx = Grep(args.grep, args.case_sensitive) if args.grep else None
+    ids, botname = set(), None
+    if args.from_:
+        ids = {u["id"] for u in s.find_users(args.from_)}
+        botname = args.from_.lstrip("@").lower()
+
+    def keep(r, m):
+        if args.from_:
+            names = {(m.get("username") or "").lower(), ((m.get("bot_profile") or {}).get("name") or "").lower()}
+            if r["user_id"] not in ids and botname not in names:
+                return False
+        return rx is None or rx.search(full_text(r))
+
+    return keep if (rx or args.from_) else None
+
+
+def check_limit(n, cap):
+    if n < 1 or n > cap:
+        die(f"--limit must be 1..{cap}", 2)
+
+
+def cmd_history(s, args):
+    check_limit(args.limit, 1000)
+    c = s.resolve_channel(args.channel)
+    msgs, scanned, more = s.history(c["id"], parse_time(args.since), parse_time(args.until), args.limit,
+                                    build_filter(s, args), args.max_scan)
+    if args.replies:
+        for r in msgs:
+            if r["reply_count"]:
+                r["replies"] = s.replies(c["id"], r["ts"])[1:]
+    data = {"channel": {"id": c["id"], "name": s.channel_label(c)}, "count": len(msgs), "scanned": scanned,
+            "more": more, "messages": msgs}
+
+    def text():
+        print(f"{data['channel']['name']} ({c['id']}): {len(msgs)} messages (scanned {scanned}"
+              f"{', more available' if more else ''})\n")
+        for r in msgs:
+            print_message(r)
+            print()
+
+    emit(args, data, text)
+
+
+def cmd_thread(s, args):
+    c = s.resolve_channel(args.channel)
+    msgs = s.replies(c["id"], args.ts)
+    data = {"channel": {"id": c["id"], "name": s.channel_label(c)}, "count": len(msgs), "messages": msgs}
+
+    def text():
+        print(f"{data['channel']['name']} thread {args.ts}: {len(msgs)} messages\n")
+        for i, r in enumerate(msgs):
+            print_message(r, "" if i == 0 else "    ")
+            print()
+
+    emit(args, data, text)
+
+
+def parse_permalink(url):
+    u = urllib.parse.urlsplit(url)
+    m = re.search(r"/archives/([CGD][A-Z0-9]+)/p(\d{10})(\d{6})", u.path)
+    if not u.hostname or not (u.hostname == "slack.com" or u.hostname.endswith(".slack.com")) or not m:
+        die("not a Slack message link (https://<team>.slack.com/archives/<channel>/p<ts>)", 2)
+    q = urllib.parse.parse_qs(u.query)
+    return m.group(1), f"{m.group(2)}.{m.group(3)}", (q.get("thread_ts") or [None])[0]
+
+
+def cmd_message(s, args):
+    cid, ts, thread_ts = parse_permalink(args.url)
+    c = s.channel(cid)
+    parent, found = thread_ts, []
+    if not parent:
+        # Links to a thread reply often lack ?thread_ts=; the message itself names its parent.
+        body = s.call("conversations.history", {"channel": cid, "oldest": ts, "latest": ts,
+                                                "inclusive": "true", "limit": 1})
+        found = [m for m in body.get("messages", []) if m["ts"] == ts]
+        if not found:
+            found = [m for m in s.call("conversations.replies", {"channel": cid, "ts": ts, "limit": 1})
+                     .get("messages", []) if m["ts"] == ts]
+        if found:
+            parent = found[0].get("thread_ts")
+    thread = s.replies(cid, parent) if parent else []
+    if not thread and found:
+        thread = [s.message(cid, found[0])]
+    target = next((r for r in thread if r["ts"] == ts), None)
+    if target is None:
+        die(f"message {ts} not found in {cid}")
+    data = {"channel": {"id": cid, "name": s.channel_label(c)}, "message": target,
+            "thread": thread if len(thread) > 1 else []}
+
+    def text():
+        print(f"{data['channel']['name']} ({cid}) message {ts}\n")
+        print_message(target)
+        if data["thread"]:
+            print(f"\nthread ({len(thread)} messages):\n")
+            for i, r in enumerate(thread):
+                print_message(r, "" if i == 0 else "    ")
+                print()
+
+    emit(args, data, text)
+
+
+def cmd_file(s, args):
+    ref = args.file
+    if re.fullmatch(r"F[A-Z0-9]{6,}", ref):
+        fid = ref
+    else:
+        u = urllib.parse.urlsplit(ref)
+        # files.slack.com/files-pri/T…-F…/name and <team>.slack.com/files/U…/F…/name
+        m = re.search(r"[/-](F[A-Z0-9]{6,})(?=/|$)", u.path)
+        if u.scheme != "https" or not u.hostname or not (u.hostname == FILES_HOST or u.hostname.endswith(".slack.com")) or not m:
+            die("give a file id (F…) or a https://files.slack.com/… or https://<team>.slack.com/files/… link", 2)
+        fid = m.group(1)
+    info = s.call("files.info", {"file": fid, "limit": 1})["file"]
+    url = info.get("url_private_download") or info.get("url_private")
+    host = urllib.parse.urlsplit(url or "").hostname
+    if not url or not url.startswith("https://") or host != FILES_HOST:
+        die(f"file {fid} is not stored on {FILES_HOST} (external file?); not sending the token to {host}")
+    name = re.sub(r"[\\/\x00-\x1f]", "_", info.get("name") or fid)
+    out = args.output or name
+    if out != "-" and os.path.isdir(out):
+        out = os.path.join(out, name)
+    if out != "-" and os.path.lexists(out) and not args.force:
+        die(f"{out} exists (use --force to overwrite)")
+    req = urllib.request.Request(url)
+    req.add_unredirected_header("Authorization", f"Bearer {s.token}")
+    with s._send(req) as r:
+        ctype = r.headers.get("Content-Type", "")
+        if "text/html" in ctype and "html" not in (info.get("mimetype") or ""):
+            die("Slack answered with its sign-in page: the token lacks files:read for this file")
+        if out == "-":
+            while chunk := r.read(1 << 16):
+                sys.stdout.buffer.write(chunk)
+            return
+        # A fresh O_EXCL temp file in the target directory: never follows a planted symlink,
+        # and the rename is atomic, so a failed download leaves nothing behind.
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(out)), prefix=".slack-", suffix=".part")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                while chunk := r.read(1 << 16):
+                    f.write(chunk)
+            os.replace(tmp, out)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            raise
+    data = {"id": fid, "name": info.get("name"), "mimetype": info.get("mimetype"), "size": os.path.getsize(out),
+            "path": os.path.abspath(out)}
+    emit(args, data, lambda: print(f"saved {data['path']} ({data['mimetype']}, {human_size(data['size'])})"))
+
+
+def cmd_users(s, args):
+    rows = []
+    q = (args.query or "").lower()
+    for u in s.all_users():
+        if u.get("deleted") and not args.all:
+            continue
+        p = u.get("profile") or {}
+        row = {"id": u["id"], "name": u.get("name"), "display_name": p.get("display_name") or "",
+               "real_name": u.get("real_name") or p.get("real_name") or "", "title": p.get("title") or "",
+               "bot": bool(u.get("is_bot")), "deleted": bool(u.get("deleted"))}
+        if q and not any(q in str(row[k]).lower() for k in ("name", "display_name", "real_name", "title")):
+            continue
+        rows.append(row)
+
+    def text():
+        for r in rows:
+            flags = (" [bot]" if r["bot"] else "") + (" [deleted]" if r["deleted"] else "")
+            print(f"{r['id']}  @{r['name']:<24} {r['real_name']}"
+                  + (f" ({r['display_name']})" if r["display_name"] and r["display_name"] != r["real_name"] else "")
+                  + (f" — {r['title']}" if r["title"] else "") + flags)
+        print(f"({len(rows)} users)", file=sys.stderr)
+
+    emit(args, rows, text)
+
+
+def cmd_search(s, args):
+    check_limit(args.limit, 1000)
+    if args.in_:
+        convs = [s.resolve_channel(x) for x in args.in_.split(",") if x.strip()]
+    else:
+        types = ",".join(TYPE_ALIASES.get(t.strip(), t.strip()) for t in args.type.split(","))
+        convs = s.member_conversations(types)
+    args.grep = args.pattern
+    keep = build_filter(s, args)
+    oldest = parse_time(args.since)
+    results, scanned = [], 0
+    for i, c in enumerate(convs):
+        if len(convs) > 3:
+            print(f"slack: searching {i + 1}/{len(convs)} {s.channel_label(c)}", file=sys.stderr)
+        try:
+            msgs, n, _ = s.history(c["id"], oldest, None, args.limit - len(results), keep, args.max_scan)
+        except SlackError as e:
+            print(f"slack: skipped {s.channel_label(c)}: {e}", file=sys.stderr)
+            continue
+        scanned += n
+        for r in msgs:
+            r["channel"] = {"id": c["id"], "name": s.channel_label(c)}
+        results.extend(msgs)
+        if len(results) >= args.limit:
+            break
+    results.sort(key=lambda r: float(r["ts"]))
+    data = {"pattern": args.pattern, "channels": len(convs), "scanned": scanned, "count": len(results),
+            "messages": results}
+
+    def text():
+        print(f"{len(results)} matches for /{args.pattern}/ in {len(convs)} conversations (scanned {scanned})\n")
+        for r in results:
+            print(r["channel"]["name"])
+            print_message(r)
+            print()
+
+    emit(args, data, text)
+
+
+def read_text(args):
+    text = sys.stdin.read() if args.text == "-" else args.text
+    if not text.strip():
+        die("--text is empty", 2)
+    return text
+
+
+def write_call(s, args, method, params, what):
+    me = s.auth()
+    if not args.yes:
+        data = {"dry_run": True, "as": {"user_id": me["user_id"], "user": me.get("user")}, "method": method,
+                "params": params}
+        if args.json:
+            json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
+            print()
+        else:
+            print(f"DRY RUN: nothing sent. This would {what} as @{me.get('user')} ({me['user_id']}).")
+            print(f"method: {method}")
+            print("params: " + json.dumps(params, ensure_ascii=False, indent=2))
+            print("Re-run with --yes to send.")
+        raise DryRun()
+    body = s.call(method, params, write=True)
+    ts = body.get("ts") or params.get("timestamp")
+    cid = body.get("channel") or params["channel"]
+    data = {"ok": True, "method": method, "channel": cid, "ts": ts,
+            "permalink": s.permalink(cid, ts, params.get("thread_ts")) if ts else None}
+    emit(args, data, lambda: print(f"sent: {data['permalink'] or method}"))
+
+
+def cmd_post(s, args):
+    c = s.resolve_channel(args.channel)
+    write_call(s, args, "chat.postMessage", {"channel": c["id"], "text": read_text(args)},
+               f"post to {s.channel_label(c)}")
+
+
+def cmd_reply(s, args):
+    c = s.resolve_channel(args.channel)
+    write_call(s, args, "chat.postMessage", {"channel": c["id"], "thread_ts": args.ts, "text": read_text(args)},
+               f"reply in the {s.channel_label(c)} thread {args.ts}")
+
+
+def cmd_react(s, args):
+    c = s.resolve_channel(args.channel)
+    name = args.emoji.strip(":")
+    write_call(s, args, "reactions.add", {"channel": c["id"], "timestamp": args.ts, "name": name},
+               f"react :{name}: to {s.channel_label(c)} message {args.ts}")
+
+
+# --- CLI -------------------------------------------------------------------------------------
+
+def main():
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+
+    p = argparse.ArgumentParser(
+        prog="slack", description=__doc__.split("\n\n")[0],
+        epilog="Channels: a name (general, #general), an id (C…/G…/D…) or @user for a DM. "
+               "Times: 24h, 7d, 30m, 2w, an ISO date/time (local zone if none) or an epoch. "
+               "Writes (post, reply, react) send as you and need --yes; without it they print the "
+               "request and exit 3.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True, metavar="command")
+
+    sub.add_parser("whoami", parents=[common], help="who the token signs in as").set_defaults(fn=cmd_whoami)
+
+    c = sub.add_parser("channels", parents=[common], help="conversations you are in")
+    c.add_argument("--type", default="public,private,mpim,im", help="comma list of public,private,mpim,im")
+    c.set_defaults(fn=cmd_channels)
+
+    def filters(sp, limit):
+        sp.add_argument("--since", help="oldest message time (24h, 7d, ISO, epoch)")
+        sp.add_argument("--limit", type=int, default=limit, help=f"messages to return (default {limit}, max 1000)")
+        sp.add_argument("--from", dest="from_", metavar="USER", help="only messages by this user or bot name")
+        sp.add_argument("-s", "--case-sensitive", action="store_true", help="case-sensitive regex")
+        sp.add_argument("--max-scan", type=int, default=2000,
+                        help="stop after reading this many messages per conversation (default 2000)")
+        sp.add_argument("--replies", action="store_true", help="also fetch every thread's replies")
+
+    h = sub.add_parser("history", parents=[common], help="recent messages in a conversation")
+    h.add_argument("channel")
+    filters(h, 50)
+    h.add_argument("--until", help="newest message time")
+    h.add_argument("--grep", metavar="REGEX", help="only messages whose text, attachments, blocks or file names match")
+    h.set_defaults(fn=cmd_history)
+
+    t = sub.add_parser("thread", parents=[common], help="a whole thread")
+    t.add_argument("channel")
+    t.add_argument("ts", help="the thread's parent ts (e.g. 1730880000.123456)")
+    t.set_defaults(fn=cmd_thread)
+
+    m = sub.add_parser("message", parents=[common], help="one message (and its thread) from a Slack link")
+    m.add_argument("url")
+    m.set_defaults(fn=cmd_message)
+
+    f = sub.add_parser("file", parents=[common], help="download a file (id or Slack file link)")
+    f.add_argument("file")
+    f.add_argument("-o", "--output", help="path or directory (default: ./<name>; - for stdout)")
+    f.add_argument("--force", action="store_true", help="overwrite an existing file")
+    f.set_defaults(fn=cmd_file)
+
+    u = sub.add_parser("users", parents=[common], help="workspace members")
+    u.add_argument("query", nargs="?", help="substring of handle, name or title")
+    u.add_argument("--all", action="store_true", help="include deactivated accounts")
+    u.set_defaults(fn=cmd_users)
+
+    se = sub.add_parser(
+        "search", parents=[common], help="regex over recent history (local; no search:read scope)",
+        description="Slack's own search API needs the search:read scope, which this token does not have. "
+                    "This reads history and filters it locally, so keep --since short and name channels "
+                    "with --in when you can (--since defaults to 7d here).")
+    se.add_argument("pattern", help="regex (case-insensitive unless -s)")
+    se.add_argument("--in", dest="in_", metavar="CHANNELS", help="comma list of channels (default: all you are in)")
+    se.add_argument("--type", default="public,private", help="conversation types when --in is not given")
+    filters(se, 100)
+    se.set_defaults(fn=cmd_search, since="7d")
+
+    for name, fn, help_, extra in (("post", cmd_post, "post a message (needs --yes)", ()),
+                                   ("reply", cmd_reply, "reply in a thread (needs --yes)", ("ts",))):
+        w = sub.add_parser(name, parents=[common], help=help_)
+        w.add_argument("channel")
+        for e in extra:
+            w.add_argument(e, help="the thread's parent ts")
+        w.add_argument("--text", required=True, help="message text (Slack mrkdwn); - reads stdin")
+        w.add_argument("--yes", action="store_true", help="really send it")
+        w.set_defaults(fn=fn)
+
+    r = sub.add_parser("react", parents=[common], help="add an emoji reaction (needs --yes)")
+    r.add_argument("channel")
+    r.add_argument("ts")
+    r.add_argument("emoji", help="emoji name, e.g. eyes or :white_check_mark:")
+    r.add_argument("--yes", action="store_true", help="really send it")
+    r.set_defaults(fn=cmd_react)
+
+    args = p.parse_args()
+    try:
+        args.fn(Slack(), args)
+    except DryRun:
+        sys.exit(3)
+    except SlackError as e:
+        die(str(e))
+    except BrokenPipeError:
+        sys.stderr.close()
+    except KeyboardInterrupt:
+        sys.exit(130)
+
+
+if __name__ == "__main__":
+    main()
