@@ -164,6 +164,20 @@
                           "panel": true
                         }
                       }
+                    },
+                    {
+                      "id": "browser",
+                      "type": "block",
+                      "content": {
+                        "mod": "browser"
+                      }
+                    },
+                    {
+                      "id": "git",
+                      "type": "block",
+                      "content": {
+                        "mod": "git"
+                      }
                     }
                   ],
                   "active": "files"

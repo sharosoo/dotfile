@@ -38,6 +38,7 @@ export const SCOPES = [
   ["chat:write", "sending messages"],
   ["reactions:write", "reactions"],
   ["files:read", "file downloads"],
+  ["emoji:read", "workspace emoji"],
 ];
 
 // The Slack app's settings. Slack doesn't allow "Slack" in an app name.
@@ -92,6 +93,7 @@ export async function missingScopes(token) {
     ["chat.postMessage", { channel: "C0000000000", text: "." }, true],
     ["conversations.list", { types: "public_channel,private_channel,mpim,im", limit: "1" }, false],
     ["users.list", { limit: "1" }, false],
+    ["emoji.list", {}, false],
   ];
   for (const [method, params, post] of probes) {
     const j = await call(token, method, params, post).catch(() => null);
