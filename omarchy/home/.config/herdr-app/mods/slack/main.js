@@ -155,9 +155,17 @@ function systemOpen(url) {
   const r = os === "macos" ? exec("open", [url]) : os === "windows" ? exec("rundll32", ["url.dll,FileProtocolHandler", url]) : exec("xdg-open", [url]);
   r.catch(() => {});
 }
+// The browser panel is optional: without the Browser mod installed, or without its
+// herdr-browser service answering, links go to the system browser instead of a tab nobody sees.
+let browserMod = false;
+async function hasBrowserMod() {
+  if (!browserMod) browserMod = await fs.exists(`${appHome().replace(/\\/g, "/")}/mods/browser/main.js`).catch(() => false);
+  return browserMod;
+}
 async function browse(url) {
   if (!WEB.test(url)) return;
   try {
+    if (!(await hasBrowserMod())) throw new Error("no browser mod");
     const r = await fetch(`${BROWSER_API}/open`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url, newTab: true }) });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     run("layout.select", { stack: "panel-body", child: "browser" });
