@@ -17,7 +17,6 @@ link() {
   echo "$dst -> $src"
 }
 
-link "$REPO/relay-extension" "$CONFIG/relay-extension"
 link "$REPO/policy.toml" "$CONFIG/policy.toml"
 # Written by `browser-vault add`; must exist so the link points at a real file.
 [[ -e "$REPO/sites.toml" ]] || : >"$REPO/sites.toml"
@@ -27,10 +26,3 @@ link "$REPO/bin/browser-vault" "$HOME/.local/bin/browser-vault"
 # Session files hold live cookies: private, never in the repo.
 mkdir -p "$DATA/sessions"
 chmod 700 "$DATA" "$DATA/sessions"
-
-cat <<EOF
-
-Chromium (one-time): chrome://extensions -> Developer mode -> Load unpacked ->
-  $CONFIG/relay-extension
-Then remove "OMP Browser Relay" so only one extension talks to the relay.
-EOF

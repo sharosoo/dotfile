@@ -42,8 +42,7 @@ const CDP_PORT = (() => {
 })();
 const CDP = `http://127.0.0.1:${CDP_PORT}`;
 const EXTENSION_ID = /^[a-p]{32}$/;
-// The relay extension bridges the person's own browser to omp; a copy in the agent browser would register a
-// second relay client and steal relay sessions.
+// Obsolete relay extension; never load it into the agent browser.
 const SKIP_EXTENSIONS = new Set(["mhpgnodolhkbdjggenpfcmlkgmecgjak"]);
 
 const [cmd, ...rest] = process.argv.slice(2);

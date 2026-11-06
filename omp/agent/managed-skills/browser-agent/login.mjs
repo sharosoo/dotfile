@@ -1,4 +1,4 @@
-// Shared browser-vault login for omp eval (JavaScript cells). See SKILL.md §5.1.
+// Shared browser-vault login for omp eval (JavaScript cells). See SKILL.md §4.1.
 //   const { vaultLogin } = await import(`${process.env.HOME}/.omp/agent/managed-skills/browser-agent/login.mjs`);
 //   const r = await vaultLogin(tab, "google:work", { url, consent: false });
 // Runs in the eval cell, not inside tab.run: closures passed to tab.run are serialized, so secrets

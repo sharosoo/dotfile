@@ -6,9 +6,6 @@
 
 ## 구성 파일
 
-- `relay-extension/` — omp 기본 확장인 "OMP Browser Relay"(omp 18.8.6)를 포크한 확장(sharosoo Browser Relay).
-  - 변경 사항: CDP `Page.bringToFront` 및 `activateTab` 호출 시 창 포커스를 올리지 않고 탭만 전환, 새 탭은 `active: false`로 생성, 연결된 모든 탭에 `Emulation.setFocusEmulationEnabled`를 적용해 백그라운드 탭도 렌더링 유지.
-  - 포크 이유: Hyprland 환경에서 Chromium의 창 포커스 요청이 작업 중인 터미널 포커스를 가로채는 문제를 방지. 또한 omp 업그레이드나 재설치 시 `~/.omp/browser-relay/extension`이 덮어쓰여지므로 dotfile에서 독립 관리함.
 - `bin/browser-vault` — 자격 증명과 세션을 관리하는 CLI. GNOME 키링(`sharosoo-browser` 서비스)에 자격 증명을 저장하고, TOTP 코드를 생성하며, 에이전트가 사이트 2FA 설정 화면에서 읽은 TOTP 시드를 등록(`otp-enroll`)한다. 저장된 세션 파일(`storageState`)을 관리하고 작업별 `allow`/`confirm`/`deny` 정책도 검사한다.
 - `policy.toml` — 직접 작성하는 기본 정책 파일. 사용자 확인이 필요한 작업(`confirm`)과 차단할 작업(`deny`), 기본 세션 TTL은 물론 에이전트가 이미 저장된 TOTP 시드를 덮어쓸 수 있는지(`otp_replace`, 기본값 꺼짐)도 설정한다. 등록되지 않은 사이트는 요청이 모두 거부된다.
 - `sites.toml` — `browser-vault add`나 `forget` 명령어가 관리하는 사이트 목록 파일. 손으로 직접 수정하지 않고 CLI로 갱신한다. 시크릿은 포함되지 않으며 도메인, 허용 필드, OTP 및 세션 설정 플래그만 저장된다.
@@ -21,9 +18,8 @@
 ```
 
 1. 위 스크립트를 실행해 심볼릭 링크를 연결한다.
-2. Chromium에서 `chrome://extensions` 접속 → **개발자 모드(Developer mode)** 켜기 → **압축해제된 확장 프로그램을 로드합니다(Load unpacked)** 클릭 → `~/.config/sharosoo-browser/relay-extension` 선택.
-3. 기존 "OMP Browser Relay"가 설치되어 있다면 삭제한다 (두 확장이 동시에 실행되면 둘 다 릴레이에 연결됨).
-4. `omp/agent/config.yml`의 `browser.relay` 설정은 `false`로 유지한다. 에이전트는 호출 시 `app: { relay: true }` 옵션으로 개별 활성화한다.
+2. `omp/agent/config.yml`의 `browser.relay`는 `false`로 유지해 omp 기본 브라우저 릴레이를 꺼 둔다. 에이전트는 릴레이를 쓰지 않는다.
+3. Chromium에 예전 `sharosoo Browser Relay` 확장 프로그램이 아직 설치되어 있다면 `chrome://extensions`에서 삭제한다.
 
 ## 계정 추가
 
@@ -77,7 +73,3 @@ browser-vault forget google              # 사이트 및 소속 계정 전체 �
 herdr 에이전트 브라우저는 `herdr-browser-sync`를 통해 평소 쓰는 Chromium(`~/.config/chromium/Default`)의 환경을 사용자에서 에이전트 쪽으로만 단방향 공유한다. 쿠키 파일이 바뀌면 `herdr-browser-sync.path`가 이를 감지해 약 10초 뒤 CDP(`Storage.setCookies`)로 실시간 반영하며, 원래 브라우저에서 로그아웃하면 이 도구가 복사해 간 쿠키도 에이전트 쪽에서 함께 지우지만 에이전트 브라우저에서 따로 로그인한 세션은 그대로 유지한다. 방문 기록(병합), 사이트별 IndexedDB, 확장 프로그램과 그 저장 데이터는 에이전트 브라우저 서비스가 시작될 때마다(`herdr-browser.service.d/sync.conf`) 복사하므로 확장 프로그램을 추가하거나 지우면 다음 시작 때 반영되며, 모든 사이트가 하나의 데이터베이스를 쓰는 Local Storage는 서비스를 멈춘 상태에서 `herdr-browser-sync local-storage`로 요청할 때 한 번만 복사한다. 저장된 비밀번호는 절대 복사하지 않고 로그인할 때 계속 `browser-vault`를 쓰며, 에이전트 브라우저의 데이터가 원래 브라우저로 역류하는 일도 없고, `sharosoo Browser Relay` 확장 프로그램은 에이전트 브라우저에 의도적으로 불러오지 않는다. 에이전트 브라우저도 사용자 본인의 계정으로 로그인된 상태이므로 `skill://browser-agent`의 확인 규칙을 그대로 따른다.
 
 쿠키 동기화(`herdr-browser-sync.service`)만 실패했을 때 자동으로 재시도하며, 방문 기록, IndexedDB, 확장 프로그램 복사는 에이전트 브라우저 서비스가 시작될 때만 실행되고 실패하면 로그만 남긴 뒤 다음 시작 때 다시 시도한다. 이 도구는 원래 Chromium 프로필과 `~/.local/share/herdr-browser`가 같은 사용자 소유라고 전제하므로, 경로 검사로 심볼릭 링크가 복사 대상을 다른 곳으로 빼돌리는 일은 막아주지만 같은 사용자 권한으로 실행되는 다른 프로그램까지는 방어하지 않는다.
-
-## 확장 프로그램 업데이트 시 (omp 공식 확장이 변경되었을 때)
-
-`omp browser-relay install` 실행 후 `~/.omp/browser-relay/extension/background.js`와 `relay-extension/background.js`를 비교한다. `Local patch`로 표시된 세 가지 변경 사항을 새 버전에 다시 적용하고, `manifest.json`의 `version`을 올린 뒤 `chrome://extensions`에서 확장을 다시 로드한다.
