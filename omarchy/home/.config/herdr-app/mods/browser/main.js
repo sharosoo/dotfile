@@ -17,6 +17,9 @@ const AGENT_LIVE_MS = 4000;
 const ECHO_MS = 350;
 const RESIZE_SETTLE_MS = 200;
 const NATIVE_BEAT_MS = 250;
+// Chromium's own zoom steps.
+const ZOOMS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+const DEFAULT_ZOOM = 0.75;
 const PRESETS = [
   { label: "iPhone · 375×812", width: 375, height: 812, mobile: true },
   { label: "iPhone · 390×844", width: 390, height: 844, mobile: true },
@@ -249,11 +252,20 @@ export default class Browser extends View {
     this.pressed = null;
   }
 
+  zoomBy(cx, dir) {
+    const z = this.state?.zoom ?? DEFAULT_ZOOM;
+    const next = dir > 0 ? ZOOMS.find((v) => v > z + 0.001) : [...ZOOMS].reverse().find((v) => v < z - 0.001);
+    if (next) this.call(cx, "/zoom", { zoom: next });
+  }
+
   key(e, cx) {
     cx.stop_propagation();
     const m = e.modifiers;
     const k = e.key.toLowerCase();
     if (m.control && !m.alt && k === "l") { this.url.focus(); return; }
+    if (m.control && !m.alt && (k === "-" || k === "minus")) { this.zoomBy(cx, -1); return; }
+    if (m.control && !m.alt && (k === "=" || k === "+" || k === "plus" || k === "equal")) { this.zoomBy(cx, 1); return; }
+    if (m.control && !m.alt && k === "0") { this.call(cx, "/zoom", { zoom: DEFAULT_ZOOM }); return; }
     if (m.control && !m.alt && k === "v") {
       cx.spawn(async (cx) => {
         const r = await exec("wl-paste", ["--no-newline"]).catch(() => null);
@@ -307,6 +319,9 @@ export default class Browser extends View {
         .cursor_text().on_mouse_down("left", stop)
         .child(Input.new(this.url).h_full().text_size(12).text_color(t.foreground)))
       .when(!!badge, (el) => el.child(badge))
+      .child(button("zoom-out", "−", "Zoom out (Ctrl+−)", (_e, cx) => this.zoomBy(cx, -1)))
+      .child(button("zoom", `${Math.round((s?.zoom ?? DEFAULT_ZOOM) * 100)}%`, `Page zoom; click to reset to ${Math.round(DEFAULT_ZOOM * 100)}% (Ctrl+0)`, (_e, cx) => this.call(cx, "/zoom", { zoom: DEFAULT_ZOOM })))
+      .child(button("zoom-in", "+", "Zoom in (Ctrl+=)", (_e, cx) => this.zoomBy(cx, 1)))
       .child(button("size", sizeLabel, "Viewport size", (_e, cx) => { this.sizeMenu = !this.sizeMenu; cx.notify(); }))
       .child(button("devtools", "DevTools", "Open DevTools for this tab in a new tab", (_e, cx) => this.call(cx, "/devtools", {})))
       .child(button("new-tab", "+", "New tab", (_e, cx) => { this.call(cx, "/open", { url: "about:blank", newTab: true }); this.url.focus(); }));
@@ -362,8 +377,12 @@ export default class Browser extends View {
       .on_mouse_up("right", (e, cx) => this.mouse(cx, "up", e, { button: "right" }))
       .on_mouse_move((e, cx) => this.mouse(cx, "move", e))
       .on_hover((hovered, cx) => { if (!hovered) this.leave(cx); })
-      // GPUI reports wheel distance as content movement; the page wants scroll distance.
-      .on_scroll_wheel((e, cx) => this.mouse(cx, "wheel", e, { dx: -e.delta.x, dy: -e.delta.y }))
+      // GPUI reports wheel distance as content movement; the page wants scroll distance, in page px, so a notch
+      // moves the drawn page the same distance at any zoom or preset size.
+      .on_scroll_wheel((e, cx) => {
+        const k = this.scale()?.k ?? 1;
+        this.mouse(cx, "wheel", e, { dx: -e.delta.x / k, dy: -e.delta.y / k });
+      })
       .children(frames)
       .children(specks)
       .when(!!this.echo, (el) => el.child(div().absolute().left(this.echo.x - 9).top(this.echo.y - 9).size(18).rounded(9)

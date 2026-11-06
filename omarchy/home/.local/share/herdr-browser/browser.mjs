@@ -29,6 +29,13 @@ const RESTORE_FILE = join(HOME, ".local", "share", "herdr-browser", "restore.jso
 // panel. The person picks it in the panel; switching restarts Chromium, so agents never do it.
 const MODE = (await Bun.file(MODE_FILE).text().catch(() => "")).trim() === "native" ? "native" : "headless";
 const NATIVE = MODE === "native";
+// Page zoom for Fit (the person's setting, all tabs): the page lays out at panel size / zoom and is drawn into the
+// panel, so CSS reflows as with the browser's own zoom. Device presets keep their own CSS size.
+const ZOOM_FILE = join(HOME, ".local", "share", "herdr-browser", "zoom");
+const DEFAULT_ZOOM = 0.75;
+const validZoom = (z) => Number.isFinite(z) && z >= 0.5 && z <= 2;
+let zoom = Number((await Bun.file(ZOOM_FILE).text().catch(() => "")).trim() || NaN);
+if (!validZoom(zoom)) zoom = DEFAULT_ZOOM;
 const NATIVE_CLASS = "herdr-browser";
 // Any non-zero exit makes systemd start the service again (Restart=on-failure); this one marks a mode switch.
 const RESTART_CODE = 75;
@@ -270,8 +277,8 @@ async function show(targetId) {
   // A background tab is not painted, so it would give no frames.
   // A tab showing a JS dialog answers neither this nor the screencast; don't let it hold the queue long.
   await cdp.send("Page.bringToFront", {}, session, 2000).catch(() => {});
-  // A native window is sized by Hyprland and seen directly: no window fitting, no frames.
-  if (NATIVE) return;
+  // A native window is sized by Hyprland and seen directly: no window fitting, no frames; zoom is emulated.
+  if (NATIVE) return void (await nativeZoom(targetId));
   await fitWindow();
   if (watching()) await startCast();
 }
@@ -313,15 +320,33 @@ async function fitWindow() {
       if (w > 0 && dw >= 0 && dw < 300 && dh >= 0 && dh < 300) chrome.set(targetId, (lastChrome = { width: dw, height: dh }));
       c = chrome.get(targetId) ?? lastChrome;
     }
-    await cdp.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal", width: viewport.width + c.width, height: viewport.height + c.height } });
+    const width = Math.round(viewport.width / zoom), height = Math.round(viewport.height / zoom);
+    await cdp.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal", width: width + c.width, height: height + c.height } });
   } catch {}
 }
 
 const watching = () => Date.now() - lastBeat < HEARTBEAT_MS || waiters > 0;
 
+// A new cast (another tab, a new size, or the same tab again after showing another) starts from nothing: its
+// first frame must be drawn even if it matches what this tab sent before, and nothing queued for the previous
+// cast may be acked, published or painted over.
+function resetCast() {
+  lastMotion = { data: "", from: null };
+  lastData = "";
+  lastFrom = null;
+  pending = null;
+  clearTimeout(paintTimer);
+  paintTimer = null;
+  clearTimeout(publishTimer);
+  publishTimer = null;
+  dropAck();
+  lastAck = 0;
+}
+
 async function startCast() {
   if (NATIVE || casting || !session) return;
   casting = true;
+  resetCast();
   // Motion frames at CSS size, not the monitor's scale: the panel decodes each one before it can draw it, and a
   // frame a third the pixels decodes about three times faster. The still frame after motion is full scale.
   const size = { maxWidth: viewport.width, maxHeight: viewport.height };
@@ -329,6 +354,7 @@ async function startCast() {
 }
 
 async function stopCast() {
+  resetCast();
   if (!casting || !session) return;
   casting = false;
   await cdp.send("Page.stopScreencast", {}, session).catch(() => {});
@@ -339,8 +365,9 @@ async function stopCast() {
 // animation is never lost); while they are, every frame goes out as it comes, up to INTERACTIVE_FRAME_MS. A
 // frame identical to the one on screen is never written. Motion goes out at MOTION_QUALITY; once the page has
 // been still for PAINT_OVER_MS one sharp frame replaces it (the "paint-over" remote desktops do).
-// Every new frame costs the panel a load before it can be drawn; faster than ~10 fps it never catches up.
-const INTERACTIVE_FRAME_MS = 100;
+// Every new frame costs the panel a load before it can be drawn: at 60 fps blank frames show through (2 of 180 in a
+// 60 fps recording), at 30 fps none did.
+const INTERACTIVE_FRAME_MS = 33;
 const MOTION_QUALITY = 60;
 const STILL_QUALITY = 85;
 const PAINT_OVER_MS = 150;
@@ -352,11 +379,54 @@ let lastWrite = 0;
 let lastFrameAt = 0;
 let lastData = "";
 let lastFrom = null;
+let lastMotion = { data: "", from: null };
+
+let ackTimer = null; // { timer, send } for the current cast's last frame, not acked yet
+let lastAck = 0;
+
+// Chromium renders and encodes the next screencast frame only after the last one is acked, so acking at the
+// publish rate keeps it from encoding frames that would only be dropped. Input moves a held ack up to the
+// interactive rate (flushAck), so the first frame after a scroll or click is not held back by the idle rate.
+function ack(sessionId, from) {
+  dropAck();
+  const a = { timer: null, send: null };
+  a.send = () => {
+    if (ackTimer !== a) return;
+    clearTimeout(a.timer);
+    ackTimer = null;
+    // A stopped or replaced cast never gets its ack; Page.startScreencast starts the count over.
+    if (from !== session || !casting) return;
+    lastAck = Date.now();
+    cdp.send("Page.screencastFrameAck", { sessionId }, from).catch(() => {});
+  };
+  ackTimer = a;
+  const wait = lastAck + (interacting() ? INTERACTIVE_FRAME_MS : MIN_FRAME_MS) - Date.now();
+  if (wait <= 0) a.send();
+  else a.timer = setTimeout(a.send, wait);
+}
+
+function dropAck() {
+  if (ackTimer) clearTimeout(ackTimer.timer);
+  ackTimer = null;
+}
+
+function flushAck() {
+  const a = ackTimer;
+  if (!a) return;
+  const wait = lastAck + INTERACTIVE_FRAME_MS - Date.now();
+  if (wait <= 0) return a.send();
+  clearTimeout(a.timer);
+  a.timer = setTimeout(a.send, wait);
+}
 
 function onFrame(params, from) {
-  // Acked at once: the publish step decides how often frames are written, not Chromium.
-  cdp.send("Page.screencastFrameAck", { sessionId: params.sessionId }, from).catch(() => {});
   if (from !== session) return;
+  ack(params.sessionId, from);
+  // The sharp paint-over capture makes Chromium composite once more, which the screencast reports as a frame of
+  // the same unchanged page. Drawn, that blurry copy would replace the sharp one and re-arm the paint-over, so
+  // a still page would flip between sharp and blurry forever. A page that did not change sends nothing new.
+  if (params.data === lastMotion.data && from === lastMotion.from) return;
+  lastMotion = { data: params.data, from };
   // Under the panel's device override Chromium reports the frame in the monitor's DIPs, not the page's CSS px.
   const em = tabs.get(active)?.emulation;
   pending = { data: params.data, width: em?.width ?? params.metadata.deviceWidth, height: em?.height ?? params.metadata.deviceHeight, from, still: false, receivedAt: Date.now() };
@@ -472,14 +542,16 @@ function fromClient(conn, raw) {
   if (msg.method === "Target.attachToTarget" || msg.method === "Target.createTarget") conn.pending.set(msg.id, { method: msg.method, targetId: p.targetId });
   if (msg.method === "Target.activateTarget") return agentActed(p.targetId);
   // Older clients wrap commands for page sessions in Target.sendMessageToTarget.
-  let method = msg.method, sessionId = msg.sessionId;
+  let method = msg.method, sessionId = msg.sessionId, replyKey = msg.id;
   if (method === "Target.sendMessageToTarget" && typeof p.message === "string") {
-    try { method = JSON.parse(p.message).method; } catch {}
+    try { const inner = JSON.parse(p.message); method = inner.method; replyKey = `w:${p.sessionId}:${inner.id}`; } catch {}
     sessionId = p.sessionId;
   }
   if (method === "Emulation.setDeviceMetricsOverride" || method === "Emulation.clearDeviceMetricsOverride") {
     const t = tabs.get(sessionId ? conn.sessions.get(sessionId) : (p.targetId ?? conn.pageTarget));
     if (t) t.agentViewport = method === "Emulation.setDeviceMetricsOverride";
+    // The clear also removed the panel's own sizing; it goes back once Chromium has done the clear.
+    if (t && method === "Emulation.clearDeviceMetricsOverride" && replyKey !== undefined) conn.pending.set(replyKey, { method, targetId: t.id });
   }
   if (!ACTIONS.has(msg.method)) return;
   const targetId = msg.sessionId ? conn.sessions.get(msg.sessionId) : conn.pageTarget;
@@ -491,10 +563,20 @@ function fromClient(conn, raw) {
 function fromBrowser(conn, raw) {
   if (typeof raw !== "string") return;
   if (conn.pending.size) {
+    let key = null;
     const m = /^\{"id":(\d+)/.exec(raw);
-    const want = m && conn.pending.get(Number(m[1]));
+    if (m) key = Number(m[1]);
+    else if (raw.includes('"Target.receivedMessageFromTarget"')) {
+      try {
+        const p = JSON.parse(raw).params;
+        const id = JSON.parse(p.message).id;
+        if (id !== undefined) key = `w:${p.sessionId}:${id}`;
+      } catch {}
+    }
+    const want = key !== null && conn.pending.get(key);
     if (want) {
-      conn.pending.delete(Number(m[1]));
+      conn.pending.delete(key);
+      if (want.method === "Emulation.clearDeviceMetricsOverride") { reapplyView(want.targetId); return; }
       const result = JSON.parse(raw).result;
       if (want.method === "Target.attachToTarget" && result?.sessionId) conn.sessions.set(result.sessionId, want.targetId);
       if (want.method === "Target.createTarget" && result?.targetId) agentActed(result.targetId);
@@ -506,6 +588,23 @@ function fromBrowser(conn, raw) {
     const p = JSON.parse(raw).params;
     if (p?.sessionId && p.targetInfo?.targetId) conn.sessions.set(p.sessionId, p.targetInfo.targetId);
   }
+}
+
+// After an agent hands the viewport back: the person's preset size, or Fit at their zoom, as before it took it.
+function reapplyView(targetId) {
+  serial(async () => {
+    const tab = tabs.get(targetId);
+    if (!tab || tab.agentViewport) return;
+    if (tab.emulation) {
+      const s = await sessionFor(targetId);
+      const { width, height, mobile, dpr } = tab.emulation;
+      if (s) await cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: dpr, mobile, screenWidth: width, screenHeight: height }, s).catch(() => {});
+    } else if (NATIVE) await nativeZoom(targetId);
+    if (NATIVE || targetId !== active) return;
+    await stopCast();
+    await fitWindow();
+    if (watching()) await startCast();
+  });
 }
 
 // A client that auto-attaches (Puppeteer, so omp; Playwright) only lists a new tab once it has set up its session
@@ -807,7 +906,7 @@ function state() {
   const pointer = cursor && cursor.target === active ? { x: cursor.x, y: cursor.y, at: cursor.at } : undefined;
   const userControl = { active: controlled(), until: controlUntil, held: heldCount() };
   const agents = clients.size;
-  return { ver, mode: MODE, tabs: list, active, seq, frame, cursor: pointer, clients: agents, casting, userControl, viewport };
+  return { ver, mode: MODE, tabs: list, active, seq, frame, cursor: pointer, clients: agents, casting, userControl, viewport, zoom };
 }
 
 // Lets an agent wait for the page to settle (no new frame for `idle` ms), or first to change after `since`,
@@ -878,12 +977,44 @@ async function selection() {
   return r?.result?.value ?? "";
 }
 
+let tmpSeq = 0;
+
 // Written whole or not at all, and never readable by anyone else even for a moment.
 async function writePrivate(path, data) {
-  const tmp = `${path}.${process.pid}.tmp`;
-  await writeFile(tmp, data, { mode: 0o600 });
-  await chmod(tmp, 0o600);
-  await rename(tmp, path);
+  const tmp = `${path}.${process.pid}.${++tmpSeq}.tmp`;
+  try {
+    await writeFile(tmp, data, { mode: 0o600 });
+    await chmod(tmp, 0o600);
+    await rename(tmp, path);
+  } catch (e) {
+    await unlink(tmp).catch(() => {});
+    throw e;
+  }
+}
+
+// Settings files (zoom, mode, restore list) change one write at a time, in request order, so an older value
+// can never land after a newer one. Each write takes the newest value for its file; a request whose value an
+// earlier write already took has nothing left to do. null removes the file.
+let settingsQueue = Promise.resolve();
+const latestSetting = new Map();
+
+function saveSetting(path, data) {
+  latestSetting.set(path, data);
+  const step = settingsQueue.then(async () => {
+    if (!latestSetting.has(path)) return;
+    const d = latestSetting.get(path);
+    latestSetting.delete(path);
+    try {
+      if (d === null) await unlink(path).catch((e) => { if (e?.code !== "ENOENT") throw e; });
+      else await writePrivate(path, d);
+    } catch (e) {
+      // Left for a later request on this file to try again, unless it already brought a newer value.
+      if (!latestSetting.has(path)) latestSetting.set(path, d);
+      throw e;
+    }
+  });
+  settingsQueue = step.catch(() => {});
+  return step;
 }
 
 // Tabs come back after the relaunch from this list; the profile (cookies, logins) is the same either way.
@@ -895,10 +1026,10 @@ async function switchMode(next) {
   const saved = [...tabs.values()].filter((t) => !t.devtools).sort((a, b) => a.order - b.order)
     .map((t) => ({ url: t.url, active: t.id === active }));
   try {
-    await writePrivate(RESTORE_FILE, JSON.stringify({ mode: next, tabs: saved }));
-    await writePrivate(MODE_FILE, `${next}\n`);
+    await saveSetting(RESTORE_FILE, JSON.stringify({ mode: next, tabs: saved }));
+    await saveSetting(MODE_FILE, `${next}\n`);
   } catch (e) {
-    await unlink(RESTORE_FILE).catch(() => {});
+    await saveSetting(RESTORE_FILE, null).catch(() => {});
     switching = false;
     throw e;
   }
@@ -909,7 +1040,7 @@ async function switchMode(next) {
 async function restoreTabs() {
   const saved = await Bun.file(RESTORE_FILE).json().catch(() => null);
   // Saved for the mode this start runs in; a switch that never took effect leaves nothing to restore.
-  if (saved?.mode !== MODE || !Array.isArray(saved.tabs)) return void (await unlink(RESTORE_FILE).catch(() => {}));
+  if (saved?.mode !== MODE || !Array.isArray(saved.tabs)) return void (await saveSetting(RESTORE_FILE, null).catch(() => {}));
   const initial = (await cdp.send("Target.getTargets")).targetInfos.filter(isTab).map((t) => t.targetId);
   let opened = 0, shown = null;
   for (const t of saved.tabs) {
@@ -922,7 +1053,7 @@ async function restoreTabs() {
   if (opened) for (const targetId of initial) await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
   if (shown) await serial(() => show(shown));
   // Kept until every tab is back, so a crash midway restores them on the next start.
-  await unlink(RESTORE_FILE).catch(() => {});
+  await saveSetting(RESTORE_FILE, null).catch(() => {});
 }
 
 // --- native mode: the headed window over the panel ------------------------------------------------------
@@ -940,10 +1071,41 @@ let nativeFocused = false;
 
 function panelAt(b) {
   const width = clampInt(b.width, 0, 50, 8000), height = clampInt(b.height, 0, 50, 8000);
+  const resized = width !== panel?.width || height !== panel?.height;
   panel = { ...panel, width, height, hidden: b.hidden === true, at: Date.now() };
   if (Number.isFinite(b.x) && Number.isFinite(b.y)) Object.assign(panel, { x: b.x, y: b.y, measured: true });
   panelSeq++;
   place();
+  if (resized) serial(() => nativeZoom(active));
+}
+
+// A headed window cannot be made larger than the panel to lay the page out wider, so the page gets a device size
+// of panel / zoom drawn at `scale` zoom: Chromium maps input through it the same way. A device size of the
+// person's choosing or an agent's own stays as it is.
+async function nativeZoom(targetId) {
+  const tab = targetId && tabs.get(targetId);
+  if (!NATIVE || !tab || tab.emulation || tab.agentViewport || !panel?.width) return;
+  const s = await sessionFor(targetId);
+  if (!s) return;
+  if (zoom === 1) await cdp.send("Emulation.clearDeviceMetricsOverride", {}, s).catch(() => {});
+  else await cdp.send("Emulation.setDeviceMetricsOverride", { width: Math.round(panel.width / zoom), height: Math.round(panel.height / zoom), deviceScaleFactor: 0, mobile: false, scale: zoom }, s).catch(() => {});
+}
+
+async function setZoom(b) {
+  if (!validZoom(b.zoom)) return json({ error: "zoom must be a number from 0.5 to 2" }, 400);
+  zoom = Math.round(b.zoom * 100) / 100;
+  await saveSetting(ZOOM_FILE, `${zoom}\n`);
+  bump();
+  serial(async () => {
+    if (NATIVE) return nativeZoom(active);
+    // Zoom only applies to Fit; a preset or an agent's viewport keeps its own size.
+    const t = tabs.get(active);
+    if (t?.emulation || t?.agentViewport) return;
+    await stopCast();
+    await fitWindow();
+    if (watching()) await startCast();
+  });
+  return json({ ok: true, zoom });
 }
 
 const int = (v, min, max) => Math.max(min, Math.min(max, Math.round(v)));
@@ -1047,6 +1209,9 @@ async function emulate(b) {
   if (fit) {
     await cdp.send("Emulation.clearDeviceMetricsOverride", {}, s);
     tab.emulation = null;
+    await nativeZoom(targetId);
+    // The window may still have the size of a zoom set while the preset was on.
+    if (!NATIVE && targetId === active) serial(async () => { await stopCast(); await fitWindow(); if (watching()) await startCast(); });
   } else {
     const { width, height } = b;
     // Phones render at their own density; 0 keeps the monitor's scale for desktop sizes.
@@ -1091,7 +1256,7 @@ async function api(req) {
   if (u.pathname === "/input" && !validInput(b)) return json({ error: "invalid input event" }, 400);
   // Anything the person does through the panel (or a link another mod opens for them) puts them in control.
   // Hovering is not doing: a pointer resting over the panel while watching an agent must not pause it.
-  if (["/open", "/tab", "/close", "/nav", "/devtools", "/emulate", "/mode"].includes(u.pathname) || (u.pathname === "/input" && (b.type !== "move" || b.pressed))) takeControl();
+  if (["/open", "/tab", "/close", "/nav", "/devtools", "/emulate", "/mode", "/zoom"].includes(u.pathname) || (u.pathname === "/input" && (b.type !== "move" || b.pressed))) takeControl();
   switch (u.pathname) {
     case "/open": return json({ id: await open(b.url, b.newTab) });
     case "/tab": serial(() => show(String(b.id))); return json({ ok: true });
@@ -1101,6 +1266,7 @@ async function api(req) {
     case "/devtools": return openDevtools(b);
     case "/emulate": return emulate(b);
     case "/mode": return switchMode(b.mode);
+    case "/zoom": return setZoom(b);
     case "/viewport": {
       lastBeat = Date.now();
       if (NATIVE) { panelAt(b); return json({ ok: true }); }
@@ -1114,6 +1280,7 @@ async function api(req) {
     case "/input":
       // Accepted, not yet dispatched: Chromium's answer is not awaited (see input()).
       inputAt = Date.now();
+      flushAck();
       input(b)?.catch((e) => console.error(`input: ${e?.message ?? e}`));
       return json({ ok: true });
   }
