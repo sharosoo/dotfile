@@ -86,7 +86,11 @@ section, top to bottom, with a rule it matches; otherwise to Channels, Direct me
   above the first one you haven't read, using where Slack says you read up to (a thread you
   follow uses its own). While that line is above the view, a pill at the top says how many are
   new and jumps back to it. The conversation is marked read, here and in Slack, only once its
-  newest messages have been on screen.
+  newest messages have been on screen, and again for each message that comes while you watch.
+  Read in another Slack app shows here within about a minute (Slack doesn't tell other apps,
+  so the unread ones are asked again every minute). Without the four `*:write` permissions a
+  yellow bar says so, with Fix permissions. Every mark Slack is asked for, and its answer, is
+  in `data/slack/mark.log` (from the latest start that marked anything).
 - **People**: click a face or a name in a message, an @mention, or the face of a direct message
   in the list for their card: picture, names, title, status, local time, presence, and email
   when the token has `users:read.email`. "메시지 보내기" opens your direct message with them,
@@ -95,3 +99,8 @@ section, top to bottom, with a rule it matches; otherwise to Channels, Direct me
 - **Channels**: type `#` in the message box to pick one of your channels (arrows, Enter or Tab,
   Esc closes); Slack shows it as a link. A `#channel` in a message opens it here when you are
   in it, and its Slack page otherwise.
+- **Writing**: Enter sends, Shift+Enter starts a new line; the box grows to eight lines, then
+  scrolls. `- ` or `* ` at the start of a line becomes a `•` list item, `1. ` a numbered one,
+  and `> ` a quote (a bar in the box, sent as `> `). Shift+Enter on an item starts the next
+  one, on an empty item ends the list; Backspace right after `•` or the bar gives back what
+  you typed. Quotes in messages are shown with a bar on the left, as in Slack.

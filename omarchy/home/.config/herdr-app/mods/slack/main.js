@@ -26,7 +26,8 @@
 // Your own sidebar sections, rules included, are in data/slack/sections.json (README.md).
 import { View, div, svg, image } from "gpui-kit";
 import * as fs from "fs/promises";
-import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { randomUUID } from "crypto";
+import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
 import { WebSocket } from "websocket";
 import EMOJI_NAMES from "./emoji-map.js";
 import { call, AUTH_ERRORS, missingScopes, newWizard, renderSetup, runCheck, saveTokens, removeTokens, button, lock } from "./setup.js";
@@ -35,6 +36,9 @@ import { theme, settings, props as given, appHome, readTextFile, writeTextFile, 
 const NAME = "slack";
 const ICON = (name) => `mods/${NAME}/${name}.svg`;
 const STATE = "slack.state", CMD = "slack.cmd", UNREAD = "slack.unread", PEOPLE = "slack.people";
+const CMD_KEEP = 20; // commands kept in "slack.cmd" for the background to catch up on
+// What conversations.mark needs, one per kind of conversation.
+const MARK_SCOPES = new Set(["channels:write", "groups:write", "im:write", "mpim:write"]);
 // What the panel shows or is about to: { n, items: [{ pic } | { face }] }, most wanted first.
 const WANT = "slack.want";
 const HYDRATE_DAYS = 60; // a conversation last heard from longer ago than this is not looked at again
@@ -363,24 +367,43 @@ export default class Slack extends View {
     if (p.profile) { this.profileUid = p.profile; this.overlayId = p.overlay ?? null; return; }
     // The panel: its own inputs, and the last command it waits on.
     this.filter = InputState.new();
-    cx.timer.every(100, () => this.flushWant());
+    cx.timer.every(100, () => { this.flushSoon(); this.flushWant(); });
     this.filterEmpty = true;
     this.filter.on("change", (_e, cx) => { this.filterEmpty = !this.filter.value(); cx.notify(); });
-    this.reply = InputState.new();
+    this.reply = TextareaState.new({ rows: 1 });
+    this.reply.set_auto_grow(1, 8);
     this.replyEmpty = true;
-    this.reply.on("change", (_e, cx) => { this.replyEmpty = !this.reply.value(); this.findMention(); cx.notify(); });
-    // Enter picks the highlighted person while the @ list is open, and sends otherwise.
-    this.reply.on("submit", (_e, cx) => {
-      const list = this.mention ? this.mentionList() : [];
-      if (list.length) this.pickMention(list[Math.min(this.mentionSel, list.length - 1)], cx);
-      else this.send(cx);
+    this.replySeen = "";
+    this.reply.on("change", (_e, cx) => { this.replyChanged(); cx.notify(); });
+    // Enter sends (or picks while the @/# list is open) and Shift+Enter is a new line, as in
+    // Slack. Bound on the box itself so it runs before the textarea's own Enter, which would
+    // add the line first; the list's arrows, Tab and Escape only while the list is open, so
+    // they still move the caret otherwise.
+    cx.bind_keys([
+      { keystroke: "enter", action: "slack_enter", context: "SlackComposer > Input" },
+      { keystroke: "enter", action: "slack_enter", context: "SlackPicking > Input" },
+      ...["up", "down", "tab", "escape"].map((k) => ({ keystroke: k, action: `slack_pick_${k}`, context: "SlackPicking > Input" })),
+    ]);
+    // If Enter still reaches the textarea (it adds the line, then says so), the line is taken
+    // back out before acting on it: once, and only while the box holds exactly what that line
+    // left, so nothing typed or set since is undone.
+    this.reply.on("submit", (e, cx) => {
+      const undo = this.newline;
+      this.newline = null;
+      if (e?.shift || e?.secondary || !undo || this.reply.value() !== undo.after) return;
+      this.setReply(undo.value, undo.at);
+      this.enter(cx);
     });
     // @mentions: the word being typed after @, the highlighted row, and the names picked
     // (as written in the box → their Slack id, turned into <@id> when sent).
     this.mention = null;
     this.mentionSel = 0;
     this.picked = new Map();
-    this.pending = null; // the number of the send waiting for an answer
+    this.pending = null; // the id of the send waiting for an answer
+    // The last send answer this panel dealt with, kept across its remakes: one that failed
+    // while no copy was waiting for it still brings its text back (conversation()).
+    try { this.seenResult = localStorage.getItem("seenResult"); } catch (_) {}
+    this.seenResult ??= shared(STATE)?.result?.n ?? null;
     // Setup: the two token fields (drawn as passwords), where the steps are, and the
     // background copy's generation the person closed setup for (it doesn't reopen for it).
     this.dir = dir();
@@ -445,7 +468,7 @@ export default class Slack extends View {
             const f = [...(this.S?.open?.messages ?? [])].reverse().flatMap((m) => m.files ?? []).find((x) => x.thumb);
             if (f) this.openViewer(f, cx);
           }
-          else if (c.startsWith("type-")) { this.reply.set_value(c.slice(5).replaceAll("_", " ")); this.replyEmpty = !this.reply.value(); this.findMention(); }
+          else if (c.startsWith("type-")) this.setReply(c.slice(5).replaceAll("_", " "));
           else if (c === "pick") { const list = this.mention ? this.mentionList() : []; if (list.length) this.pickMention(list[0], { notify() {} }); }
           // slack.thread opens the newest thread in the open conversation; slack.unthread goes back.
           else if (c === "thread") {
@@ -464,11 +487,26 @@ export default class Slack extends View {
   }
 
   // ── panel: ask ─────────────────────────────────────────────────────────────────────────
+  // Commands go in a short list, not one slot: the background looks every 250 ms, and two
+  // asked within that time (open, then read) would otherwise leave only the second. Each has
+  // a random id: a copy of the panel made again in the same millisecond can't reuse one.
   command(cmd) {
-    this.cmdN = (this.cmdN ?? 0) + 1;
-    const n = `${Date.now()}.${this.cmdN}`;
-    setShared(CMD, { n, ...cmd });
+    const n = randomUUID();
+    const box = shared(CMD), list = Array.isArray(box?.list) ? box.list : [];
+    setShared(CMD, { n, list: [...list, { n, ...cmd }].slice(-CMD_KEEP) });
     return n;
+  }
+
+  // What render decides to ask is sent from the timer just after it: shared state isn't set
+  // while drawing.
+  commandSoon(cmd) {
+    (this.soon ??= []).push(cmd);
+  }
+
+  flushSoon() {
+    const list = this.soon;
+    this.soon = null;
+    for (const cmd of list ?? []) this.command(cmd);
   }
 
   // "@ra" or "#gp" at the end of the box: the list opens with the people or channels that match.
@@ -477,6 +515,91 @@ export default class Slack extends View {
     const next = m ? { start: v.length - m[3].length - 1, q: m[3].toLowerCase(), kind: m[2] } : null;
     if (next?.q !== this.mention?.q || next?.kind !== this.mention?.kind) this.mentionSel = 0;
     this.mention = next;
+  }
+
+  // Every edit of the reply box: what it changed since the text last seen is what the list
+  // and quote shortcuts react to. setReply's own text is already "seen", so it isn't shaped.
+  replyChanged() {
+    const v = this.reply.value(), prev = this.replySeen;
+    this.replySeen = v;
+    this.replyEmpty = !v;
+    if (v !== prev) {
+      // Any change ends what the last new line recorded; a new line records itself afresh.
+      this.newline = null;
+      this.shapeEdit(prev, v);
+      if (this.newline) this.newline.after = this.reply.value();
+    }
+    this.findMention();
+  }
+
+  keepResult(n) {
+    this.seenResult = n;
+    try { localStorage.setItem("seenResult", n); } catch (_) {}
+  }
+
+  setReply(text, caret = text.length) {
+    this.newline = null;
+    this.replySeen = text;
+    this.reply.set_value(text);
+    this.reply.set_selected_range({ start: caret, end: caret });
+    this.replyEmpty = !text;
+    this.findMention();
+  }
+
+  // Slack's composer shortcuts. "- " or "* " typed at a line's start becomes "• ", "> " a
+  // quote shown as "┃ " (sent as "> "); "1. " stays as typed. A new line (Shift+Enter) after
+  // one of them starts the next item, or ends the list when the item is empty; Backspace right
+  // after a marker made here gives back what was typed.
+  shapeEdit(prev, v) {
+    let a = 0, b = 0;
+    while (a < prev.length && a < v.length && prev[a] === v[a]) a += 1;
+    while (b < prev.length - a && b < v.length - a && prev[prev.length - 1 - b] === v[v.length - 1 - b]) b += 1;
+    const added = v.slice(a, v.length - b), gone = prev.slice(a, prev.length - b);
+    // A line or space typed into a run of the same characters could be at any of them; the
+    // caret was at the first (the end of the line above, for a new line).
+    if (!gone && added.length === 1) while (a > 0 && v[a - 1] === added) a -= 1;
+    const auto = this.autoMark, lineStart = v.lastIndexOf("\n", a - 1) + 1;
+    this.autoMark = null;
+    if (auto && prev === auto.after && !added && a >= auto.start && a + gone.length === auto.start + auto.mark.length) {
+      this.setReply(`${prev.slice(0, auto.start)}${auto.literal}${prev.slice(auto.start + auto.mark.length)}`, auto.start + auto.literal.length);
+      return;
+    }
+    if (!gone && added === " ") {
+      const typed = v.slice(lineStart, a + 1), mark = { "- ": "• ", "* ": "• ", "> ": "┃ " }[typed];
+      if (!mark) return;
+      const text = `${v.slice(0, lineStart)}${mark}${v.slice(a + 1)}`;
+      this.setReply(text, lineStart + mark.length);
+      this.autoMark = { start: lineStart, mark, literal: typed, after: text };
+      return;
+    }
+    if (gone || !/^\n[ \t]*$/.test(added)) return;
+    // Recorded after any setReply below (which clears it); replyChanged notes the text it left.
+    const nl = { value: prev, at: a };
+    const line = v.slice(lineStart, a), m = line.match(/^(• |┃ |(\d+)\. )/);
+    if (m) {
+      const after = a + added.length, restEnd = v.indexOf("\n", after), rest = v.slice(after, restEnd < 0 ? v.length : restEnd);
+      if (line === m[1] && !rest.trim()) this.setReply(`${v.slice(0, lineStart)}${v.slice(after)}`, lineStart);
+      else {
+        const next = m[2] ? `${Number(m[2]) + 1}. ` : m[1];
+        this.setReply(`${v.slice(0, after)}${next}${v.slice(after)}`, after + next.length);
+      }
+    }
+    this.newline = nl;
+  }
+
+  // Enter: picks from the open @/# list, or sends.
+  enter(cx) {
+    // Handled here: a textarea submit that follows must not take a line out as well.
+    this.newline = null;
+    const list = this.mention ? this.mentionList() : [];
+    if (list.length) this.pickMention(list[Math.min(this.mentionSel, list.length - 1)], cx);
+    else this.send(cx);
+  }
+
+  // What the box holds, as Slack's mrkdwn: quote lines get their "> " back, and a list item
+  // left empty is dropped, as Slack does.
+  static toMrkdwn(text) {
+    return text.replace(/^(?:• |\d+\. )[ \t]*$/gm, "").replace(/^┃ ?/gm, "> ").trim();
   }
 
   // How well a name matches what was typed: its start, a word's start, anywhere, or its
@@ -517,10 +640,8 @@ export default class Slack extends View {
     const v = this.reply.value(), label = `${p.channel ? "#" : "@"}${p.name}`, next = `${v.slice(0, this.mention.start)}${label} `;
     this.picked.set(label, p.channel ? `#${p.id}` : `@${p.id}`);
     this.mention = null;
-    this.reply.set_value(next);
-    this.reply.set_selected_range({ start: next.length, end: next.length });
+    this.setReply(next);
     this.reply.focus();
-    this.replyEmpty = false;
     cx.notify();
   }
 
@@ -533,11 +654,13 @@ export default class Slack extends View {
   }
 
   send(cx) {
-    const S = shared(STATE), text = this.withMentions(this.reply.value().trim());
-    if (!S?.open || !text || this.pending) return;
+    const S = shared(STATE), text = this.withMentions(Slack.toMrkdwn(this.reply.value()));
+    // Before Slack has said who you are (starting, reconnecting) the text stays in the box.
+    if (!S?.open || !S.owner || !text || this.pending) return;
     this.mention = null;
     const thread = S.open.thread?.ts ?? null;
-    this.pending = this.command({ type: "send", id: S.open.id, text, thread_ts: thread, broadcast: Boolean(thread && this.alsoSend) });
+    // The workspace it was written in, and the box as typed: if it can't go there, it comes back.
+    this.pending = this.command({ type: "send", id: S.open.id, ws: S.owner ?? null, draft: this.reply.value(), text, thread_ts: thread, broadcast: Boolean(thread && this.alsoSend) });
     this.alsoSend = false;
     cx.notify();
   }
@@ -672,7 +795,14 @@ export default class Slack extends View {
     try { this.pauseUntil = Number(localStorage.getItem("pauseUntil")) || 0; } catch (_) {}
     this.dirty = true;
     this.cacheDirty = false;
-    this.lastCmd = shared(CMD)?.n ?? null; // an old command is not redone
+    // Commands already there are old: none is redone (a send above all). The ids handled are
+    // kept across starts too, so one listed twice, or again later, never runs twice.
+    this.lastCmd = shared(CMD)?.n ?? null;
+    this.pendingMark = new Map(); // conversation id → "retry" | "scope": its mark failed
+    this.cmdQueue = [];
+    let kept = [];
+    try { kept = JSON.parse(localStorage.getItem("doneCmds") ?? "[]"); } catch (_) {}
+    this.doneCmds = new Set([...(Array.isArray(kept) ? kept : []), ...(Array.isArray(shared(CMD)?.list) ? shared(CMD).list : []).map((c) => c.n)]);
     cx.timer.every(500, () => this.publish());
     cx.timer.every(250, (cx) => this.poll(cx));
     cx.spawn(async () => {
@@ -711,6 +841,9 @@ export default class Slack extends View {
     this.error = null;
     this.needs = null;
     this.missing = null;
+    // A new token or a reconnect asks Slack afresh: an old refusal says nothing about it.
+    this.markDenied = null;
+    this.pendingMark = new Map();
     this.resetWorkspace();
     // Another token may be another person or workspace: nothing of the last one's stays shown.
     this.faces = new Map();
@@ -801,7 +934,42 @@ export default class Slack extends View {
     cx.spawn((cx) => this.connectLoop(cx, gen));
     cx.spawn((cx) => this.scopeLoop(cx, gen));
     cx.spawn(() => this.loadEmoji(gen));
+    cx.spawn((cx) => this.unreadLoop(cx, gen));
     await this.hydrate(cx, gen);
+  }
+
+  // Slack doesn't tell apps about reading done elsewhere (channel_marked and the like reach
+  // only its own clients), so what shows unread here is asked about again every minute, the
+  // newest ten: read up to its newest message in Slack clears it here as well.
+  async unreadLoop(cx, gen) {
+    while (gen === this.gen) {
+      await sleep(cx, 60000);
+      // Marks that failed for a passing reason first, five at most; the rest of the ten are
+      // the newest unread. One refused for permissions can't succeed until they change
+      // (rescope or reload empty pendingMark), so it is only asked about as an unread one.
+      const retry = (c) => this.pendingMark.get(c.id) === "retry";
+      const pending = [...this.convs.values()].filter((c) => c.lastTs && retry(c)).sort((a, b) => b.ts - a.ts).slice(0, 5);
+      const unread = [...this.convs.values()].filter((c) => c.lastTs && !pending.includes(c) && (c.unread > 0 || c.mention) && this.open?.id !== c.id)
+        .sort((a, b) => b.ts - a.ts).slice(0, 10 - pending.length);
+      const todo = [...pending, ...unread];
+      for (const c of todo) {
+        if (gen !== this.gen) return;
+        const j = await this.api("conversations.info", { channel: c.id }).catch(() => null);
+        const lastRead = j?.ok ? j.channel.last_read : null, left = j?.ok ? j.channel.unread_count_display : null;
+        if (lastRead && Number(lastRead) >= Number(c.lastTs)) {
+          this.pendingMark.delete(c.id);
+          c.unread = 0;
+          c.mention = false;
+          this.seen[c.id] = c.lastTs;
+          this.saveSeen();
+          this.dirty = true;
+        } else if (typeof left === "number" && left > 0 && left !== c.unread) {
+          c.unread = left;
+          this.dirty = true;
+        }
+        await sleep(cx, HYDRATE_MS);
+      }
+    }
   }
 
   // The token's permissions, asked until Slack answers every probe (30 s, doubling to 10 min).
@@ -909,6 +1077,7 @@ export default class Slack extends View {
   // Parts (segmentsOf) laid out once, here, so the panel only draws them: { s } when it is
   // plain text, or { lines } where a line is null (blank), { s } (plain) or { w } (word by
   // word beside a link, mention or workspace emoji, so it flows on after them as in Slack).
+  // A line Slack sent as a quote ("> " at its start) has the marker taken off and q: true.
   layout(parts) {
     if (!parts?.length) return null;
     const runs = (s) => {
@@ -925,18 +1094,24 @@ export default class Slack extends View {
       if (at < s.length) out.push({ t: "text", s: s.slice(at) });
       return out;
     };
-    const lines = [[]];
+    const lines = [[]], quoted = new Set();
+    let fresh = true;
     for (const p of parts) {
-      if (p.t !== "text") { lines[lines.length - 1].push(p); continue; }
+      if (p.t !== "text") { lines[lines.length - 1].push(p); fresh = false; continue; }
       p.s.split("\n").forEach((piece, i) => {
-        if (i) lines.push([]);
-        if (piece.trim()) lines[lines.length - 1].push(...runs(piece.trim()));
+        if (i) { lines.push([]); fresh = true; }
+        if (fresh && /^>(?:\s|$)/.test(piece)) { quoted.add(lines.length - 1); piece = piece.replace(/^>\s?/, ""); }
+        if (piece.trim()) { lines[lines.length - 1].push(...runs(piece.trim())); fresh = false; }
       });
     }
-    if (!lines.some((l) => l.some((p) => p.t !== "text"))) return { s: parts.map((p) => runs(p.s).map((r) => r.s).join("")).join("") };
+    if (!quoted.size && !lines.some((l) => l.some((p) => p.t !== "text"))) return { s: parts.map((p) => runs(p.s).map((r) => r.s).join("")).join("") };
     return {
-      lines: lines.map((line) => (!line.length ? null : !line.some((p) => p.t !== "text") ? { s: line.map((p) => p.s).join(" ") }
-        : { w: line.flatMap((p) => (p.t === "text" ? p.s.split(/\s+/).filter(Boolean).map((s) => ({ t: "text", s })) : [p])) })),
+      lines: lines.map((line, i) => {
+        const q = quoted.has(i) || undefined;
+        if (!line.length) return q ? { s: "", q } : null;
+        if (!line.some((p) => p.t !== "text")) return { s: line.map((p) => p.s).join(" "), q };
+        return { w: line.flatMap((p) => (p.t === "text" ? p.s.split(/\s+/).filter(Boolean).map((s) => ({ t: "text", s })) : [p])), q };
+      }),
     };
   }
 
@@ -1023,8 +1198,8 @@ export default class Slack extends View {
   }
 
   // The last message of a conversation comes from conversations.history (conversations.info
-  // leaves it out for many). conversations.info is asked only when that message is new, for
-  // the point you had read up to and Slack's own count.
+  // leaves it out for many). conversations.info is asked only when that message is someone
+  // else's and recent, for the point you had read up to and Slack's own count.
   async hydrateOne(c) {
     const h = await this.api("conversations.history", { channel: c.id, limit: "1" });
     if (!h.ok) return;
@@ -1037,7 +1212,9 @@ export default class Slack extends View {
     this.cacheDirty = true;
     const mine = latest.user === this.me.id;
     // Older than two weeks is history, not news (an old app DM stays "unread" in Slack for ever).
-    const fresh = Number(latest.ts) > Number(this.seen[c.id] ?? 0) && Date.now() - c.ts < 14 * 86400000;
+    // Slack's last_read decides; what was marked here only counts while marks can't reach Slack.
+    const marksReach = !this.markDenied && !(this.missing ?? []).some((m) => MARK_SCOPES.has(m.scope));
+    const fresh = (marksReach || Number(latest.ts) > Number(this.seen[c.id] ?? 0)) && Date.now() - c.ts < 14 * 86400000;
     c.unread = 0;
     if (!mine && fresh) {
       const j = await this.api("conversations.info", { channel: c.id });
@@ -1153,8 +1330,10 @@ export default class Slack extends View {
     this.cacheDirty = true;
     if (shown) {
       if (!this.open.messages.some((m) => m.ts === ev.ts)) this.open.messages.push(this.normalize(ev));
-      this.seen[c.id] = ev.ts;
-      this.saveSeen();
+      // Someone else's message is read (here and in Slack) once the panel has shown it at the
+      // bottom (readbottom); until then it counts, as with the panel hidden or scrolled up.
+      if (mine) { this.seen[c.id] = ev.ts; this.saveSeen(); }
+      else { c.unread += 1; this.open.bottomSeen = false; }
     } else if (!mine) {
       c.unread += 1;
       const mentioned = (ev.text ?? "").includes(`<@${this.me.id}>`) || /<!(here|channel|everyone)/.test(ev.text ?? "");
@@ -1794,17 +1973,19 @@ export default class Slack extends View {
     if (ts) await this.openThread({ id, ts });
   }
 
-  // Marks conversations read at their newest message, in Slack as well as here. The counts go
-  // at once; a conversation Slack refuses comes back as it was, with a note. Without the
-  // write scopes, read stays a Herdr-only mark (as before) and the note says how to get them.
-  async markRead(ids, quiet = false) {
+  // Marks conversations read at their newest message, in Slack as well as here; or one
+  // conversation up to `upTo`, the newest message drawn on screen, so what came after it stays
+  // unread. The counts go at once; a conversation Slack refuses comes back as it was, with a note.
+  async markRead(ids, quiet = false, upTo = null) {
     const marked = [];
     for (const id of [...new Set(Array.isArray(ids) ? ids : [])].slice(0, 200)) {
       const c = this.convs.get(id);
       if (!c) continue;
       marked.push({ c, unread: c.unread, mention: c.mention, seen: this.seen[id] });
-      c.unread = 0;
-      c.mention = false;
+      // Messages after upTo (only the open conversation has them at hand) are still unread.
+      const after = upTo && this.open?.id === id ? this.open.messages.filter((x) => Number(x.ts) > Number(upTo) && !x.mine).length : 0;
+      c.unread = after;
+      c.mention = after > 0 && c.mention;
     }
     if (!marked.length) return;
     this.dirty = true;
@@ -1812,27 +1993,42 @@ export default class Slack extends View {
     let local = 0, failed = 0, why = "";
     for (const m of marked) {
       const c = m.c;
-      let ts = c.lastTs;
+      let ts = upTo ?? c.lastTs;
       if (!ts) {
         const h = await this.api("conversations.history", { channel: c.id, limit: "1" }).catch(() => null);
         ts = h?.ok ? h.messages?.[0]?.ts : null;
         if (ts) c.lastTs = ts;
       }
       if (!ts) continue;
-      this.seen[c.id] = ts;
+      if (!this.seen[c.id] || Number(ts) > Number(this.seen[c.id])) this.seen[c.id] = ts;
       const j = await this.api("conversations.mark", { channel: c.id, ts }, true).catch((e) => ({ ok: false, error: String(e?.message ?? e) }));
-      if (j?.ok) continue;
-      if (j?.error === "missing_scope") { local += 1; continue; }
-      failed += 1;
-      why = j?.error ?? "no answer";
+      this.logMark(c.id, ts, j);
+      if (j?.ok) { this.pendingMark.delete(c.id); continue; }
+      // Refused or unanswered: it stays as it was. Unanswered, the minute check keeps asking
+      // Slack about it (pendingMark "retry") until Slack says it is read, whoever read it;
+      // refused for permissions ("scope"), the yellow bar asks for them instead.
+      const scope = j?.error === "missing_scope";
+      if (scope) { local += 1; this.markDenied = j.needed || "write"; }
+      else { failed += 1; why = j?.error ?? "no answer"; }
       c.unread = m.unread;
       c.mention = m.mention;
       if (m.seen == null) delete this.seen[c.id]; else this.seen[c.id] = m.seen;
+      this.pendingMark.set(c.id, scope ? "scope" : "retry");
     }
     this.saveSeen();
     if (failed) this.note = { text: `Couldn't mark ${failed === 1 ? "it" : `${failed} conversations`} read in Slack (${why}).`, error: true, until: Date.now() + 8000 };
-    else if (local && !quiet) this.note = { text: "Marked read in Herdr only: Slack needs write permissions. Gear menu → Fix permissions.", until: Date.now() + 8000 };
+    else if (local && !quiet) this.note = { text: "Couldn't mark it read: Slack needs write permissions. Fix permissions in the yellow bar.", error: true, until: Date.now() + 8000 };
     this.dirty = true;
+  }
+
+  // Every conversations.mark of this start and Slack's answer, in data/slack/mark.log (the
+  // newest 200), for when read and unread don't agree with Slack's own apps.
+  logMark(id, ts, j) {
+    const line = `${new Date().toISOString()} ${id} ${ts} ${j?.ok ? "ok" : `error ${j?.error ?? "no answer"}${j?.needed ? ` needed=${j.needed}` : ""}`}`;
+    this.markLog = [...(this.markLog ?? []), line].slice(-200);
+    // One write after another: two at once could leave the older list as the file.
+    const text = `${this.markLog.join("\n")}\n`;
+    this.markLogWrite = (this.markLogWrite ?? Promise.resolve()).then(() => fs.writeFile(`${dir()}/mark.log`, text)).catch(() => {});
   }
 
   saveSeen() {
@@ -1843,79 +2039,117 @@ export default class Slack extends View {
   poll(cx) {
     const want = shared(WANT);
     if (want?.n && want.n !== this.wantN) { this.wantN = want.n; this.takeWant(want); }
-    const cmd = shared(CMD);
-    if (!cmd || cmd.n === this.lastCmd) return;
-    this.lastCmd = cmd.n;
-    cx.spawn(async (scx) => {
-      try {
-        if (cmd.type === "reload") this.reload(cx);
-        else if (cmd.type === "open") await this.openConv(cmd.id);
-        else if (cmd.type === "close") { this.open = null; this.dirty = true; }
-        else if (cmd.type === "send") await this.sendMessage(cmd);
-        else if (cmd.type === "older") await this.loadOlder(cmd);
-        else if (cmd.type === "react") await this.react(cmd);
-        else if (cmd.type === "thread") await this.openThread(cmd);
-        else if (cmd.type === "unthread") { if (this.open) this.open.thread = null; this.dirty = true; }
-        else if (cmd.type === "download") await this.download(cmd.file);
-        else if (cmd.type === "copyimage") await this.copyImage(scx, cmd.file);
-        else if (cmd.type === "media") {
-          // Its key is worked out again here: the panel's is not trusted to name a file.
-          const p = pic(cmd.pic?.url, cmd.pic?.w, cmd.pic?.h);
-          if (p) this.needMedia(p, true);
+    const box = shared(CMD);
+    if (!Array.isArray(box?.list) || box.n === this.lastCmd) return;
+    this.lastCmd = box.n;
+    let fresh = false;
+    for (const cmd of box.list) {
+      if (!cmd?.n || this.doneCmds.has(cmd.n)) continue;
+      this.doneCmds.add(cmd.n);
+      fresh = true;
+      this.cmdQueue.push(cmd);
+    }
+    if (!fresh) return;
+    // Enough to cover the list (CMD_KEEP) many times over.
+    this.doneCmds = new Set([...this.doneCmds].slice(-200));
+    try { localStorage.setItem("doneCmds", JSON.stringify([...this.doneCmds])); } catch (_) {}
+    if (this.cmdBusy) return;
+    // One at a time, in the order asked: a send never overtakes the open before it, and a
+    // reload in between doesn't run beside the commands around it.
+    this.cmdBusy = true;
+    cx.spawn(async (cx) => {
+      try { while (this.cmdQueue.length) await this.runCommand(this.cmdQueue.shift(), cx); } finally { this.cmdBusy = false; }
+    });
+  }
+
+  async runCommand(cmd, cx) {
+    try {
+      if (cmd.type === "reload") this.reload(cx);
+      else if (cmd.type === "open") await this.openConv(cmd.id);
+      else if (cmd.type === "close") { this.open = null; this.dirty = true; }
+      else if (cmd.type === "send") await this.sendQueued(cmd, cx);
+      else if (cmd.type === "older") await this.loadOlder(cmd);
+      else if (cmd.type === "react") await this.react(cmd);
+      else if (cmd.type === "thread") await this.openThread(cmd);
+      else if (cmd.type === "unthread") { if (this.open) this.open.thread = null; this.dirty = true; }
+      // Started in order, then left to run: a large file doesn't hold up what comes next.
+      else if (cmd.type === "download") cx.spawn(() => this.download(cmd.file).catch(() => {}));
+      else if (cmd.type === "copyimage") cx.spawn((scx) => this.copyImage(scx, cmd.file).catch(() => {}));
+      else if (cmd.type === "media") {
+        // Its key is worked out again here: the panel's is not trusted to name a file.
+        const p = pic(cmd.pic?.url, cmd.pic?.w, cmd.pic?.h);
+        if (p) this.needMedia(p, true);
+      }
+      else if (cmd.type === "goto") await this.goto(cmd.id, cmd.ts ?? null);
+      else if (cmd.type === "markread") await this.markRead(cmd.ids ?? [cmd.id]);
+      else if (cmd.type === "readbottom") {
+        // This very opening, loaded, was drawn down to message cmd.ts: read up to exactly
+        // that one, here and in Slack. One that came after it stays unread until it is drawn
+        // too (bottomSeen stays off, so that drawing asks again). One from an earlier opening
+        // is stale.
+        const o = this.open, ts = typeof cmd.ts === "string" && /^\d+\.\d+$/.test(cmd.ts) ? cmd.ts : null;
+        if (o && ts && o.id === cmd.id && o.n === cmd.openN && !o.loading && !o.bottomSeen && o.messages.some((x) => x.ts === ts)) {
+          o.bottomSeen = !o.messages.some((x) => Number(x.ts) > Number(ts));
+          await this.markRead([cmd.id], true, ts);
         }
-        else if (cmd.type === "goto") await this.goto(cmd.id, cmd.ts ?? null);
-        else if (cmd.type === "markread") await this.markRead(cmd.ids ?? [cmd.id]);
-        else if (cmd.type === "readbottom") {
-          // The open conversation's newest messages were on screen: read, here and in Slack.
-          if (this.open?.id === cmd.id && !this.open.bottomSeen) { this.open.bottomSeen = true; await this.markRead([cmd.id], true); }
+      }
+      else if (cmd.type === "profile") await this.loadProfile(cmd.uid);
+      else if (cmd.type === "dm") await this.openDm(cmd.uid);
+      else if (cmd.type === "section") await this.editSections(cmd);
+      else if (cmd.type === "shortcut") await this.shortcut(cmd.kind);
+      else if (cmd.type === "sectionmute") {
+        for (const [id, sid] of Object.entries(this.placed)) {
+          if (sid !== cmd.sid) continue;
+          const p = { ...this.prefs[id], muted: Boolean(cmd.muted) };
+          if (!p.muted) delete p.muted;
+          if (Object.keys(p).length) this.prefs[id] = p; else delete this.prefs[id];
         }
-        else if (cmd.type === "profile") await this.loadProfile(cmd.uid);
-        else if (cmd.type === "dm") await this.openDm(cmd.uid);
-        else if (cmd.type === "section") await this.editSections(cmd);
-        else if (cmd.type === "shortcut") await this.shortcut(cmd.kind);
-        else if (cmd.type === "sectionmute") {
-          for (const [id, sid] of Object.entries(this.placed)) {
-            if (sid !== cmd.sid) continue;
-            const p = { ...this.prefs[id], muted: Boolean(cmd.muted) };
-            if (!p.muted) delete p.muted;
-            if (Object.keys(p).length) this.prefs[id] = p; else delete this.prefs[id];
-          }
-          this.savePrefs();
-          this.dirty = true;
-        }
-        else if (cmd.type === "sound") {
-          this.soundOn = Boolean(cmd.on);
-          try { localStorage.setItem("sound", cmd.on ? "on" : "off"); } catch (_) {}
-          if (cmd.on) { this.dinged = 0; this.ding(); }
-          this.dirty = true;
-        } else if (cmd.type === "rescope") {
-          this.missing = await missingScopes(this.userToken).catch(() => null);
-          if (this.missing === null) cx.spawn((cx) => this.scopeLoop(cx, this.gen));
-          this.scopedAt = Date.now();
-          this.dirty = true;
-        } else if (cmd.type === "toasttest") {
-          const c = [...this.convs.values()].filter((x) => x.kind === "im" && x.ts).sort((a, b) => b.ts - a.ts)[0];
-          if (c) this.toast(c, { title: c.title, where: "Direct message", body: (c.preview || "Test").slice(0, 160), uid: c.user });
-        }
-        else if (cmd.type === "notif" && this.convs.has(cmd.id)) {
-          const p = { ...this.prefs[cmd.id] };
-          if (LEVELS.has(cmd.level)) p.level = cmd.level;
-          if (typeof cmd.muted === "boolean") p.muted = cmd.muted;
-          if ((p.level ?? defaultLevel(this.convs.get(cmd.id)?.kind)) === defaultLevel(this.convs.get(cmd.id)?.kind) && !p.muted) delete this.prefs[cmd.id]; else this.prefs[cmd.id] = p;
-          this.savePrefs();
-          this.dirty = true;
-        } else if (cmd.type === "pause") {
-          this.pauseUntil = Number(cmd.until) || 0;
-          try { localStorage.setItem("pauseUntil", String(this.pauseUntil)); } catch (_) {}
-          this.dirty = true;
-        }
-      } catch (e) {
-        const msg = String(e?.message ?? e);
-        if (cmd.type === "send") this.result = { n: cmd.n, ok: false, error: msg };
-        else if (this.open) this.open.notice = msg;
+        this.savePrefs();
         this.dirty = true;
       }
-    });
+      else if (cmd.type === "sound") {
+        this.soundOn = Boolean(cmd.on);
+        try { localStorage.setItem("sound", cmd.on ? "on" : "off"); } catch (_) {}
+        if (cmd.on) { this.dinged = 0; this.ding(); }
+        this.dirty = true;
+      } else if (cmd.type === "rescope") {
+        this.missing = await missingScopes(this.userToken).catch(() => null);
+        this.markDenied = null;
+        for (const [id, why] of this.pendingMark) if (why === "scope") this.pendingMark.delete(id);
+        if (this.missing === null) cx.spawn((cx) => this.scopeLoop(cx, this.gen));
+        this.scopedAt = Date.now();
+        this.dirty = true;
+      } else if (cmd.type === "toasttest") {
+        const c = [...this.convs.values()].filter((x) => x.kind === "im" && x.ts).sort((a, b) => b.ts - a.ts)[0];
+        if (c) this.toast(c, { title: c.title, where: "Direct message", body: (c.preview || "Test").slice(0, 160), uid: c.user });
+      }
+      else if (cmd.type === "notif" && this.convs.has(cmd.id)) {
+        const p = { ...this.prefs[cmd.id] };
+        if (LEVELS.has(cmd.level)) p.level = cmd.level;
+        if (typeof cmd.muted === "boolean") p.muted = cmd.muted;
+        if ((p.level ?? defaultLevel(this.convs.get(cmd.id)?.kind)) === defaultLevel(this.convs.get(cmd.id)?.kind) && !p.muted) delete this.prefs[cmd.id]; else this.prefs[cmd.id] = p;
+        this.savePrefs();
+        this.dirty = true;
+      } else if (cmd.type === "pause") {
+        this.pauseUntil = Number(cmd.until) || 0;
+        try { localStorage.setItem("pauseUntil", String(this.pauseUntil)); } catch (_) {}
+        this.dirty = true;
+      }
+    } catch (e) {
+      const msg = String(e?.message ?? e);
+      if (cmd.type === "send") this.result = { n: cmd.n, ok: false, error: msg, draft: cmd.draft ?? null, conv: cmd.id };
+      else if (this.open) this.open.notice = msg;
+      this.dirty = true;
+    }
+  }
+
+  // A send waits for the workspace to be known (a reload in between), and goes only to the
+  // workspace it was written in; otherwise it comes back to the box, not sent.
+  async sendQueued(cmd, cx) {
+    for (let i = 0; i < 120 && !this.me && this.status !== "setup" && this.status !== "error"; i++) await sleep(cx, 500);
+    if (!this.me) throw new Error("Slack isn't connected");
+    if (!cmd.ws || cmd.ws !== this.owner) throw new Error("the Slack workspace changed");
+    await this.sendMessage(cmd);
   }
 
   normalize(m) {
@@ -2050,17 +2284,16 @@ export default class Slack extends View {
     if (!c) return;
     const unread = c.unread, waiting = unread > 0 || c.mention;
     // It is marked read once its newest messages have been on screen (readbottom), not here.
-    this.open = { id, n: Date.now(), title: c.title, kind: c.kind, messages: [], loading: true, error: null, notice: null, more: true, newFrom: null, newCount: 0, bottomSeen: !waiting };
+    this.open = { id, n: Date.now(), title: c.title, kind: c.kind, messages: [], loading: true, error: null, notice: null, more: true, newFrom: null, newCount: 0, bottomSeen: false };
     // Only the open conversation's pictures are published; the files stay kept on disk.
     this.media = {};
     this.dirty = true;
     let got, lastRead = null;
     try {
-      // Where you had read up to, asked before anything marks it read.
-      if (waiting) {
-        const j = await this.api("conversations.info", { channel: id }).catch(() => null);
-        lastRead = (j?.ok ? j.channel.last_read : null) || this.seen[id] || null;
-      }
+      // Where you had read up to in Slack, asked before anything marks it read: a conversation
+      // read here but not in Slack (marked while offline, say) is still marked there.
+      const j = await this.api("conversations.info", { channel: id }).catch(() => null);
+      lastRead = (j?.ok ? j.channel.last_read : null) || (waiting ? this.seen[id] : null) || null;
       got = await this.fetchMessages(id);
     } catch (e) {
       if (this.open?.id === id) { this.open.loading = false; this.open.error = String(e?.message ?? e); this.dirty = true; }
@@ -2073,7 +2306,8 @@ export default class Slack extends View {
     Object.assign(this.open, this.newPart(got.msgs, lastRead, unread));
     const last = got.msgs[got.msgs.length - 1];
     if (last) { c.ts = c.ts || Number(last.ts) * 1000; if (Number(last.ts) * 1000 >= c.ts) c.lastTs = last.ts; }
-    if (last && !waiting) { this.seen[id] = last.ts; this.saveSeen(); }
+    const behind = Boolean(last && lastRead && Number(last.ts) > Number(lastRead));
+    if (!waiting && !behind) { this.open.bottomSeen = true; if (last) { this.seen[id] = last.ts; this.saveSeen(); } }
     this.dirty = true;
   }
 
@@ -2222,7 +2456,7 @@ export default class Slack extends View {
     });
     // The list is grouped again only when this changes, not on every picture or download.
     const listKey = hashOf(JSON.stringify([convs, sections, this.placed])).toString(36);
-    setShared(STATE, { listKey, note: this.note ? { text: this.note.text, error: Boolean(this.note.error) } : null, me: this.me?.id ?? null, status: this.status, error: this.error, team: this.team, teamUrl: this.teamUrl, convs, open: this.open, result: this.result, soundOn: this.soundOn, pauseUntil: this.pauseUntil, scopedAt: this.scopedAt ?? 0, avatars: this.avatars, media: this.media, sections, placed: this.placed, short: this.short, downloads: this.downloads, clips: this.clips, gen: this.gen, needs: this.needs, has: this.has, missing: this.missing, profile: this.profile });
+    setShared(STATE, { listKey, note: this.note ? { text: this.note.text, error: Boolean(this.note.error) } : null, me: this.me?.id ?? null, owner: this.me ? this.owner : null, status: this.status, error: this.error, team: this.team, teamUrl: this.teamUrl, convs, open: this.open, result: this.result, soundOn: this.soundOn, pauseUntil: this.pauseUntil, scopedAt: this.scopedAt ?? 0, avatars: this.avatars, media: this.media, sections, placed: this.placed, short: this.short, downloads: this.downloads, clips: this.clips, gen: this.gen, needs: this.needs, has: this.has, missing: this.missing, markDenied: this.markDenied ?? null, profile: this.profile });
     setShared(UNREAD, loud);
   }
 
@@ -2253,7 +2487,7 @@ export default class Slack extends View {
       .when(Boolean(S.open) && this.notifOpen === S.open?.id, (el) => el.child(this.notifMenu(t, S)))
       .when((S.pauseUntil ?? 0) > Date.now(), (el) => el.child(this.pausedBar(t, S)))
       .when(this.menu && !S.open, (el) => el.child(this.menuBar(t, S)))
-      .when(!S.open && (S.missing?.length ?? 0) > 0, (el) => el.child(this.missingBar(t, S)))
+      .when(!S.open && ((S.missing?.length ?? 0) > 0 || Boolean(S.markDenied)), (el) => el.child(this.missingBar(t, S)))
       .child(body);
   }
 
@@ -2412,15 +2646,19 @@ export default class Slack extends View {
     if (S?.teamUrl && /^[CG][A-Z0-9]{2,20}$/.test(id)) this.openLink(`${S.teamUrl}archives/${id}`, cx);
   }
 
-  // The user token lacks a permission: say what is off, and offer the fix.
+  // The user token lacks a permission: say what is off, and offer the fix. Read marks first:
+  // without them the counts here and in Slack quietly part ways.
   missingBar(t, S) {
     // Yellow background with dark text, in light and dark themes alike.
-    const ink = "#1c1a16";
+    const ink = "#1c1a16", missing = S.missing ?? [];
+    const markOff = Boolean(S.markDenied) || missing.some((m) => MARK_SCOPES.has(m.scope));
+    const tip = [...missing.map((m) => m.scope), ...(S.markDenied && S.markDenied !== "write" ? [S.markDenied] : [])].join(", ");
     return h_flex().flex_none().px(10).py(6).gap(8).items_center().bg(t.working).text_size(12).text_color(ink)
       .child(svg(ICON("triangle-alert")).size(13).flex_none())
-      .child(div().flex_1().min_w(0).truncate().font_medium().tooltip(S.missing.map((m) => m.scope).join(", ")).child(`No ${S.missing.map((m) => m.what).join(", ")}: permission missing`))
+      .child(div().flex_1().min_w(0).truncate().font_medium().tooltip(tip || "conversations.mark")
+        .child(markOff ? "Slack에 읽음을 반영하려면 권한을 다시 받아야 해요" : `No ${missing.map((m) => m.what).join(", ")}: permission missing`))
       .child(div().id("sl-fix").flex_none().px(8).h(20).flex().items_center().rounded(4).font_semibold().cursor_pointer().bg("#1c1a1622").hover((s) => s.bg("#1c1a1640"))
-        .on_click((_e, cx) => { this.wiz = newWizard(S, true); cx.notify(); }).child("Fix"));
+        .on_click((_e, cx) => { this.wiz = newWizard(S, true); cx.notify(); }).child("Fix permissions"));
   }
 
   face(t, uid, name, size, color) {
@@ -2872,10 +3110,13 @@ export default class Slack extends View {
     const base = (el) => el.text_size(size).text_color(color).when(bold, (e) => e.font_semibold());
     if (!L?.lines) return base(div()).child(typeof L?.s === "string" ? L.s : "");
     const M = this.dark ? MENTION.dark : MENTION.light, me = this.S?.me;
+    const quote = (line, el) => (!line.q ? el : h_flex().items_stretch().gap(8)
+      .child(div().w(3).flex_none().rounded(2).bg(t.border))
+      .child(el.flex_1().min_w(0).min_h(Math.round(size * 1.3))));
     return base(v_flex().gap(1)).children(L.lines.map((line, li) => {
       if (!line) return div().h(8);
-      if (line.s != null) return div().child(line.s);
-      return h_flex().flex_wrap().items_center().gap_x(4).gap_y(1).children(line.w.map((w, wi) => {
+      if (line.s != null) return quote(line, div().child(line.s));
+      return quote(line, h_flex().flex_wrap().items_center().gap_x(4).gap_y(1).children(line.w.map((w, wi) => {
         if (w.t === "text") return div().max_w_full().child(w.s);
         if (w.t === "emoji") {
           const path = this.S?.media?.[w.pic?.key];
@@ -2905,7 +3146,7 @@ export default class Slack extends View {
               cx.notify();
             })
             .child(svg(ICON(copied ? "check" : "copy")).size(11))));
-      }));
+      })));
     }));
   }
 
@@ -3169,9 +3410,20 @@ export default class Slack extends View {
     if (C.id !== viewKey) Object.assign(C, { id: viewKey, off: 0, viewH: 0, contentH: 0, hover: null, pick: null, askedOlder: null, link: null, heights: {}, jumped: null, readFor: null, bottomTs: null });
     // A send answered: the box empties when it went through, and keeps the text when it didn't.
     if (this.pending && S.result?.n === this.pending) {
-      if (S.result.ok) { this.reply.set_value(""); this.replyEmpty = true; this.picked.clear(); this.mention = null; C.off = 0; }
+      if (S.result.ok) { this.setReply(""); this.picked.clear(); this.mention = null; C.off = 0; }
       this.sendError = S.result.ok ? null : S.result.error;
       this.pending = null;
+      this.keepResult(S.result.n);
+    } else if (S.result?.n && S.result.n !== this.seenResult) {
+      // One asked by an earlier copy of this panel (it was made again meanwhile) that didn't
+      // go: its text comes back to its conversation's box, after anything typed there since.
+      const r = S.result, back = !r.ok && r.draft;
+      if (back && r.conv === o.id) {
+        const now = this.reply.value();
+        this.setReply(now.trim() ? `${now}\n${r.draft}` : r.draft);
+        this.sendError = r.error;
+      }
+      if (!back || r.conv === o.id) this.keepResult(r.n);
     }
     const max = () => Math.max(0, C.contentH - C.viewH);
     const older = () => {
@@ -3224,12 +3476,14 @@ export default class Slack extends View {
     const jumpKey = newAt >= 0 ? `${viewKey}:${newFrom}` : null;
     if (jumpKey && C.jumped !== jumpKey && newUp != null && C.viewH > 0 && C.contentH > 0) { C.jumped = jumpKey; C.off = toNew(); }
     const settled = !jumpKey || C.jumped === jumpKey;
-    // Read once the newest messages have been on screen, not merely because it was opened.
-    if (!th && !o.loading && settled && !o.bottomSeen && C.viewH > 0 && C.off <= 40 && C.readFor !== viewKey) {
-      C.readFor = viewKey;
-      this.command({ type: "readbottom", id: o.id });
-    }
     const lastTs = list[list.length - 1]?.ts ?? null;
+    // Read once the newest messages have been on screen, not merely because it was opened;
+    // again for each one that comes while it is open.
+    const readKey = `${viewKey}:${lastTs}`;
+    if (!th && lastTs && !o.loading && settled && !o.bottomSeen && C.viewH > 0 && Math.min(C.off, max()) <= 40 && C.readFor !== readKey) {
+      C.readFor = readKey;
+      this.commandSoon({ type: "readbottom", id: o.id, openN: o.n, ts: lastTs });
+    }
     if (C.off <= 40) C.bottomTs = lastTs;
     const newBelow = C.off > 40 && lastTs && C.bottomTs && Number(lastTs) > Number(C.bottomTs);
     const pill = (id, label, onClick) => div().id(id).h(24).px(10).flex().items_center().rounded(12).cursor_pointer()
@@ -3278,8 +3532,14 @@ export default class Slack extends View {
             .child(div().flex_none().text_size(12.5).font_semibold().text_color(t.foreground).child(p.name))
             .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(p.channel ? "" : p.real && p.real !== p.name ? p.real : p.handle ? `@${p.handle}` : "")))));
       })
-      .child(h_flex().flex_none().gap(6).items_center().p(8).bg(t.chrome).border_t(1).border_color(t.border)
+      .child(h_flex().flex_none().gap(6).items_end().p(8).bg(t.chrome).border_t(1).border_color(t.border)
         .child(div().relative().flex_1().min_w(0)
+          .key_context(this.mention && this.mentionList().length ? "SlackPicking" : "SlackComposer")
+          .on_action("slack_enter", (_e, cx) => { this.enter(cx); cx.notify(); })
+          .on_action("slack_pick_up", (_e, cx) => { const n = this.mentionList().length; if (n) this.mentionSel = (Math.min(this.mentionSel, n - 1) + n - 1) % n; cx.notify(); })
+          .on_action("slack_pick_down", (_e, cx) => { const n = this.mentionList().length; if (n) this.mentionSel = (Math.min(this.mentionSel, n - 1) + 1) % n; cx.notify(); })
+          .on_action("slack_pick_tab", (_e, cx) => this.enter(cx))
+          .on_action("slack_pick_escape", (_e, cx) => { this.mention = null; cx.notify(); })
           .on_key_down((e, cx) => {
             if (!this.mention) return;
             const list = this.mentionList();
@@ -3292,7 +3552,7 @@ export default class Slack extends View {
             cx.stop_propagation();
             cx.notify();
           })
-          .child(Input.new(this.reply).h(30).px(9).rounded(4).border(1).border_color(t.input).bg(t.canvas ?? t.background).text_size(12.5).text_color(t.foreground))
+          .child(Textarea.new(this.reply).min_h(30).px(9).py(6).rounded(4).border(1).border_color(t.input).bg(t.canvas ?? t.background).text_size(12.5).text_color(t.foreground))
           .when(this.replyEmpty, (el) => el.child(div().absolute().left(10).top(0).h(30).flex().items_center().text_size(12.5).text_color(t.dim).child(th ? "Reply in thread…" : `Reply to ${o.title}…`))))
         .child(div().id("sl-send").size(30).flex_none().flex().items_center().justify_center().rounded(4).bg(t.solid ?? t.accent).text_color(t.solid_foreground ?? t.accent_foreground)
           .when(sending || this.replyEmpty, (el) => el.opacity(0.45))
