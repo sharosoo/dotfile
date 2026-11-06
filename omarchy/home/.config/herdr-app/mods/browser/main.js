@@ -13,6 +13,11 @@ const HIDDEN_POLL_MS = 2000;
 const HEARTBEAT_MS = 2000;
 const CURSOR_MS = 2500;
 const AGENT_LIVE_MS = 4000;
+// How long a click ring stays: it is drawn at once, so a click shows before the page's frame does.
+const ECHO_MS = 350;
+const RESIZE_SETTLE_MS = 200;
+const PRELOAD_MS = 80;
+const MAX_LOADING = 3;
 
 const post = (path, body) => fetch(`${API}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
@@ -34,8 +39,8 @@ const label = (tab) => tab.title && tab.title !== tab.url ? tab.title : tab.url 
 
 export default class Browser extends View {
   init(_props, cx) {
-    this.state = null; this.raw = ""; this.error = null;
-    this.shown = []; // the last two frames, older first: the new one may still be loading over the old
+    this.state = null; this.raw = ""; this.error = null; this.ver = -1; this.echo = null;
+    this.shown = []; this.loading = []; // see apply()
     this.view = null; this.sentView = ""; this.beatAt = 0;
     this.queue = []; this.pumping = false; this.polling = false; this.pollAt = 0;
     this.editing = false; this.cursorOn = false;
@@ -67,35 +72,61 @@ export default class Browser extends View {
   tick(cx) {
     const now = Date.now();
     const on = visible();
-    if (!on && now - this.pollAt < HIDDEN_POLL_MS) return;
-    if (on && this.view && (now - this.beatAt > HEARTBEAT_MS || this.sentView !== this.viewKey())) this.beat(cx);
-    if (this.polling) return;
-    this.polling = true; this.pollAt = now;
+    // A resize (panel drag) settles before the page is resized to it: each resize costs a relayout and a new frame size.
+    const settled = this.view && now - (this.sizeAt ?? 0) > RESIZE_SETTLE_MS;
+    if (on && this.view && (now - this.beatAt > HEARTBEAT_MS || (settled && this.sentView !== this.viewKey()))) this.beat(cx, settled);
+    const cursorOn = this.cursorVisible(this.state);
+    if (cursorOn !== this.cursorOn) { this.cursorOn = cursorOn; cx.notify(); }
+    if (this.echo && now - this.echo.at > ECHO_MS) { this.echo = null; cx.notify(); }
+    if (this.polling || (!on && now - this.pollAt < HIDDEN_POLL_MS)) return;
+    this.polling = true;
+    // Shown, the panel waits on the service for its next change, so a frame is drawn as soon as it is written
+    // rather than at the next poll; hidden, it looks now and then.
     cx.spawn(async (cx) => {
-      try {
-        const raw = await (await fetch(`${API}/state`)).text();
-        const cursorOn = this.cursorVisible(this.state);
-        if (raw !== this.raw || this.error || cursorOn !== this.cursorOn) {
-          this.raw = raw; this.error = null; this.cursorOn = cursorOn;
-          this.apply(JSON.parse(raw));
-          cx.notify();
+      do {
+        this.pollAt = Date.now();
+        try {
+          const wait = visible() && !this.error;
+          const raw = await (await fetch(wait ? `${API}/next?after=${this.ver}&timeout=5000` : `${API}/state`)).text();
+          if (raw !== this.raw || this.error) {
+            this.raw = raw; this.error = null;
+            const s = JSON.parse(raw);
+            this.ver = s.ver ?? -1;
+            this.apply(s, cx);
+            cx.notify();
+          }
+        } catch (e) {
+          if (!this.error) { this.error = String(e?.message ?? e); cx.notify(); }
+          break;
         }
-      } catch (e) {
-        if (!this.error) { this.error = String(e?.message ?? e); cx.notify(); }
-      }
+      } while (visible());
       this.polling = false;
     });
   }
 
-  apply(s) {
+  apply(s, cx) {
     const f = s.frame;
-    const last = this.shown[this.shown.length - 1];
-    if (f && f.path !== last?.path) this.shown = [last, f].filter(Boolean);
-    if (!f) this.shown = [];
+    const known = this.loading[this.loading.length - 1] ?? this.shown[this.shown.length - 1];
+    if (f && f.path !== known?.path) {
+      // Drawing an image path for the first time blanks every frame image for a few screen frames. So a new
+      // frame is first drawn as a 1 px speck, and takes over the view once it has had PRELOAD_MS to load.
+      this.loading = [...this.loading, f].slice(-MAX_LOADING);
+      cx.timer.after(PRELOAD_MS, (cx) => this.promote(f, cx));
+    }
+    if (!f) { this.shown = []; this.loading = []; }
     const before = this.state?.tabs.find((t) => t.active)?.url;
     this.state = s;
     if (s.tabs.find((t) => t.active)?.url !== before) this.syncUrl();
     this.cursorOn = this.cursorVisible(s);
+  }
+
+  promote(f, cx) {
+    const i = this.loading.findIndex((x) => x.path === f.path);
+    if (i < 0) return;
+    // The previous frame stays underneath in case this one is still not drawable.
+    this.shown = [this.shown[this.shown.length - 1], f].filter(Boolean);
+    this.loading = this.loading.slice(i + 1);
+    cx.notify();
   }
 
   syncUrl() {
@@ -112,11 +143,14 @@ export default class Browser extends View {
     return `${Math.floor(this.view.width)}x${Math.floor(this.view.height)}`;
   }
 
-  // Doubles as the heartbeat that keeps the service's screencast running.
-  beat(cx) {
+  // Doubles as the heartbeat that keeps the service's screencast running; mid-resize it repeats the last size.
+  beat(cx, settled = true) {
     this.beatAt = Date.now();
-    this.sentView = this.viewKey();
-    const body = { width: Math.floor(this.view.width), height: Math.floor(this.view.height) };
+    if (settled || !this.sentBody) {
+      this.sentView = this.viewKey();
+      this.sentBody = { width: Math.floor(this.view.width), height: Math.floor(this.view.height) };
+    }
+    const body = this.sentBody;
     cx.spawn(async () => { await post("/viewport", body).catch(() => {}); });
   }
 
@@ -166,7 +200,7 @@ export default class Browser extends View {
     const p = this.point(e);
     if (!p) return;
     this.last = p;
-    if (type === "down") this.pressed = extra.button;
+    if (type === "down") { this.pressed = extra.button; this.echo = { ...e.local_position, at: Date.now() }; cx.notify(); }
     else if (type === "up") this.pressed = null;
     this.send(cx, { type, ...p, ...extra, ...(type === "move" ? { pressed: !!this.pressed } : {}) });
   }
@@ -212,11 +246,19 @@ export default class Browser extends View {
       .on_mouse_down("left", stop).on_click(action).child(text);
 
     const agentLive = activeTab?.agent && s?.clients > 0;
+    const paused = !!s?.userControl?.active && s?.clients > 0;
     const badge = agentLive && div().id("agent").flex_none().h(22).px(8).gap(5).flex().items_center().rounded(11)
-      .bg(t.selected).text_size(11).text_color(t.foreground)
-      .tooltip("An agent is driving this tab over CDP (127.0.0.1:9333)")
-      .child(div().size(6).rounded(3).bg(t.working).when(now - activeTab.agentAt < AGENT_LIVE_MS, (el) => el.loop("opacity", { from: 0.3, to: 1, period: 900 })))
-      .child("Agent");
+      .bg(t.selected).text_size(11).text_color(paused ? t.muted : t.foreground)
+      .tooltip(paused ? "You're using the page, so the agent waits; it resumes 5 s after your last input" : "An agent is driving this tab over CDP (127.0.0.1:9333)")
+      .child(div().size(6).rounded(3).bg(paused ? t.dim : t.working).when(!paused && now - activeTab.agentAt < AGENT_LIVE_MS, (el) => el.loop("opacity", { from: 0.3, to: 1, period: 900 })))
+      .child(paused ? "Agent paused" : "Agent");
+    const held = s?.userControl?.held ?? 0;
+    const banner = paused && h_flex().px(10).h(30).gap(8).flex_none().items_center().bg(t.selected).border_b(1).border_color(t.border)
+      .text_size(12)
+      .child(div().flex_1().min_w(0).truncate().child(`You're in control — agent paused${held ? ` (${held} waiting)` : ""}`))
+      .child(div().id("hand-back").px(8).h(22).flex().flex_none().items_center().rounded(5).border_1().border_color(t.border)
+        .text_size(11.5).cursor_pointer().hover((st) => st.bg(t.hover))
+        .on_mouse_down("left", stop).on_click((_e, cx) => this.call(cx, "/handback", {})).child("Hand back"));
 
     const toolbar = h_flex().px(6).h(36).gap(2).flex_none().items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .child(button("back", "←", "Back", (_e, cx) => this.call(cx, "/nav", { action: "back" })))
@@ -242,13 +284,14 @@ export default class Browser extends View {
     const sc = this.scale();
     const frames = sc ? this.shown.map((f) => image(f.path).id(`frame-${f.seq}`).absolute().top(0).left(0)
       .w(f.width * sc.k).h(f.height * sc.k)) : [];
+    const specks = this.loading.map((f) => image(f.path).id(`pre-${f.seq}`).absolute().top(0).left(0).size(1));
     const cur = this.cursorOn && sc && s.cursor;
     const message = this.error && !s ? `The browser service is not running (${this.error}). Start it with: systemctl --user start herdr-browser`
       : !s ? "Connecting…" : !sc ? (tabs.length ? "Waiting for the first frame…" : "No tabs open.") : null;
 
     const view = div().id("view").flex_1().min_h(0).relative().overflow_hidden().bg(t.background)
       .track_focus(this.focus)
-      .on_size_change((size, cx) => { this.view = size; if (this.sentView !== this.viewKey()) this.beat(cx); cx.notify(); })
+      .on_size_change((size, cx) => { this.view = size; this.sizeAt = Date.now(); cx.notify(); })
       .on_key_down((e, cx) => this.key(e, cx))
       // Without stopping it, the host's own mouse-down handler takes the keyboard back to the terminal.
       .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.focus.focus(); this.mouse(cx, "down", e, { button: "left", clickCount: e.click_count }); })
@@ -260,12 +303,16 @@ export default class Browser extends View {
       // GPUI reports wheel distance as content movement; the page wants scroll distance.
       .on_scroll_wheel((e, cx) => this.mouse(cx, "wheel", e, { dx: -e.delta.x, dy: -e.delta.y }))
       .children(frames)
+      .children(specks)
+      .when(!!this.echo, (el) => el.child(div().absolute().left(this.echo.x - 9).top(this.echo.y - 9).size(18).rounded(9)
+        .border_2().border_color(t.accent)))
       .when(!!cur, (el) => el.child(div().absolute().left(cur.x * sc.k - 7).top(cur.y * sc.k - 7).size(14).rounded(7)
         .border_2().border_color(t.accent)))
       .when(!!message, (el) => el.child(div().p(12).text_size(12).text_color(this.error && !s ? t.blocked : t.dim).child(message)));
 
     return v_flex().size_full().bg(t.background).text_color(t.foreground)
       .child(toolbar)
+      .when(!!banner, (el) => el.child(banner))
       .when(tabs.length > 0, (el) => el.child(strip))
       .child(view);
   }
