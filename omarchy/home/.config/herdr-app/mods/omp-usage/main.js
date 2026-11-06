@@ -77,6 +77,12 @@ function ago(ms, now) {
   return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`;
 }
 
+function clock(ms) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 const fraction = (v) => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, v) : null);
 
 // The limit closest to its wall decides an account's bar; unreadable fractions are unknown, not 0.
@@ -225,19 +231,26 @@ export default class OmpUsage extends View {
           .child(div().w(52).flex_none().text_color(t.foreground).child(`$${Math.round(r.sums.cost).toLocaleString()}`))));
   }
 
+  chip(t, text) {
+    return div().flex_none().whitespace_nowrap().px(5).rounded(8).border_1().border_color(t.border).bg(t.raised)
+      .text_size(10).text_color(t.muted).child(text);
+  }
+
   accountRow(t, a, now) {
     const pct = a.used === null ? null : Math.round(a.used * 100);
     const tag = a.kind === "worker" ? "W" : a.kind === "spurt" ? (a.spurting ? "S🔥" : "S") : "";
-    const reset = a.limit?.resetsAt ? until(a.limit.resetsAt, now) : "";
-    const tip = [a.email, a.limit?.label, reset && `resets in ${reset}`, a.resetCredits ? `${a.resetCredits} reset credits` : "", a.enabled ? "" : "off: omp does not use this account"]
+    const at = a.limit?.resetsAt;
+    const reset = at ? until(at, now) : "";
+    const tip = [a.email, reset ? `${a.limit.label ?? "limit"} resets in ${reset} (at ${clock(at)})` : a.limit?.label, a.resetCredits ? `${a.resetCredits} reset credits` : "", a.enabled ? "" : "off: omp does not use this account"]
       .filter(Boolean).join(" · ");
     return v_flex().id(`acct-${a.key}`).gap(3).px(10).py(4).tooltip(tip)
-      .child(h_flex().gap(6).text_size(12)
+      .child(h_flex().gap(6).items_center().text_size(12)
         .child(div().flex_1().truncate().text_color(a.enabled ? t.foreground : t.dim).child(a.label))
         .when(tag !== "", (el) => el.child(div().text_size(10).text_color(t.dim).child(tag)))
         .when(a.resetCredits > 0, (el) => el.child(div().text_size(10).text_color(t.accent).child(`↺${a.resetCredits}`)))
+        .when(!a.enabled, (el) => el.child(this.chip(t, "off")))
         .child(div().w(34).flex_none().text_color(a.enabled ? t.muted : t.dim).child(pct === null ? "—" : `${pct}%`))
-        .child(div().w(46).flex_none().text_size(11).text_color(t.dim).child(a.enabled ? reset : "off")))
+        .child(div().w(60).flex_none().whitespace_nowrap().text_size(11).text_color(t.dim).child(reset ? `↻ ${reset}` : "")))
       .child(div().h(3).w_full().rounded(2).bg(t.border)
         .child(div().h(3).rounded(2).bg(this.barColor(t, a)).w(`${Math.min(100, pct ?? 0)}%`).transition("width", { duration: 300 })));
   }
@@ -254,8 +267,9 @@ export default class OmpUsage extends View {
         .when(!!ic, (el) => el.child(image(ic).w(14).h(14).flex_none()))
         .child(div().flex_1().truncate().text_size(12).font_semibold().text_color(t.foreground)
           .child(providerName(p.id) + (p.tier ? `  ${p.tier}` : "")))
-        .child(div().text_size(11).text_color(t.muted)
-          .child(p.live ? `${p.headroom.toFixed(1)} left · ${p.live}/${p.accounts.length}` : p.enabled ? `no data · ${p.enabled}` : `${p.accounts.length} off`)))
+        .when(p.enabled > 0, (el) => el.child(div().text_size(11).text_color(t.muted)
+          .child(p.live ? `${p.headroom.toFixed(1)} left · ${p.live}/${p.accounts.length}` : `no data · ${p.enabled}`)))
+        .when(p.accounts.length > p.enabled, (el) => el.child(this.chip(t, `${p.accounts.length - p.enabled} off`))))
       .when(open, (el) => el.children(p.accounts.map((a) => this.accountRow(t, a, now))));
   }
 
