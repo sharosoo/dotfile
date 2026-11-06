@@ -16,6 +16,15 @@ const AGENT_LIVE_MS = 4000;
 // How long a click ring stays: it is drawn at once, so a click shows before the page's frame does.
 const ECHO_MS = 350;
 const RESIZE_SETTLE_MS = 200;
+const NATIVE_BEAT_MS = 250;
+const PRESETS = [
+  { label: "iPhone · 375×812", width: 375, height: 812, mobile: true },
+  { label: "iPhone · 390×844", width: 390, height: 844, mobile: true },
+  { label: "iPad · 768×1024", width: 768, height: 1024, mobile: true },
+  { label: "1280×800", width: 1280, height: 800 },
+  { label: "1440×900", width: 1440, height: 900 },
+  { label: "1920×1080", width: 1920, height: 1080 },
+];
 const PRELOAD_MS = 80;
 const MAX_LOADING = 3;
 
@@ -43,7 +52,15 @@ export default class Browser extends View {
     this.shown = []; this.loading = []; // see apply()
     this.view = null; this.sentView = ""; this.beatAt = 0;
     this.queue = []; this.pumping = false; this.polling = false; this.pollAt = 0;
-    this.editing = false; this.cursorOn = false;
+    this.editing = false; this.cursorOn = false; this.sizeMenu = false;
+    this.custom = InputState.new({ placeholder: "Custom, e.g. 1024x768" });
+    this.custom.on("submit", (_e, cx) => {
+      const m = /^\s*(\d{3,4})\s*[x×*,]\s*(\d{3,4})\s*$/.exec(this.custom.value());
+      if (!m) return;
+      this.sizeMenu = false;
+      this.call(cx, "/emulate", { width: Number(m[1]), height: Number(m[2]) });
+      cx.notify();
+    });
     this.focus = cx.focus_handle();
     this.url = InputState.new({ placeholder: "Search or enter address" });
     this.url.on("focus", () => { this.editing = true; });
@@ -74,7 +91,12 @@ export default class Browser extends View {
     const on = visible();
     // A resize (panel drag) settles before the page is resized to it: each resize costs a relayout and a new frame size.
     const settled = this.view && now - (this.sizeAt ?? 0) > RESIZE_SETTLE_MS;
-    if (on && this.view && (now - this.beatAt > HEARTBEAT_MS || (settled && this.sentView !== this.viewKey()))) this.beat(cx, settled);
+    // Native: the service places its window from these beats and hides it once they say hidden or stop, so they
+    // come often, and one more goes out as the panel leaves the screen.
+    const native = this.state?.mode === "native";
+    const every = native ? NATIVE_BEAT_MS : HEARTBEAT_MS;
+    if (this.view && (on || (native && this.wasOn)) && (now - this.beatAt > every || (settled && this.sentView !== this.viewKey()))) this.beat(cx, settled);
+    this.wasOn = on;
     const cursorOn = this.cursorVisible(this.state);
     if (cursorOn !== this.cursorOn) { this.cursorOn = cursorOn; cx.notify(); }
     if (this.echo && now - this.echo.at > ECHO_MS) { this.echo = null; cx.notify(); }
@@ -139,8 +161,19 @@ export default class Browser extends View {
     return !!s?.cursor && Date.now() - s.cursor.at < CURSOR_MS;
   }
 
+  viewBody() {
+    const body = { width: Math.floor(this.view.width), height: Math.floor(this.view.height) };
+    if (this.state?.mode !== "native") return body;
+    // Measured from a pointer move over the panel; it stands only while the page area keeps that size.
+    const o = this.origin;
+    if (o && Math.abs(o.width - this.view.width) < 1 && Math.abs(o.height - this.view.height) < 1) Object.assign(body, { x: o.x, y: o.y });
+    // The size menu opens over the page area, where the window would cover it.
+    if (this.sizeMenu || !visible()) body.hidden = true;
+    return body;
+  }
+
   viewKey() {
-    return `${Math.floor(this.view.width)}x${Math.floor(this.view.height)}`;
+    return JSON.stringify(this.viewBody());
   }
 
   // Doubles as the heartbeat that keeps the service's screencast running; mid-resize it repeats the last size.
@@ -148,7 +181,7 @@ export default class Browser extends View {
     this.beatAt = Date.now();
     if (settled || !this.sentBody) {
       this.sentView = this.viewKey();
-      this.sentBody = { width: Math.floor(this.view.width), height: Math.floor(this.view.height) };
+      this.sentBody = this.viewBody();
     }
     const body = this.sentBody;
     cx.spawn(async () => { await post("/viewport", body).catch(() => {}); });
@@ -180,18 +213,22 @@ export default class Browser extends View {
     });
   }
 
-  // Panel px → page CSS px. The frame is drawn at the top left, scaled to fit.
+  // Panel px → page CSS px. A page that fills the panel is drawn at the top left, scaled to fit; an emulated
+  // device size is drawn at most at its real size, centered, with the panel's background around it.
   scale() {
     const f = this.shown[this.shown.length - 1];
-    if (!f || !this.view) return null;
-    return { f, k: Math.min(this.view.width / f.width, this.view.height / f.height) };
+    if (!f || !this.view || this.state?.mode === "native") return null;
+    const fit = Math.min(this.view.width / f.width, this.view.height / f.height);
+    const emulated = !!this.state?.tabs.find((t) => t.active)?.emulation;
+    const k = emulated ? Math.min(1, fit) : fit;
+    return { f, k, ox: emulated ? Math.max(0, (this.view.width - f.width * k) / 2) : 0, oy: 0 };
   }
 
   point(e) {
     const s = this.scale();
     const p = e.local_position;
     if (!s || !p) return null;
-    const x = p.x / s.k, y = p.y / s.k;
+    const x = (p.x - s.ox) / s.k, y = (p.y - s.oy) / s.k;
     if (x < 0 || y < 0 || x > s.f.width || y > s.f.height) return null;
     return { x, y };
   }
@@ -239,6 +276,8 @@ export default class Browser extends View {
     const s = this.state;
     const tabs = s?.tabs ?? [];
     const activeTab = tabs.find((x) => x.active);
+    const em = activeTab?.emulation;
+    const sizeLabel = em ? `${em.width}×${em.height}` : "Fit";
     const now = Date.now();
     const stop = (_e, cx) => cx.stop_propagation();
     const button = (id, text, tip, action) => div().id(id).px(7).h(26).flex().flex_none().items_center().rounded(5)
@@ -268,7 +307,27 @@ export default class Browser extends View {
         .cursor_text().on_mouse_down("left", stop)
         .child(Input.new(this.url).h_full().text_size(12).text_color(t.foreground)))
       .when(!!badge, (el) => el.child(badge))
+      .child(button("size", sizeLabel, "Viewport size", (_e, cx) => { this.sizeMenu = !this.sizeMenu; cx.notify(); }))
+      .child(button("devtools", "DevTools", "Open DevTools for this tab in a new tab", (_e, cx) => this.call(cx, "/devtools", {})))
       .child(button("new-tab", "+", "New tab", (_e, cx) => { this.call(cx, "/open", { url: "about:blank", newTab: true }); this.url.focus(); }));
+
+    const pick = (id, text, body) => div().id(id).px(10).h(26).flex().items_center().rounded(5).text_size(12).cursor_pointer()
+      .hover((st) => st.bg(t.hover)).on_mouse_down("left", stop)
+      .on_click((_e, cx) => { this.sizeMenu = false; this.call(cx, "/emulate", body); cx.notify(); }).child(text);
+    const modeRow = (id, text, mode, tip) => div().id(id).px(10).h(26).flex().items_center().gap(6).rounded(5).text_size(12).cursor_pointer()
+      .tooltip(tip).hover((st) => st.bg(t.hover)).on_mouse_down("left", stop)
+      .on_click((_e, cx) => { this.sizeMenu = false; if (s?.mode !== mode) this.call(cx, "/mode", { mode }); cx.notify(); })
+      .child(div().w(12).child(s?.mode === mode ? "✓" : "")).child(text);
+    const menu = this.sizeMenu && v_flex().id("size-menu").absolute().top(36).right(6).w(220).p(4).gap(1).rounded(7)
+      .bg(t.chrome).border_1().border_color(t.border).on_mouse_down("left", stop)
+      .child(pick("fit", "Fit to panel", { fit: true }))
+      .children(PRESETS.map((p, i) => pick(`preset-${i}`, p.label, { width: p.width, height: p.height, mobile: !!p.mobile })))
+      .child(div().id("custom").h(26).mt(2).px(8).flex().items_center().rounded(5).border_1().border_color(t.border).bg(t.background)
+        .cursor_text().child(Input.new(this.custom).h_full().text_size(12).text_color(t.foreground)))
+      .child(div().h(1).my(4).bg(t.border))
+      .child(div().px(10).h(20).flex().items_center().text_size(11).text_color(t.dim).child("Display"))
+      .child(modeRow("mode-headless", "In the panel", "headless", "Frames drawn by herdr; works anywhere"))
+      .child(modeRow("mode-native", "Native window", "native", "Chromium's own window laid over this area; restarts the browser"));
 
     const tab = (x) => h_flex().id(`tab-${x.id}`).h(26).max_w(180).min_w(0).pl(8).pr(2).gap(4).items_center().rounded(5).flex_shrink(1)
       .when(x.active, (el) => el.bg(t.selected)).hover((st) => st.bg(x.active ? t.selected : t.hover)).cursor_pointer()
@@ -281,13 +340,16 @@ export default class Browser extends View {
     const strip = h_flex().id("tabs").px(6).h(32).gap(3).flex_none().items_center().overflow_x_scroll().border_b(1).border_color(t.border)
       .children(tabs.map(tab));
 
-    const sc = this.scale();
-    const frames = sc ? this.shown.map((f) => image(f.path).id(`frame-${f.seq}`).absolute().top(0).left(0)
+    const native = s?.mode === "native";
+    const sc = native ? null : this.scale();
+    const frames = sc ? this.shown.map((f) => image(f.path).id(`frame-${f.seq}`).absolute().top(sc.oy).left(sc.ox)
       .w(f.width * sc.k).h(f.height * sc.k)) : [];
-    const specks = this.loading.map((f) => image(f.path).id(`pre-${f.seq}`).absolute().top(0).left(0).size(1));
+    const specks = native ? [] : this.loading.map((f) => image(f.path).id(`pre-${f.seq}`).absolute().top(0).left(0).size(1));
     const cur = this.cursorOn && sc && s.cursor;
+    // Native: the browser window covers this area, so this only shows while it is not placed yet.
     const message = this.error && !s ? `The browser service is not running (${this.error}). Start it with: systemctl --user start herdr-browser`
-      : !s ? "Connecting…" : !sc ? (tabs.length ? "Waiting for the first frame…" : "No tabs open.") : null;
+      : !s ? "Connecting…" : native ? "Point at the panel to place the browser window here."
+      : !sc ? (tabs.length ? "Waiting for the first frame…" : "No tabs open.") : null;
 
     const view = div().id("view").flex_1().min_h(0).relative().overflow_hidden().bg(t.background)
       .track_focus(this.focus)
@@ -306,14 +368,19 @@ export default class Browser extends View {
       .children(specks)
       .when(!!this.echo, (el) => el.child(div().absolute().left(this.echo.x - 9).top(this.echo.y - 9).size(18).rounded(9)
         .border_2().border_color(t.accent)))
-      .when(!!cur, (el) => el.child(div().absolute().left(cur.x * sc.k - 7).top(cur.y * sc.k - 7).size(14).rounded(7)
+      .when(!!cur, (el) => el.child(div().absolute().left(sc.ox + cur.x * sc.k - 7).top(sc.oy + cur.y * sc.k - 7).size(14).rounded(7)
         .border_2().border_color(t.accent)))
       .when(!!message, (el) => el.child(div().p(12).text_size(12).text_color(this.error && !s ? t.blocked : t.dim).child(message)));
 
-    return v_flex().size_full().bg(t.background).text_color(t.foreground)
+    return v_flex().size_full().relative().bg(t.background).text_color(t.foreground)
+      // Pointer moves anywhere over the panel give its bounds; the page area is its bottom part.
+      .on_mouse_move((e) => {
+        if (e.bounds && this.view) this.origin = { x: e.bounds.x, y: e.bounds.y + e.bounds.height - this.view.height, width: this.view.width, height: this.view.height };
+      })
       .child(toolbar)
       .when(!!banner, (el) => el.child(banner))
       .when(tabs.length > 0, (el) => el.child(strip))
-      .child(view);
+      .child(view)
+      .when(!!menu, (el) => el.child(menu));
   }
 }

@@ -1,5 +1,5 @@
 [Unit]
-Description=Shared headless Chromium for the herdr-app Browser panel and agents (CDP 127.0.0.1:9333, API 127.0.0.1:47825)
+Description=Shared Chromium for the herdr-app Browser panel and agents (CDP 127.0.0.1:9333, API 127.0.0.1:47825)
 
 [Service]
 WorkingDirectory=%h/.local/share/herdr-browser

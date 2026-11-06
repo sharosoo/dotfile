@@ -23,6 +23,15 @@ const API_PORT = Number(process.env.HERDR_BROWSER_API_PORT ?? 47825);
 const CDP_PORT = Number(process.env.HERDR_BROWSER_CDP_PORT ?? 9333);
 const CHROME_PORT = Number(process.env.HERDR_BROWSER_CHROME_PORT ?? 9334);
 const CHROMIUM = process.env.HERDR_BROWSER_CHROMIUM ?? "/usr/bin/chromium";
+const MODE_FILE = join(HOME, ".local", "share", "herdr-browser", "mode");
+const RESTORE_FILE = join(HOME, ".local", "share", "herdr-browser", "restore.json");
+// "headless" draws the page into the panel as frames; "native" runs Chromium headed and lays its window over the
+// panel. The person picks it in the panel; switching restarts Chromium, so agents never do it.
+const MODE = (await Bun.file(MODE_FILE).text().catch(() => "")).trim() === "native" ? "native" : "headless";
+const NATIVE = MODE === "native";
+const NATIVE_CLASS = "herdr-browser";
+// Any non-zero exit makes systemd start the service again (Restart=on-failure); this one marks a mode switch.
+const RESTART_CODE = 75;
 // Frames go out at up to ~60 fps while the person interacts; this keeps about half a second of them.
 const KEEP_FRAMES = 30;
 // Watching an agent (nobody interacting) needs no more than ~10 fps; each frame costs the panel a decode.
@@ -105,6 +114,11 @@ async function extensionDirs() {
   return dirs.join(",");
 }
 
+let chromium = null;
+let switching = false;
+// False until the tabs saved by a mode switch are back; the CDP proxy turns agents away until then.
+let ready = false;
+
 async function launchChromium() {
   await mkdir(PROFILE, { recursive: true, mode: 0o700 });
   const fullVersion = /(\d+\.\d+\.\d+\.\d+)/.exec(await output([CHROMIUM, "--version"]))?.[1] ?? "152.0.0.0";
@@ -113,20 +127,28 @@ async function launchChromium() {
   const screen = await monitor();
   const extensions = await extensionDirs();
   const proc = Bun.spawn([
-    CHROMIUM, "--headless=new", "--ozone-platform=headless",
-    `--remote-debugging-port=${CHROME_PORT}`, "--remote-debugging-address=127.0.0.1",
-    `--user-data-dir=${PROFILE}`, `--force-device-scale-factor=${screen.scale}`,
-    `--screen-info={${screen.width}x${screen.height}}`,
+    CHROMIUM,
+    ...(NATIVE
+      // A kiosk window has no tab strip or toolbar; Hyprland floats it over the panel without focusing it
+      // (hypr/herdr_browser.lua), and the service places it.
+      ? ["--ozone-platform=wayland", `--class=${NATIVE_CLASS}`, "--kiosk"]
+      : ["--headless=new", "--ozone-platform=headless", `--force-device-scale-factor=${screen.scale}`,
+        `--screen-info={${screen.width}x${screen.height}}`, "--window-size=800,600",
+        // Headless defaults to SwiftShader, a software GPU that both costs CPU and marks the browser as a bot.
+        "--use-angle=gl-egl"]),
+    `--remote-debugging-port=${CHROME_PORT}`, "--remote-debugging-address=127.0.0.1", `--user-data-dir=${PROFILE}`,
+    // The panel's DevTools tab (devtools://, an origin no web page can have) connects here directly; every other
+    // Origin stays refused, as Chromium does by default.
+    "--remote-allow-origins=devtools://devtools",
     // The imported cookies are encrypted with the key the person's Chromium keeps in the keyring.
-    "--no-first-run", "--no-default-browser-check", "--password-store=gnome-libsecret", "--window-size=800,600",
+    "--no-first-run", "--no-default-browser-check", "--password-store=gnome-libsecret",
     ...(extensions ? [`--load-extension=${extensions}`, `--disable-extensions-except=${extensions}`] : []),
     `--user-agent=${uaOverride.userAgent}`, "--lang=ko-KR", "--accept-lang=ko-KR,ko,en-US,en",
     "--disable-blink-features=AutomationControlled",
-    // Headless defaults to SwiftShader, a software GPU that both costs CPU and marks the browser as a bot.
-    "--use-angle=gl-egl",
     "about:blank",
   ], { stdout: "ignore", stderr: "ignore", env: { ...process.env, TZ: process.env.TZ ?? "Asia/Seoul" } });
-  proc.exited.then((code) => { console.error(`chromium exited (${code})`); process.exit(1); });
+  chromium = proc;
+  proc.exited.then((code) => { console.error(`chromium exited (${code})`); process.exit(switching ? RESTART_CODE : 1); });
   for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => { proc.kill(); process.exit(0); });
   for (let i = 0; i < 100; i++) {
     try {
@@ -145,7 +167,7 @@ class Cdp {
     this.calls = new Map();
     this.listeners = [];
     this.open = new Promise((resolve, reject) => { this.ws.onopen = resolve; this.ws.onerror = reject; });
-    this.ws.onclose = () => { console.error("lost the CDP connection"); process.exit(1); };
+    this.ws.onclose = () => { console.error("lost the CDP connection"); process.exit(switching ? RESTART_CODE : 1); };
     this.ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.id !== undefined) {
@@ -205,14 +227,18 @@ let cdp;
 let queue = Promise.resolve();
 const serial = (fn) => (queue = queue.then(fn, fn).catch((e) => console.error(String(e?.message ?? e))));
 
+// The DevTools page the panel opens (see openDevtools); other devtools:// pages are Chromium's own internals.
+const DEVTOOLS_TAB = new RegExp(`^devtools://devtools/bundled/inspector\\.html\\?ws=127\\.0\\.0\\.1:${CHROME_PORT}/devtools/page/([0-9A-F]+)$`);
+
 function isTab(info) {
-  return info.type === "page" && !info.url.startsWith("devtools://");
+  return info.type === "page" && (!info.url.startsWith("devtools://") || DEVTOOLS_TAB.test(info.url));
 }
 
 function addTab(info) {
   if (!isTab(info) || tabs.has(info.targetId)) return;
   const agent = agentTargets.delete(info.targetId);
-  tabs.set(info.targetId, { id: info.targetId, url: info.url, title: info.title, agent, agentAt: agent ? Date.now() : 0, order: ++order });
+  const devtools = DEVTOOLS_TAB.exec(info.url)?.[1] ?? null;
+  tabs.set(info.targetId, { id: info.targetId, url: info.url, title: info.title, agent, agentAt: agent ? Date.now() : 0, order: ++order, devtools, emulation: null, agentViewport: false });
   // A popup the shown page opened (target=_blank, window.open) is where the person's click went.
   if ((agent && !controlled()) || !active || info.openerId === active) serial(() => show(info.targetId));
 }
@@ -244,6 +270,8 @@ async function show(targetId) {
   // A background tab is not painted, so it would give no frames.
   // A tab showing a JS dialog answers neither this nor the screencast; don't let it hold the queue long.
   await cdp.send("Page.bringToFront", {}, session, 2000).catch(() => {});
+  // A native window is sized by Hyprland and seen directly: no window fitting, no frames.
+  if (NATIVE) return;
   await fitWindow();
   if (watching()) await startCast();
 }
@@ -271,7 +299,7 @@ const chrome = new Map(); // targetId → { width, height }
 let lastChrome = { width: 0, height: 0 };
 
 async function fitWindow() {
-  if (!active || !session) return;
+  if (NATIVE || !active || !session) return;
   const targetId = active;
   try {
     const { windowId, bounds } = await cdp.send("Browser.getWindowForTarget", { targetId });
@@ -292,7 +320,7 @@ async function fitWindow() {
 const watching = () => Date.now() - lastBeat < HEARTBEAT_MS || waiters > 0;
 
 async function startCast() {
-  if (casting || !session) return;
+  if (NATIVE || casting || !session) return;
   casting = true;
   // Motion frames at CSS size, not the monitor's scale: the panel decodes each one before it can draw it, and a
   // frame a third the pixels decodes about three times faster. The still frame after motion is full scale.
@@ -329,7 +357,9 @@ function onFrame(params, from) {
   // Acked at once: the publish step decides how often frames are written, not Chromium.
   cdp.send("Page.screencastFrameAck", { sessionId: params.sessionId }, from).catch(() => {});
   if (from !== session) return;
-  pending = { data: params.data, width: params.metadata.deviceWidth, height: params.metadata.deviceHeight, from, still: false, receivedAt: Date.now() };
+  // Under the panel's device override Chromium reports the frame in the monitor's DIPs, not the page's CSS px.
+  const em = tabs.get(active)?.emulation;
+  pending = { data: params.data, width: em?.width ?? params.metadata.deviceWidth, height: em?.height ?? params.metadata.deviceHeight, from, still: false, receivedAt: Date.now() };
   // Armed on every motion frame, written or not (an identical one is skipped), so the sharp frame always follows.
   clearTimeout(paintTimer);
   paintTimer = setTimeout(paintOver, PAINT_OVER_MS);
@@ -441,6 +471,16 @@ function fromClient(conn, raw) {
   if (msg.sessionId) adopted(conn, conn.sessions.get(msg.sessionId));
   if (msg.method === "Target.attachToTarget" || msg.method === "Target.createTarget") conn.pending.set(msg.id, { method: msg.method, targetId: p.targetId });
   if (msg.method === "Target.activateTarget") return agentActed(p.targetId);
+  // Older clients wrap commands for page sessions in Target.sendMessageToTarget.
+  let method = msg.method, sessionId = msg.sessionId;
+  if (method === "Target.sendMessageToTarget" && typeof p.message === "string") {
+    try { method = JSON.parse(p.message).method; } catch {}
+    sessionId = p.sessionId;
+  }
+  if (method === "Emulation.setDeviceMetricsOverride" || method === "Emulation.clearDeviceMetricsOverride") {
+    const t = tabs.get(sessionId ? conn.sessions.get(sessionId) : (p.targetId ?? conn.pageTarget));
+    if (t) t.agentViewport = method === "Emulation.setDeviceMetricsOverride";
+  }
   if (!ACTIONS.has(msg.method)) return;
   const targetId = msg.sessionId ? conn.sessions.get(msg.sessionId) : conn.pageTarget;
   if (!targetId) return;
@@ -497,11 +537,17 @@ function untilAdopted(id, ms = 3000) {
 
 // Both servers are reachable from any web page the person visits (fetch to 127.0.0.1, or DNS rebinding a
 // hostname onto it), and either one drives the logged-in profile. Local tools (Playwright, omp, the mod) send
-// a loopback Host and no Origin; browsers always send an Origin on cross-site and WebSocket requests.
-function trusted(req, port) {
+// a loopback Host, no Origin and no Sec-Fetch-Site; a browser sends an Origin (the string "null" from sandboxed
+// frames, data: and file: pages) on WebSocket and cross-site requests and Sec-Fetch-Site on every request it
+// does not start itself. Any of those is refused, with no exceptions.
+const loopbackHost = (req, port) => {
   const host = req.headers.get("host");
-  if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) return false;
-  return !req.headers.has("origin");
+  return host === `127.0.0.1:${port}` || host === `localhost:${port}`;
+};
+function trusted(req, port) {
+  if (!loopbackHost(req, port) || req.headers.has("origin")) return false;
+  const site = req.headers.get("sec-fetch-site");
+  return site === null || site === "none";
 }
 const forbidden = () => new Response("forbidden", { status: 403 });
 
@@ -590,8 +636,9 @@ Bun.serve({
   hostname: "127.0.0.1",
   port: CDP_PORT,
   async fetch(req, server) {
-    if (!trusted(req, CDP_PORT)) return forbidden();
+    if (!ready) return new Response("restoring tabs, retry shortly", { status: 503, headers: { "retry-after": "1" } });
     const u = new URL(req.url);
+    if (!trusted(req, CDP_PORT)) return forbidden();
     if (u.pathname.startsWith("/devtools/")) {
       const pageTarget = /^\/devtools\/page\/([^/]+)/.exec(u.pathname)?.[1] ?? null;
       if (server.upgrade(req, { data: { path: u.pathname + u.search, pageTarget, sessions: new Map(), pending: new Map(), queue: [], autoAttach: false, adopted: new Set(), held: [] } })) return;
@@ -756,10 +803,11 @@ async function open(url, newTab) {
 
 function state() {
   const list = [...tabs.values()].sort((a, b) => a.order - b.order)
-    .map((t) => ({ id: t.id, url: t.url, title: t.title, active: t.id === active, agent: t.agent, agentAt: t.agentAt }));
+    .map((t) => ({ id: t.id, url: t.url, title: t.title, active: t.id === active, agent: t.agent, agentAt: t.agentAt, devtools: t.devtools, emulation: t.emulation, agentViewport: t.agentViewport }));
   const pointer = cursor && cursor.target === active ? { x: cursor.x, y: cursor.y, at: cursor.at } : undefined;
   const userControl = { active: controlled(), until: controlUntil, held: heldCount() };
-  return { ver, tabs: list, active, seq, frame, cursor: pointer, clients: clients.size, casting, userControl };
+  const agents = clients.size;
+  return { ver, mode: MODE, tabs: list, active, seq, frame, cursor: pointer, clients: agents, casting, userControl, viewport };
 }
 
 // Lets an agent wait for the page to settle (no new frame for `idle` ms), or first to change after `since`,
@@ -830,6 +878,188 @@ async function selection() {
   return r?.result?.value ?? "";
 }
 
+// Written whole or not at all, and never readable by anyone else even for a moment.
+async function writePrivate(path, data) {
+  const tmp = `${path}.${process.pid}.tmp`;
+  await writeFile(tmp, data, { mode: 0o600 });
+  await chmod(tmp, 0o600);
+  await rename(tmp, path);
+}
+
+// Tabs come back after the relaunch from this list; the profile (cookies, logins) is the same either way.
+async function switchMode(next) {
+  if (next !== "headless" && next !== "native") return json({ error: "mode is headless or native" }, 400);
+  if (switching) return json({ error: "already switching" }, 409);
+  if (next === MODE) return json({ ok: true, mode: MODE });
+  switching = true;
+  const saved = [...tabs.values()].filter((t) => !t.devtools).sort((a, b) => a.order - b.order)
+    .map((t) => ({ url: t.url, active: t.id === active }));
+  try {
+    await writePrivate(RESTORE_FILE, JSON.stringify({ mode: next, tabs: saved }));
+    await writePrivate(MODE_FILE, `${next}\n`);
+  } catch (e) {
+    await unlink(RESTORE_FILE).catch(() => {});
+    switching = false;
+    throw e;
+  }
+  setTimeout(() => { chromium?.kill(); setTimeout(() => process.exit(RESTART_CODE), 3000); }, 100);
+  return json({ ok: true, mode: next, restarting: true });
+}
+
+async function restoreTabs() {
+  const saved = await Bun.file(RESTORE_FILE).json().catch(() => null);
+  // Saved for the mode this start runs in; a switch that never took effect leaves nothing to restore.
+  if (saved?.mode !== MODE || !Array.isArray(saved.tabs)) return void (await unlink(RESTORE_FILE).catch(() => {}));
+  const initial = (await cdp.send("Target.getTargets")).targetInfos.filter(isTab).map((t) => t.targetId);
+  let opened = 0, shown = null;
+  for (const t of saved.tabs) {
+    if (typeof t?.url !== "string" || !/^(https?:\/\/|about:blank$)/.test(t.url)) continue;
+    const r = await cdp.send("Target.createTarget", { url: t.url }).catch(() => null);
+    if (!r) continue;
+    opened++;
+    if (t.active) shown = r.targetId;
+  }
+  if (opened) for (const targetId of initial) await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
+  if (shown) await serial(() => show(shown));
+  // Kept until every tab is back, so a crash midway restores them on the next start.
+  await unlink(RESTORE_FILE).catch(() => {});
+}
+
+// --- native mode: the headed window over the panel ------------------------------------------------------
+// The panel reports its page area in herdr-window px with every heartbeat (x/y only when it has measured them
+// at that size); the window follows herdr's own window from Hyprland, and hides on a special workspace when
+// the panel says so or stops reporting (Browser tab not shown, herdr closed).
+const PANEL_GONE_MS = 800;
+const HIDDEN_WORKSPACE = "special:herdr-browser";
+const HIDE_ALL = `hl.dispatch(hl.dsp.window.move({ window = "class:^${NATIVE_CLASS}$", workspace = "${HIDDEN_WORKSPACE}", follow = false }))`;
+let panel = null;
+let panelSeq = 0;
+let placing = false;
+let placeAgain = false;
+let nativeFocused = false;
+
+function panelAt(b) {
+  const width = clampInt(b.width, 0, 50, 8000), height = clampInt(b.height, 0, 50, 8000);
+  panel = { ...panel, width, height, hidden: b.hidden === true, at: Date.now() };
+  if (Number.isFinite(b.x) && Number.isFinite(b.y)) Object.assign(panel, { x: b.x, y: b.y, measured: true });
+  panelSeq++;
+  place();
+}
+
+const int = (v, min, max) => Math.max(min, Math.min(max, Math.round(v)));
+
+// One placement at a time; a heartbeat that lands meanwhile runs it again with the newest panel rect, and a run
+// whose panel changed while it read Hyprland starts over instead of applying a stale rect.
+async function place() {
+  if (placing) return void (placeAgain = true);
+  placing = true;
+  try {
+    do {
+      placeAgain = false;
+      const seq = panelSeq;
+      let clients;
+      try {
+        clients = JSON.parse(await output(["hyprctl", "-j", "clients"]));
+        if (!Array.isArray(clients)) throw new Error("not a list");
+      } catch (e) {
+        // Not knowing where things are, the window must not sit over whatever is there now.
+        console.error(`place: hyprctl clients: ${e?.message ?? e}`);
+        await output(["hyprctl", "eval", HIDE_ALL]);
+        continue;
+      }
+      if (seq !== panelSeq) { placeAgain = true; continue; }
+      await placeWith(clients);
+    } while (placeAgain);
+  } catch (e) {
+    console.error(`place: ${e?.message ?? e}`);
+  } finally {
+    placing = false;
+  }
+}
+
+async function placeWith(clients) {
+  const windows = clients.filter((c) => c?.class === NATIVE_CLASS && /^0x[0-9a-fA-F]+$/.test(c.address ?? ""));
+  if (!windows.length) return;
+  const herdr = clients.filter((c) => c?.class === "herdr-app" && c.mapped).sort((a, b) => a.focusHistoryID - b.focusHistoryID)[0];
+  let rect = null;
+  const wsId = herdr?.workspace?.id;
+  if (herdr && Number.isInteger(wsId) && wsId > 0 && panel && !panel.hidden && Date.now() - panel.at < PANEL_GONE_MS && panel.x !== undefined) {
+    const [hx, hy] = herdr.at, [hw, hh] = herdr.size;
+    // A resize without a fresh measurement keeps the page area's distance from herdr's right and bottom edges.
+    if (panel.measured) Object.assign(panel, { right: hw - panel.x - panel.width, bottom: hh - panel.y - panel.height, measured: false });
+    else Object.assign(panel, { x: hw - panel.right - panel.width, y: hh - panel.bottom - panel.height });
+    // Never outside herdr's own window, which Hyprland keeps on a monitor.
+    const w = int(panel.width, 50, hw), h = int(panel.height, 50, hh);
+    rect = { x: int(hx + panel.x, hx, hx + hw - w), y: int(hy + panel.y, hy, hy + hh - h), w, h, ws: String(wsId) };
+  }
+  // The person clicked into the window (it never takes focus by itself): that is them using the page. Only the
+  // moment it gains focus counts, and only while it is shown; staying focused does not keep the agent paused.
+  const focused = !!rect && windows.some((w) => w.focusHistoryID === 0);
+  if (focused && !nativeFocused) takeControl();
+  nativeFocused = focused;
+  const cmds = [];
+  for (const w of windows) {
+    const win = `address:${w.address}`;
+    if (!rect) {
+      if (w.workspace?.name !== HIDDEN_WORKSPACE) cmds.push(`hl.dsp.window.move({ window = "${win}", workspace = "${HIDDEN_WORKSPACE}", follow = false })`);
+      continue;
+    }
+    if (String(w.workspace?.id) !== rect.ws) cmds.push(`hl.dsp.window.move({ window = "${win}", workspace = "${rect.ws}", follow = false })`);
+    // The kiosk hides its tab strip and toolbar only while the client believes it is fullscreen.
+    if (w.fullscreenClient !== 2 || w.fullscreen !== 0) cmds.push(`hl.dsp.window.fullscreen_state({ window = "${win}", internal = 0, client = 2 })`);
+    // Hyprland resizes about the window's center, so the move comes after.
+    const resize = w.size?.[0] !== rect.w || w.size?.[1] !== rect.h;
+    if (resize) cmds.push(`hl.dsp.window.resize({ window = "${win}", x = ${rect.w}, y = ${rect.h} })`);
+    if (resize || w.at?.[0] !== rect.x || w.at?.[1] !== rect.y) cmds.push(`hl.dsp.window.move({ window = "${win}", x = ${rect.x}, y = ${rect.y} })`);
+  }
+  if (cmds.length) await output(["hyprctl", "eval", cmds.map((c) => `hl.dispatch(${c})`).join("; ")]);
+}
+
+// Chromium's own DevTools page, connected straight to Chromium's port: it is the person's tool, so it must neither
+// wait behind the user-control lock nor count as an agent, and only a devtools:// page may open that socket.
+async function openDevtools(b) {
+  const target = b.id ? String(b.id) : active;
+  const tab = target && tabs.get(target);
+  if (!tab) return json({ error: "no such tab" }, 404);
+  if (tab.devtools) return json({ error: "that tab is DevTools itself" }, 400);
+  const r = await cdp.send("Target.createTarget", { url: `devtools://devtools/bundled/inspector.html?ws=127.0.0.1:${CHROME_PORT}/devtools/page/${target}` }).catch(() => null);
+  if (!r) return json({ error: "could not open DevTools" }, 502);
+  serial(() => show(r.targetId));
+  return json({ id: r.targetId });
+}
+
+// The panel's device size for one tab, kept on our own session so it lasts until changed. An agent that set the
+// tab's metrics itself keeps them: the panel does not fight it.
+async function emulate(b) {
+  const targetId = b.id ? String(b.id) : active;
+  const tab = targetId && tabs.get(targetId);
+  if (!tab) return json({ error: "no such tab" }, 404);
+  if (tab.agentViewport) return json({ error: "an agent set this tab's viewport and keeps it" }, 409);
+  if (b.fit !== undefined && b.fit !== true) return json({ error: "fit must be true" }, 400);
+  const fit = b.fit === true;
+  const size = (v) => Number.isInteger(v) && v >= 200 && v <= 4000;
+  if (!fit && !(size(b.width) && size(b.height))) return json({ error: "width and height must be integers from 200 to 4000, or fit:true" }, 400);
+  if (b.mobile !== undefined && typeof b.mobile !== "boolean") return json({ error: "mobile must be a boolean" }, 400);
+  if (b.dpr !== undefined && !(Number.isFinite(b.dpr) && b.dpr >= 0.5 && b.dpr <= 4)) return json({ error: "dpr must be a number from 0.5 to 4" }, 400);
+  const s = await sessionFor(targetId);
+  if (!s) return json({ error: "could not attach to the tab" }, 502);
+  const mobile = !fit && b.mobile === true;
+  if (fit) {
+    await cdp.send("Emulation.clearDeviceMetricsOverride", {}, s);
+    tab.emulation = null;
+  } else {
+    const { width, height } = b;
+    // Phones render at their own density; 0 keeps the monitor's scale for desktop sizes.
+    const dpr = b.dpr ?? (mobile ? 3 : 0);
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: dpr, mobile, screenWidth: width, screenHeight: height }, s);
+    tab.emulation = { width, height, mobile, dpr };
+  }
+  await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: mobile, maxTouchPoints: mobile ? 5 : 1 }, s);
+  await cdp.send("Emulation.setEmitTouchEventsForMouse", { enabled: mobile, configuration: "mobile" }, s);
+  bump();
+  return json({ ok: true, emulation: tab.emulation });
+}
+
 const json = (body, status = 200) => Response.json(body, { status });
 
 async function api(req) {
@@ -861,15 +1091,19 @@ async function api(req) {
   if (u.pathname === "/input" && !validInput(b)) return json({ error: "invalid input event" }, 400);
   // Anything the person does through the panel (or a link another mod opens for them) puts them in control.
   // Hovering is not doing: a pointer resting over the panel while watching an agent must not pause it.
-  if (["/open", "/tab", "/close", "/nav"].includes(u.pathname) || (u.pathname === "/input" && (b.type !== "move" || b.pressed))) takeControl();
+  if (["/open", "/tab", "/close", "/nav", "/devtools", "/emulate", "/mode"].includes(u.pathname) || (u.pathname === "/input" && (b.type !== "move" || b.pressed))) takeControl();
   switch (u.pathname) {
     case "/open": return json({ id: await open(b.url, b.newTab) });
     case "/tab": serial(() => show(String(b.id))); return json({ ok: true });
     case "/close": await cdp.send("Target.closeTarget", { targetId: String(b.id) }); return json({ ok: true });
     case "/nav": await nav(b.action); return json({ ok: true });
     case "/handback": handBack(); return json({ ok: true });
+    case "/devtools": return openDevtools(b);
+    case "/emulate": return emulate(b);
+    case "/mode": return switchMode(b.mode);
     case "/viewport": {
       lastBeat = Date.now();
+      if (NATIVE) { panelAt(b); return json({ ok: true }); }
       const width = Math.max(200, Math.min(4000, Math.round(Number(b.width) || 0)));
       const height = Math.max(150, Math.min(4000, Math.round(Number(b.height) || 0)));
       const changed = width !== viewport.width || height !== viewport.height;
@@ -895,6 +1129,10 @@ await cdp.open;
 cdp.on(onEvent);
 await cdp.send("Target.setDiscoverTargets", { discover: true });
 await cdp.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true, filter: [{ type: "page", exclude: false }] });
+await restoreTabs();
+ready = true;
+// Hyprland moves herdr's window (scrolling layout, workspace switches) without telling the panel.
+if (NATIVE) setInterval(place, 150);
 
 Bun.serve({
   hostname: "127.0.0.1",
