@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Web links clicked inside herdr-app (terminal links, Slack, Artifacts, ...) open in its Browser panel.
+# Only a direct child of herdr-app is routed; every other caller, and herdr-app when the browser
+# service is down, gets the stock /usr/bin/xdg-open unchanged so other apps behave as before.
+set -u
+url=${1-}
+if [[ $# -eq 1 && $url =~ ^https?:// && $(ps -o comm= -p "$PPID" 2>/dev/null) == herdr-app ]]; then
+  if body=$(jq -cn --arg url "$url" '{url: $url, newTab: true}') && [[ -n $body ]] &&
+    curl -fsS -m 2 -o /dev/null -H 'content-type: application/json' -d "$body" http://127.0.0.1:47825/open; then
+    herdr-app do layout.select '{"stack":"panel-body","child":"browser"}' >/dev/null 2>&1
+    herdr-app do layout.show '{"id":"panel"}' >/dev/null 2>&1
+    exit 0
+  fi
+fi
+exec /usr/bin/xdg-open "$@"

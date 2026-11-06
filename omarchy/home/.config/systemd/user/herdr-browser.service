@@ -1,0 +1,16 @@
+[Unit]
+Description=Shared headless Chromium for the herdr-app Browser panel and agents (CDP 127.0.0.1:9333, API 127.0.0.1:47825)
+
+[Service]
+WorkingDirectory=%h/.local/share/herdr-browser
+ExecStart=/usr/bin/bun browser.mjs
+Restart=on-failure
+RestartSec=2
+MemoryMax=3G
+TimeoutStopSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=default.target
