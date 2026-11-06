@@ -372,7 +372,11 @@ export default class Slack extends View {
     if (p.profile) { this.profileUid = p.profile; this.overlayId = p.overlay ?? null; return; }
     // The panel: its own inputs, and the last command it waits on.
     this.filter = InputState.new();
-    cx.timer.every(100, () => { this.flushSoon(); this.flushWant(); });
+    // The composer can't be changed while drawing; render leaves the text here for the next tick.
+    cx.timer.every(100, (cx) => {
+      if (this.replyNext !== undefined) { const text = this.replyNext; this.replyNext = undefined; this.setReply(text); cx.notify(); }
+      this.flushSoon(); this.flushWant();
+    });
     this.filterEmpty = true;
     this.filter.on("change", (_e, cx) => { this.filterEmpty = !this.filter.value(); cx.notify(); });
     this.reply = TextareaState.new({ rows: 1 });
@@ -665,7 +669,8 @@ export default class Slack extends View {
     this.mention = null;
     const thread = S.open.thread?.ts ?? null;
     // The workspace it was written in, and the box as typed: if it can't go there, it comes back.
-    this.pending = this.command({ type: "send", id: S.open.id, ws: S.owner ?? null, draft: this.reply.value(), text, thread_ts: thread, broadcast: Boolean(thread && this.alsoSend) });
+    this.pendingDraft = this.reply.value();
+    this.pending = this.command({ type: "send", id: S.open.id, ws: S.owner ?? null, draft: this.pendingDraft, text, thread_ts: thread, broadcast: Boolean(thread && this.alsoSend) });
     this.alsoSend = false;
     cx.notify();
   }
@@ -3508,7 +3513,8 @@ export default class Slack extends View {
     if (C.id !== viewKey) Object.assign(C, { id: viewKey, off: 0, viewH: 0, contentH: 0, hover: null, pick: null, askedOlder: null, link: null, heights: {}, jumped: null, readFor: null, bottomTs: null });
     // A send answered: the box empties when it went through, and keeps the text when it didn't.
     if (this.pending && S.result?.n === this.pending) {
-      if (S.result.ok) { this.setReply(""); this.picked.clear(); this.mention = null; C.off = 0; }
+      // Text typed after pressing send stays: only the box as it was sent is emptied.
+      if (S.result.ok) { if (this.reply.value() === this.pendingDraft) this.replyNext = ""; this.picked.clear(); this.mention = null; C.off = 0; }
       this.sendError = S.result.ok ? null : S.result.error;
       this.pending = null;
       this.keepResult(S.result.n);
@@ -3517,8 +3523,8 @@ export default class Slack extends View {
       // go: its text comes back to its conversation's box, after anything typed there since.
       const r = S.result, back = !r.ok && r.draft;
       if (back && r.conv === o.id) {
-        const now = this.reply.value();
-        this.setReply(now.trim() ? `${now}\n${r.draft}` : r.draft);
+        const now = this.replyNext ?? this.reply.value();
+        this.replyNext = now.trim() ? `${now}\n${r.draft}` : r.draft;
         this.sendError = r.error;
       }
       if (!back || r.conv === o.id) this.keepResult(r.n);
