@@ -6,6 +6,22 @@
 
 [defaults]
 session_ttl_days = 14
+# `browser-vault otp-enroll` stores a TOTP seed an agent read from a site's 2FA setup page.
+# It needs otp = true, an account that already has stored credentials, the page origin matching
+# `domains`, an otpauth issuer matching the site (otp_issuer, else the registrable label of a
+# domain: github for github.com) and an account label matching the stored username/email, and
+# logs every attempt without the seed to ~/.local/share/sharosoo-browser/otp-enroll.log
+# (a `pending` line before storing; if the `ok` line then fails, the store is rolled back and
+# the command fails without printing a code).
+# "confirm": the agent asks the user before each enrollment (--confirmed); "auto": standing
+# permission only for an otpauth URI whose issuer and account label both match; anything else
+# (bare base32, no issuer or label) still needs --confirmed.
+otp_enroll = "confirm"
+# Overwriting an existing seed needs `--replace` and this flag; a wrong overwrite locks the
+# account out of its old authenticator.
+otp_replace = false
+# Domains match on host and port (no port = the scheme's default); true matches any port.
+ignore_port = false
 # Actions the agent must stop and ask the user about before doing.
 confirm = [
   "purchase",
@@ -23,10 +39,13 @@ deny = ["change_password", "disable_2fa", "export_secrets"]
 
 # Hand-written sites are still accepted here, with the same keys `add` writes:
 # [sites.<name>]
-# domains = ["example.com"]           # hosts the credentials may be typed into
+# domains = ["example.com"]           # hosts (optionally host:port, or "*.example.com" for subdomains only) credentials may be typed into
 # login_url = "https://example.com/login"
 # fields = ["username", "password"]   # fields `browser-vault get` may return
-# otp = true                          # allow `browser-vault otp` (seed stored as field "totp")
+# otp = true                          # allow `browser-vault otp` and `otp-enroll` (seed stored as field "totp")
+# otp_replace = true                  # allow `otp-enroll --replace` to overwrite a stored seed
+# otp_enroll = "auto"                 # enroll without asking each time (keys with an issuer only)
+# otp_issuer = "Example"              # issuer an enrolled otpauth URI must name (default: registrable label of a domain)
 # session = true                      # allow a saved storageState file
 # session_ttl_days = 7                # overrides defaults
 # confirm = ["delete"]                # replaces defaults.confirm for this site

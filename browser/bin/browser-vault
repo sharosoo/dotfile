@@ -12,19 +12,21 @@ Session files are Playwright-style storageState JSON written by omp's
 
 import argparse
 import base64
+import fcntl
 import getpass
 import hashlib
 import hmac
 import json
 import os
 import re
+import secrets
 import struct
 import subprocess
 import sys
 import time
 import tomllib
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse, urlsplit
 
 SERVICE = "sharosoo-browser"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "sharosoo-browser"
@@ -32,14 +34,23 @@ DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) /
 POLICY_PATH = Path(os.environ.get("BROWSER_VAULT_POLICY", CONFIG_DIR / "policy.toml"))
 SITES_PATH = Path(os.environ.get("BROWSER_VAULT_SITES", CONFIG_DIR / "sites.toml"))
 SESSION_DIR = DATA_DIR / "sessions"
+ENROLL_LOG = DATA_DIR / "otp-enroll.log"
 # No '.' or ':' so "SITE:ACCOUNT" refs and "SITE.ACCOUNT.json" session names stay unambiguous.
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 DEFAULT_ACCOUNT = "default"
 DEFAULT_FIELDS = ["username", "password"]
 TOTP_FIELD = "totp"
+TOTP_ALGORITHMS = ("SHA1", "SHA256", "SHA512")
+BASE32 = re.compile(r"^[A-Z2-7]+=*$")
+# RFC 4226 §4 requires at least 128-bit shared secrets; some sites still issue 80-bit ones.
+MIN_SEED_BYTES = 10
+# http is only accepted for loopback dev servers; anything else must be https.
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+ENROLL_MODES = ("confirm", "auto")
 
 EXIT_DENIED = 4
 EXIT_CONFIRM = 3
+LOCK_WAIT_SECONDS = 30
 
 
 def die(msg, code=1):
@@ -72,10 +83,12 @@ def load_policy():
 
 def site_policy(policy, site):
     if site not in policy["sites"]:
-        die(f"site '{site}' is not registered; run: browser-vault add {site} --domain <host>", EXIT_DENIED)
+        die("site is not registered (name not shown); see `browser-vault list`, the user adds it with: "
+            "browser-vault add <site> --domain <host>", EXIT_DENIED)
     merged = dict(policy["defaults"])
     merged.update(policy["sites"][site])
-    for key, default in (("fields", []), ("otp", False), ("session", False), ("confirm", []), ("deny", [])):
+    for key, default in (("fields", []), ("otp", False), ("otp_replace", False), ("otp_enroll", "confirm"),
+                         ("ignore_port", False), ("session", False), ("confirm", []), ("deny", [])):
         merged.setdefault(key, default)
     return merged
 
@@ -138,11 +151,27 @@ def stored_items():
     return sorted(found)
 
 
-def lookup(site, account, field):
+def keyring_lookup(site, account, field):
+    """The stored secret, or None when confirmed absent. Anything else dies, so callers fail closed."""
     res = keyring("lookup", *attrs(site, account, field))
-    if res.returncode != 0 or not res.stdout:
-        die(f"no secret stored for {site}:{account}/{field}; run: browser-vault set {site}:{account} {field}")
-    return res.stdout
+    if res.returncode == 0 and res.stdout:
+        return res.stdout
+    # `lookup` exits 1 both for "no such item" and for D-Bus/keyring failures, so absence is only
+    # accepted when `search` on the same attributes succeeds (exit 0) and lists no item.
+    if res.returncode == 1 and not res.stdout and not res.stderr.strip():
+        probe = subprocess.run(["secret-tool", "search", "--all", *attrs(site, account, field)],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        if probe.returncode == 0 and not any(l.startswith("label = ") for l in probe.stdout.splitlines()):
+            return None
+    die(f"keyring error: {res.stderr.strip() or f'secret-tool lookup exit {res.returncode}'}")
+
+
+def lookup(site, account, field):
+    value = keyring_lookup(site, account, field)
+    if value is None:
+        die(f"no {field} stored for that account of site {site} (account not shown); "
+            f"the user stores it with: browser-vault set {site}:<account> {field}")
+    return value
 
 
 def store_field(site, account, field, value):
@@ -173,7 +202,7 @@ def accounts_of(site, items=None):
 def parse_ref(ref):
     site, _, account = ref.partition(":")
     if not NAME.match(site) or (account and not NAME.match(account)):
-        die(f"bad reference '{ref}': use SITE or SITE:ACCOUNT (lowercase letters, digits, '-', '_')")
+        die("bad reference (not shown): use SITE or SITE:ACCOUNT (lowercase letters, digits, '-', '_')")
     return site, account or None
 
 
@@ -191,21 +220,60 @@ def resolve(ref):
 # --- TOTP ---------------------------------------------------------------------
 
 def parse_totp(raw):
+    """Validate a base32 seed or otpauth://totp URI. Error messages never contain input values."""
     raw = raw.strip()
     params = {"digits": 6, "period": 30, "algorithm": "SHA1"}
     if raw.startswith("otpauth://"):
-        q = parse_qs(urlparse(raw).query)
+        url = urlparse(raw)
+        if url.netloc.lower() != "totp":
+            raise ValueError("otpauth type is not totp")
+        q = parse_qs(url.query)
+        if "secret" not in q:
+            raise ValueError("otpauth URI has no secret parameter")
         secret = q["secret"][0]
         for key in ("digits", "period"):
             if key in q:
+                if not q[key][0].isdigit():
+                    raise ValueError(f"{key} is not a number")
                 params[key] = int(q[key][0])
         if "algorithm" in q:
             params["algorithm"] = q["algorithm"][0].upper()
     else:
         secret = raw
-    secret = unquote(secret).replace(" ", "").upper()
-    secret += "=" * (-len(secret) % 8)
-    return base64.b32decode(secret), params
+    # Sites print the manual-entry key in space-separated groups.
+    secret = "".join(unquote(secret).split()).upper()
+    if not BASE32.match(secret):
+        raise ValueError("secret is not base32 (A-Z, 2-7)")
+    if params["digits"] not in (6, 7, 8):
+        raise ValueError("digits must be 6, 7 or 8")
+    if not 1 <= params["period"] <= 300:
+        raise ValueError("period must be 1-300 seconds")
+    if params["algorithm"] not in TOTP_ALGORITHMS:
+        raise ValueError(f"algorithm must be one of {', '.join(TOTP_ALGORITHMS)}")
+    secret = secret.rstrip("=")
+    key = base64.b32decode(secret + "=" * (-len(secret) % 8))
+    if len(key) < MIN_SEED_BYTES:
+        raise ValueError(f"secret is only {len(key) * 8} bits (expected at least {MIN_SEED_BYTES * 8})")
+    return key, params
+
+
+def otpauth_identity(raw):
+    """(issuer, account) named by an otpauth URI label/issuer parameter; (None, None) for a bare seed.
+
+    Dies when the label prefix and the issuer parameter disagree, since one of them is then forged.
+    """
+    if not raw.startswith("otpauth://"):
+        return None, None
+    url = urlparse(raw)
+    label = unquote(url.path.lstrip("/")).strip()
+    prefix, sep, account = label.partition(":")
+    if not sep:
+        prefix, account = "", label
+    issuer = parse_qs(url.query).get("issuer", [""])[0].strip()
+    prefix = prefix.strip()
+    if issuer and prefix and issuer.casefold() != prefix.casefold():
+        die("otpauth URI issuer parameter and label prefix disagree", EXIT_DENIED)
+    return (issuer or prefix or None), (account.strip() or None)
 
 
 def totp(raw, now=None):
@@ -254,12 +322,74 @@ def cmd_list(args):
         print(f"browser-vault: keyring has entries for unregistered sites: {', '.join(orphans)}", file=sys.stderr)
 
 
-def host_of(domain):
-    domain = domain.strip()
-    host = urlparse(domain).hostname if "://" in domain else domain.split("/")[0]
+def norm_host(host):
+    """Lowercase, drop a trailing dot and convert IDNs to ASCII so equal hosts compare equal."""
+    host = host.strip().rstrip(".").lower()
+    try:
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        die("invalid host name (not shown)")
     if not host:
-        die(f"invalid domain: {domain}")
-    return host.lower()
+        die("empty host name")
+    return host
+
+
+def split_hostport(entry):
+    """'host', 'host:port', '[v6]:port' or a URL -> (normalized host, port or None)."""
+    entry = entry.strip()
+    try:
+        u = urlsplit(entry if "://" in entry else f"//{entry}")
+        host, port = u.hostname, u.port
+    except ValueError:
+        die("invalid host or port (not shown)")
+    if not host:
+        die("invalid host (not shown)")
+    return norm_host(host), port
+
+
+def host_of(domain):
+    host, port = split_hostport(domain)
+    host = f"[{host}]" if ":" in host else host
+    return f"{host}:{port}" if port is not None else host
+
+
+def default_port(scheme):
+    return 443 if scheme == "https" else 80
+
+
+def page_allowed(origin, p):
+    """Normalized host:port of a page origin if the site policy allows it; dies (without echoing it) otherwise.
+
+    Only an origin (scheme://host[:port], optional trailing '/') is accepted, so paths and query
+    tokens never reach argv. Domain entries match exactly; '*.example.com' matches subdomains only.
+    An entry without a port means the scheme's default port unless the site sets ignore_port = true.
+    """
+    try:
+        u = urlsplit(origin.strip())
+        port = u.port
+    except ValueError:
+        die("--host is not a valid URL (not shown)", EXIT_DENIED)
+    if u.scheme not in ("https", "http") or not u.hostname:
+        die("--host must be the page's https origin (new URL(tab.url()).origin)", EXIT_DENIED)
+    if u.path not in ("", "/") or u.query or u.fragment or "?" in origin or "#" in origin:
+        die("--host must be an origin only: no path, query or fragment", EXIT_DENIED)
+    if u.username is not None or u.password is not None:
+        die("--host URL must not contain user info", EXIT_DENIED)
+    host = norm_host(u.hostname)
+    if u.scheme == "http" and host not in LOOPBACK_HOSTS:
+        die("--host must be https (http only for localhost)", EXIT_DENIED)
+    if port is None:
+        port = default_port(u.scheme)
+    for entry in p.get("domains", []):
+        ehost, eport = split_hostport(entry)
+        if ehost.startswith("*."):
+            host_ok = host.endswith(ehost[1:]) and host != ehost[2:]
+        else:
+            host_ok = host == ehost
+        port_ok = p["ignore_port"] or (eport if eport is not None else default_port(u.scheme)) == port
+        if host_ok and port_ok:
+            return f"{host}:{port}"
+    die("the page host is not in this site's domains (not shown)", EXIT_DENIED)
 
 
 def union(old, new):
@@ -267,6 +397,7 @@ def union(old, new):
 
 
 def cmd_add(args):
+    vault_lock()
     site, account = parse_ref(args.ref)
     if site in read_toml(POLICY_PATH).get("sites", {}):
         die(f"site '{site}' is hand-written in {POLICY_PATH}; edit it there")
@@ -283,8 +414,10 @@ def cmd_add(args):
     entry["fields"] = union(base_fields, [f for f in args.field if f != TOTP_FIELD])
     if TOTP_FIELD in args.field:
         args.otp = True
-    for key in ("otp", "session"):
-        if getattr(args, key) is not None:
+    for key in ("otp", "otp_replace", "otp_enroll", "otp_issuer", "ignore_port", "session"):
+        if getattr(args, key) == "":
+            entry.pop(key, None)
+        elif getattr(args, key) is not None:
             entry[key] = getattr(args, key)
     entry.setdefault("otp", False)
     entry.setdefault("session", True)
@@ -312,6 +445,7 @@ def cmd_add(args):
 
 
 def cmd_forget(args):
+    vault_lock()
     site, account = parse_ref(args.ref)
     if account:
         keyring("clear", "service", SERVICE, "site", site, "account", account)
@@ -322,7 +456,7 @@ def cmd_forget(args):
         die(f"site '{site}' is hand-written in {POLICY_PATH}; remove it there")
     sites = read_toml(SITES_PATH).get("sites", {})
     if site not in sites:
-        die(f"site '{site}' is not registered")
+        die("site is not registered (name not shown)")
     del sites[site]
     write_sites(sites)
     keyring("clear", "service", SERVICE, "site", site)
@@ -332,12 +466,13 @@ def cmd_forget(args):
 
 
 def cmd_set(args):
+    vault_lock()
     site, account = resolve(args.ref)
     p = site_policy(load_policy(), site)
     if args.field == TOTP_FIELD and not p["otp"]:
         die(f"sites.{site}.otp is false; enable it with: browser-vault add {site} --otp", EXIT_DENIED)
     if args.field != TOTP_FIELD and args.field not in p["fields"]:
-        die(f"field '{args.field}' is not allowed; add it with: browser-vault add {site} --field {args.field}", EXIT_DENIED)
+        die(f"field not allowed (not shown); the user adds it with: browser-vault add {site} --field <field>", EXIT_DENIED)
     value = getpass.getpass(f"{site}:{account}/{args.field}: ") if sys.stdin.isatty() else sys.stdin.read().rstrip("\n")
     if not value:
         die("empty value")
@@ -350,7 +485,7 @@ def cmd_get(args):
     if args.field == TOTP_FIELD:
         die(f"the TOTP seed is never printed; use: browser-vault otp {site}:{account}", EXIT_DENIED)
     if args.field not in p["fields"]:
-        die(f"field '{args.field}' is not allowed by sites.{site}.fields", EXIT_DENIED)
+        die(f"field not allowed by sites.{site}.fields (not shown)", EXIT_DENIED)
     sys.stdout.write(lookup(site, account, args.field))
 
 
@@ -366,7 +501,199 @@ def cmd_otp(args):
     print(f"valid for {remaining}s", file=sys.stderr)
 
 
+def open_data_dir():
+    """fd of DATA_DIR (created 0700). A symlinked DATA_DIR is refused so the audit log cannot be redirected."""
+    DATA_DIR.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.mkdir(DATA_DIR, 0o700)
+    except FileExistsError:
+        pass
+    try:
+        dfd = os.open(DATA_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        die(f"{DATA_DIR} must be a real directory, not a symlink", EXIT_DENIED)
+    os.fchmod(dfd, 0o700)
+    return dfd
+
+
+def open_private(dfd, name, flags):
+    try:
+        fd = os.open(name, flags | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dfd)
+    except OSError as e:
+        die(f"cannot open {DATA_DIR / name} ({e.strerror}); refusing to continue", EXIT_DENIED)
+    os.fchmod(fd, 0o600)
+    return fd
+
+
+_lock_fd = None
+
+
+def vault_lock():
+    """Hold the vault-wide lock until exit; returns the DATA_DIR fd.
+
+    Every command that changes secrets or sites.toml takes it before reading policy, so a policy
+    or seed check cannot go stale before the write it guards.
+    """
+    global _lock_fd
+    dfd = open_data_dir()
+    _lock_fd = open_private(dfd, ".vault.lock", os.O_RDWR)
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return dfd
+        except BlockingIOError:
+            if time.monotonic() > deadline:
+                die(f"another browser-vault command holds the vault lock for over {LOCK_WAIT_SECONDS}s; retry later")
+            time.sleep(0.2)
+
+
+def audit_write(fd, entry):
+    """Append one JSON line and fsync it; returns the OSError on failure."""
+    data = (json.dumps(entry, ensure_ascii=False) + "\n").encode()
+    try:
+        if os.write(fd, data) != len(data):
+            raise OSError(0, "short write")
+        os.fsync(fd)
+    except OSError as e:
+        return e
+    return None
+
+
+# Second-level labels that are public suffixes under two-letter ccTLDs (co.kr, com.au, ac.jp, ...);
+# no public-suffix list is installed, so this covers the common registries.
+SUFFIX_SECOND_LEVEL = {"co", "com", "net", "org", "ac", "go", "or", "ne", "gov", "edu", "mil", "gv", "re", "pe", "ltd", "plc"}
+
+
+def registrable_label(host):
+    """The label left of the public suffix (github in api.github.com, example in www.example.co.kr), else None."""
+    host = host.removeprefix("*.")
+    if ":" in host or re.fullmatch(r"[\d.]+", host):
+        return None
+    labels = host.split(".")
+    index = 3 if len(labels[-1]) == 2 and len(labels) >= 3 and labels[-2] in SUFFIX_SECOND_LEVEL else 2
+    if len(labels) < index:
+        return None
+    label = labels[-index]
+    return None if label in SUFFIX_SECOND_LEVEL or len(label) < 2 else label
+
+
+def issuer_token(issuer):
+    """Issuer as a comparable DNS label: 'GitHub' -> 'github', 'Bücher' -> 'xn--bcher-kva'."""
+    token = "".join(issuer.casefold().split())
+    try:
+        token = token.encode("idna").decode("ascii")
+    except UnicodeError:
+        return None
+    token = re.sub(r"[^a-z0-9-]", "", token)
+    return token or None
+
+
+def check_identity(raw, site, account, p, known_ids, confirmed):
+    """Refuse an otpauth URI whose issuer or account label points at a different site or account.
+
+    otp_enroll = "auto" only covers input that proves both: an issuer matching the site and an
+    account label matching the stored username/email. Anything less (bare base32, no issuer, no
+    label, no stored username/email) needs the user's --confirmed.
+    """
+    issuer, label_account = otpauth_identity(raw)
+    expected = p.get("otp_issuer")
+    if issuer is None:
+        if expected and raw.startswith("otpauth://"):
+            die(f"the otpauth URI names no issuer but sites.{site}.otp_issuer is set", EXIT_DENIED)
+    else:
+        if expected:
+            ok = issuer.casefold() == expected.casefold()
+        else:
+            token = issuer_token(issuer)
+            ok = token is not None and token in {registrable_label(split_hostport(d)[0]) for d in p.get("domains", [])}
+        if not ok:
+            die(f"the otpauth issuer does not match site {site} (not shown); if it is right, the user sets it with: "
+                f"browser-vault add {site} --otp-issuer <issuer>", EXIT_DENIED)
+    if label_account and known_ids and label_account.casefold() not in {v.strip().casefold() for v in known_ids}:
+        die("the otpauth account label does not match this account's stored username/email (not shown)", EXIT_DENIED)
+    if not confirmed and not (issuer and label_account and known_ids):
+        die(f"the input does not prove both site and account (needs an otpauth URI with a matching issuer and "
+            f"account label), so the user must approve enrolling {site}:{account}: ask, then rerun with --confirmed",
+            EXIT_CONFIRM)
+
+
+def cmd_otp_enroll(args):
+    if args.secret:
+        die("never pass a TOTP secret as an argument (argv is visible in ps, shell history and transcripts); "
+            "pipe it on stdin. Treat that key as exposed: restart the site's 2FA setup to get a new one.", EXIT_DENIED)
+    dfd = vault_lock()
+    site, account = resolve(args.ref)
+    p = site_policy(load_policy(), site)
+    if not p["otp"]:
+        die(f"sites.{site}.otp is false; only the user can enable it: browser-vault add {site} --otp", EXIT_DENIED)
+    if p["otp_enroll"] not in ENROLL_MODES:
+        die(f"sites.{site}.otp_enroll must be one of {', '.join(ENROLL_MODES)}")
+    # Enrolling binds an account to a seed only this machine holds, so it is limited to accounts the user stored.
+    known_ids, registered = [], False
+    for field in p["fields"]:
+        value = keyring_lookup(site, account, field)
+        registered = registered or value is not None
+        if value is not None and field in ("username", "email"):
+            known_ids.append(value)
+    if not registered:
+        die(f"no stored credentials for this account of site {site} (not shown); TOTP is only enrolled for accounts "
+            f"the user registered with browser-vault add {site}:<account>", EXIT_DENIED)
+    if p["otp_enroll"] == "confirm" and not args.confirmed:
+        die(f"enrolling a TOTP seed for {site}:{account} needs the user's OK (sites.{site}.otp_enroll = \"confirm\"): "
+            "ask once, then rerun with --confirmed", EXIT_CONFIRM)
+    host = page_allowed(args.host, p)
+    raw = getpass.getpass(f"{site}:{account}/{TOTP_FIELD} (base32 or otpauth:// URI): ") if sys.stdin.isatty() \
+        else sys.stdin.read()
+    raw = raw.strip()
+    if not raw:
+        die("empty input: pipe an otpauth:// URI or base32 secret on stdin")
+    try:
+        _, params = parse_totp(raw)
+    except Exception as e:  # noqa: BLE001 - any parse failure means a bad seed
+        die(f"invalid TOTP seed or otpauth URI: {e}")
+    check_identity(raw, site, account, p, known_ids, args.confirmed)
+
+    log_fd = open_private(dfd, ENROLL_LOG.name, os.O_WRONLY | os.O_APPEND)
+    previous = keyring_lookup(site, account, TOTP_FIELD)
+    replacing = previous is not None
+    if replacing and not args.replace:
+        die(f"{site}:{account} already has a TOTP seed; overwriting it needs --replace", EXIT_DENIED)
+    if replacing and not p["otp_replace"]:
+        die(f"sites.{site}.otp_replace is false; only the user can allow it: browser-vault add {site} --otp-replace",
+            EXIT_DENIED)
+    entry = {"id": secrets.token_hex(4), "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "site": site,
+             "account": account, "host": host, "replaced": replacing, **params}
+    if err := audit_write(log_fd, {**entry, "status": "pending"}):
+        die(f"cannot write {ENROLL_LOG} ({err.strerror}); nothing stored", EXIT_DENIED)
+    label = f"--label={SERVICE} {site} {account} {TOTP_FIELD}"
+    res = keyring("store", label, *attrs(site, account, TOTP_FIELD), stdin=raw)
+    if res.returncode != 0:
+        audit_write(log_fd, {**entry, "status": "failed"})
+        die(f"keyring store failed: {res.stderr.strip()}")
+    # A stored seed without its `ok` line would be an unaudited change, so the store is undone
+    # (previous seed restored, or the new one removed) before anything is typed into the site.
+    if err := audit_write(log_fd, {**entry, "status": "ok"}):
+        undo = keyring("store", label, *attrs(site, account, TOTP_FIELD), stdin=previous) if replacing \
+            else keyring("clear", *attrs(site, account, TOTP_FIELD))
+        if undo.returncode != 0:
+            die(f"cannot write {ENROLL_LOG} after storing ({err.strerror}) AND the rollback failed "
+                f"({undo.stderr.strip()}): the NEW seed is stored for {site}:{account}; tell the user")
+        audit_write(log_fd, {**entry, "status": "rolled_back"})
+        die(f"cannot write {ENROLL_LOG} after storing ({err.strerror}); rolled back "
+            f"({'previous seed restored' if replacing else 'new seed removed'}); do not type a code")
+    fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+    code, remaining = totp(raw)
+    if remaining < args.min_remaining:
+        time.sleep(remaining)
+        code, remaining = totp(raw)
+    print(code)
+    print(f"enrolled {site}:{account}; type this code into the setup page to confirm (valid for {remaining}s)",
+          file=sys.stderr)
+
+
 def cmd_rm(args):
+    vault_lock()
     site, account = resolve(args.ref)
     res = keyring("clear", *attrs(site, account, args.field))
     if res.returncode != 0:
@@ -411,8 +738,19 @@ def cmd_check(args):
     print("allow")
 
 
+class RedactingParser(argparse.ArgumentParser):
+    def error(self, message):
+        # argparse quotes the offending value ("invalid int value: 'x'", "unrecognized arguments: x");
+        # it may be a mistyped secret, so keep only the argument name.
+        if message.startswith("unrecognized arguments"):
+            message = "unrecognized arguments (not shown: one may be a secret; secrets go on stdin)"
+        elif "'" in message:
+            message = message.split(":")[0] + ": invalid value (not shown)"
+        super().error(message)
+
+
 def main():
-    ap = argparse.ArgumentParser(prog="browser-vault", description=__doc__.splitlines()[0])
+    ap = RedactingParser(prog="browser-vault", description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list", help="sites, accounts, allowed/stored fields, otp and session state (no values)").set_defaults(fn=cmd_list)
 
@@ -423,6 +761,15 @@ def main():
     p.add_argument("--field", action="append", default=[],
                    help=f"extra allowed field (repeatable; new sites start with {', '.join(DEFAULT_FIELDS)}; 'totp' implies --otp)")
     p.add_argument("--otp", action=argparse.BooleanOptionalAction, default=None, help="allow TOTP codes")
+    p.add_argument("--otp-replace", action=argparse.BooleanOptionalAction, default=None,
+                   help="let `otp-enroll --replace` overwrite an existing TOTP seed (default off)")
+    p.add_argument("--otp-enroll", choices=ENROLL_MODES,
+                   help="confirm (default): agents ask the user before each `otp-enroll`; "
+                        "auto: standing permission, only for an otpauth URI whose issuer and account label match")
+    p.add_argument("--otp-issuer", help="issuer an enrolled otpauth URI must name "
+                                        "(default: the registrable label of a domain; '' removes it)")
+    p.add_argument("--ignore-port", action=argparse.BooleanOptionalAction, default=None,
+                   help="match domains on host only, any port (default off)")
     p.add_argument("--session", action=argparse.BooleanOptionalAction, default=None, help="allow saved sessions (default on)")
     p.add_argument("--session-ttl-days", type=int)
     p.add_argument("--confirm", nargs="*", help="replace the actions needing user confirmation (default: policy.toml defaults)")
@@ -446,6 +793,19 @@ def main():
     p.add_argument("ref", metavar="SITE[:ACCOUNT]")
     p.add_argument("--min-remaining", type=int, default=5, help="wait for the next code if fewer seconds are left")
     p.set_defaults(fn=cmd_otp)
+
+    p = sub.add_parser("otp-enroll", help="store a TOTP seed read from stdin during a site's 2FA setup, print the current code")
+    p.add_argument("ref", metavar="SITE[:ACCOUNT]")
+    # Only exists to refuse a secret passed on the command line instead of failing with argparse's echo.
+    p.add_argument("secret", nargs="*", help=argparse.SUPPRESS)
+    p.add_argument("--host", required=True,
+                   help="origin of the page showing the setup key (new URL(tab.url()).origin; no path or query)")
+    p.add_argument("--replace", action="store_true", help="overwrite an existing seed (site needs otp_replace = true)")
+    p.add_argument("--confirmed", action="store_true",
+                   help="the user approved this enrollment (needed unless otp_enroll = \"auto\" and the input is an "
+                        "otpauth URI whose issuer and account label match)")
+    p.add_argument("--min-remaining", type=int, default=5, help="wait for the next code if fewer seconds are left")
+    p.set_defaults(fn=cmd_otp_enroll)
 
     p = sub.add_parser("session", help="session file path/state; 'seal' chmods it 600 after tab.saveState")
     p.add_argument("action", choices=["info", "seal", "rm"])
