@@ -33,7 +33,18 @@ EXTRA = ""
 home = os.path.expanduser("~/.omp/agent")
 db = sqlite3.connect(f"{home}/models.db")
 
-# Strip non-Gemini models (Claude/GPT) from google-antigravity and pin Argon -> <identity:YH_ID>, Flash -> zk + sh.
+# Strip non-Gemini models (Claude/GPT) from google-antigravity and pin Argon -> the YH_EMAIL
+# account (kept out of this public repo in ~/.config/dotfile/identities.local), Flash -> zk + sh.
+def identity(key):
+    path = os.environ.get("DOTFILE_IDENTITIES", os.path.expanduser("~/.config/dotfile/identities.local"))
+    if os.path.exists(path):
+        for line in open(path):
+            k, _, v = line.strip().partition("=")
+            if k == key and v:
+                return v
+    return None
+
+yh_email = identity("YH_EMAIL")
 yh_only = {"gemini-4-argon"}
 flash_accts = {"zkwmak08@gmail.com": {}, "sharosoo14@gmail.com": {}}
 for pid, raw in db.execute("SELECT provider_id, models FROM model_cache WHERE provider_id LIKE 'google-antigravity%'").fetchall():
@@ -41,7 +52,10 @@ for pid, raw in db.execute("SELECT provider_id, models FROM model_cache WHERE pr
     kept = [m for m in ms if (m.get("id") or "").startswith("gemini-")]
     dirty = len(kept) != len(ms)
     for m in kept:
-        want = {"<identity:YH_EMAIL>": {}} if m.get("id") in yh_only else (flash_accts if m.get("accountAccess") is not None else None)
+        if m.get("id") in yh_only:
+            want = {yh_email: {}} if yh_email else None
+        else:
+            want = flash_accts if m.get("accountAccess") is not None else None
         if want is not None and m.get("accountAccess") != want:
             m["accountAccess"] = want
             dirty = True

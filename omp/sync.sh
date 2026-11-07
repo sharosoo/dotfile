@@ -9,13 +9,15 @@
 # is public). Restore merges the repo's server list into the live mcp.json: live-only servers
 # stay, and a live header value always wins over a repo placeholder, so real keys survive.
 # Account identifiers in config.yml (auth.accountPolicies email/orgId) are captured as
-# "<redacted>"; restore keeps the live accountPolicies when one exists.
+# "<redacted>"; restore keeps the live accountPolicies when one exists. Every other value
+# listed in ~/.config/dotfile/identities.local becomes <identity:KEY> (../scripts/identities.sh).
 # Files named *.local.* (e.g. rules holding company-internal identifiers) stay on the
 # machine: capture skips them and --delete leaves them alone. context7-rotate's keys live
 # in ~/.env.context7 (one NAME=ctx7sk-... per line) and are never captured.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$REPO/../scripts/identities.sh"
 LIVE="$HOME/.omp"
 # Directories under ~/.omp/agent whose whole contents are hand-written config.
 AGENT_DIRS=(agents managed-skills rules skills extensions context7-rotate)
@@ -62,6 +64,7 @@ capture() {
   rsync -a --delete --exclude synced \
     $(find "$AGENTS_SKILLS" -mindepth 1 -maxdepth 1 -type l -printf '--exclude %f ') \
     "$AGENTS_SKILLS/" "$REPO/agents-skills/"
+  identities_redact "$REPO/agent" "$REPO/agents-skills"
   echo "captured into $REPO"
 }
 
@@ -97,6 +100,8 @@ restore() {
   cp "$REPO/marketplaces.json" "$LIVE/marketplaces.json"
   cp "$REPO/installed_plugins.json" "$LIVE/plugins/installed_plugins.json"
   rsync -a "$REPO/agents-skills/" "$AGENTS_SKILLS/"
+  identities_restore "$REPO/agent" "$LIVE/agent"
+  identities_restore "$REPO/agents-skills" "$AGENTS_SKILLS"
   python3 "$REPO/cap-context.py"
   echo "restored into $LIVE and $AGENTS_SKILLS"
 }

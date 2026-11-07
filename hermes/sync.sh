@@ -3,6 +3,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$REPO/../scripts/identities.sh"
 LIVE="${HERMES_HOME:-$HOME/.hermes}"
 PYTHON="${HERMES_SYNC_PYTHON:-python3}"
 FILES=(config.yaml SOUL.md cron/jobs.json)
@@ -288,6 +289,7 @@ capture() (
   done < "$stage/own-skills.list"
   cp "$HOME/$UNIT" "$stage/systemd/hermes-gateway.service"
   [[ ! -d $HOME/$DROPINS ]] || source_copy "$HOME/$DROPINS" "$stage/systemd/hermes-gateway.service.d"
+  identities_redact "$stage/home" "$stage/systemd"
   metadata check "$LIVE" "$stage"
 
   # Validate outside the public checkout, then keep overwritten snapshots recoverable.
@@ -317,6 +319,7 @@ restore() (
   mkdir -p "$LIVE" "$HOME/.config/systemd/user" "$backup/home" "$backup/systemd"
   # No --delete: unrelated live plugins, bundled skills and credentials must survive.
   rsync -a --checksum --no-links "${EXCLUDES[@]}" --backup --backup-dir="$backup/home" "$REPO/home/" "$LIVE/"
+  identities_restore "$REPO/home" "$LIVE"
   metadata links "$LIVE" "$REPO" "$backup/home"
   metadata unit "$LIVE" "$REPO" "$stage/systemd"
   rsync -a --checksum --backup --backup-dir="$backup/systemd" "$stage/systemd/" "$HOME/.config/systemd/user/"
