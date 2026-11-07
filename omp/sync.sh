@@ -8,6 +8,8 @@
 # MCP header secrets are replaced with ${<SERVER>_TOKEN} placeholders on capture (the repo
 # is public). Restore merges the repo's server list into the live mcp.json: live-only servers
 # stay, and a live header value always wins over a repo placeholder, so real keys survive.
+# Account identifiers in config.yml (auth.accountPolicies email/orgId) are captured as
+# "<redacted>"; restore keeps the live accountPolicies when one exists.
 # Files named *.local.* (e.g. rules holding company-internal identifiers) stay on the
 # machine: capture skips them and --delete leaves them alone. context7-rotate's keys live
 # in ~/.env.context7 (one NAME=ctx7sk-... per line) and are never captured.
@@ -48,7 +50,8 @@ merge_mcp() {
 
 capture() {
   mkdir -p "$REPO/agent" "$REPO/agents-skills"
-  cp "$LIVE/agent/config.yml" "$REPO/agent/config.yml"
+  sed -E 's/^([[:space:]]*(email|orgId):[[:space:]]*).+$/\1"<redacted>"/' \
+    "$LIVE/agent/config.yml" >"$REPO/agent/config.yml"
   redact_mcp "$LIVE/agent/mcp.json" >"$REPO/agent/mcp.json"
   for d in "${AGENT_DIRS[@]}"; do
     rsync -a --delete --exclude '*.local.*' "$LIVE/agent/$d/" "$REPO/agent/$d/"
@@ -64,7 +67,15 @@ capture() {
 
 restore() {
   mkdir -p "$LIVE/agent" "$LIVE/plugins" "$AGENTS_SKILLS"
-  cp "$REPO/agent/config.yml" "$LIVE/agent/config.yml"
+  if [[ -f $LIVE/agent/config.yml ]] && yq -e '.auth.accountPolicies' "$LIVE/agent/config.yml" >/dev/null 2>&1; then
+    cp "$REPO/agent/config.yml" "$LIVE/agent/config.yml.new"
+    LIVECFG="$LIVE/agent/config.yml" yq -i '.auth.accountPolicies = load(env(LIVECFG)).auth.accountPolicies' \
+      "$LIVE/agent/config.yml.new"
+    mv "$LIVE/agent/config.yml.new" "$LIVE/agent/config.yml"
+  else
+    cp "$REPO/agent/config.yml" "$LIVE/agent/config.yml"
+    grep -q '<redacted>' "$LIVE/agent/config.yml" && echo "config.yml: fill the <redacted> auth.accountPolicies accounts"
+  fi
   if [[ -f $LIVE/agent/mcp.json ]]; then
     merge_mcp "$LIVE/agent/mcp.json" "$REPO/agent/mcp.json" >"$LIVE/agent/mcp.json.new"
     mv "$LIVE/agent/mcp.json.new" "$LIVE/agent/mcp.json"
