@@ -1,0 +1,13 @@
+[Unit]
+Description=Cua Driver daemon (computer-use automation)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/cua-driver serve
+ExecStop=%h/.local/bin/cua-driver stop
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

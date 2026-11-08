@@ -33,7 +33,8 @@ SEED_CREDENTIAL_IDS = {
 # Standard API list prices ($ per 1M tokens: input, output, cache_read, cache_write)
 STD_RATES = {
     "gpt-6-astra": (10.0, 50.0, 1.0, 0.0),
-    "gpt-6.1-sol": (2.0, 10.0, 0.2, 0.0),
+    "gpt-6.1-sol": (2.0, 10.0, 0.1, 0.0),
+    "gpt-6.1-terra": (1.0, 5.0, 0.05, 0.0),
     "gpt-6-sol": (2.0, 10.0, 0.2, 0.0),
     "gpt-6-luna": (0.10, 0.50, 0.01, 0.0),
     "claude-opus-5-5": (4.0, 20.0, 0.40, 5.0),
@@ -74,11 +75,16 @@ def discover_yh_credentials():
     return creds
 
 
-def std_cost(model, inp, out, cr, cw, fallback):
+# OpenAI bills a turn at a multiple of list price by the service tier it ran on (message.serviceTier;
+# omp catalog serviceTierCost). Mirrors TIER_MULT in ~/.omp/agent/tools/usage-dashboard/src/prices.ts.
+TIER_MULT = {"flex": 0.5, "priority": 2.5, "ultrafast": 8.0}
+
+
+def std_cost(model, tier, inp, out, cr, cw, fallback):
     r = STD_RATES.get(model)
     if not r:
         return fallback
-    return (inp * r[0] + out * r[1] + cr * r[2] + cw * r[3]) / 1e6
+    return (inp * r[0] + out * r[1] + cr * r[2] + cw * r[3]) / 1e6 * TIER_MULT.get(tier or "", 1.0)
 
 
 def parse_file(path, yh_creds):
@@ -106,7 +112,7 @@ def parse_file(path, yh_creds):
             cr = int(u.get("cacheRead", 0) or 0)
             cw = int(u.get("cacheWrite", 0) or 0)
             rc = float((u.get("cost") or {}).get("total", 0.0) or 0.0)
-            sc = std_cost(mod, inp, out, cr, cw, rc)
+            sc = std_cost(mod, m.get("serviceTier"), inp, out, cr, cw, rc)
             ts = int(m.get("timestamp") or 0)
             day = (
                 datetime.datetime.fromtimestamp(ts / 1000.0, tz=KST).strftime("%Y-%m-%d")
