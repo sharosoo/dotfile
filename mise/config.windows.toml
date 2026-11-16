@@ -1,0 +1,11 @@
+# Windows subset of config.toml, installed as %USERPROFILE%\.config\mise\config.toml.
+# rust and ruby are left out: mise's Windows builds need rustup/MSVC and RubyInstaller set up by hand.
+[tools]
+go = "1.26"
+node = "22"
+pnpm = "latest"
+python = "3.12"
+uv = "latest"
+
+[settings]
+idiomatic_version_file_enable_tools = ["node"]

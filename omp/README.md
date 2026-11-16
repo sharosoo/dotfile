@@ -82,6 +82,18 @@ echo 'export OMP_AUTH_BROKER_URL=http://turing:8765' >> ~/.env.local
 omp usage --redact
 ```
 
+### Windows 클라이언트 설정
+
+Windows에는 bash, jq, rsync가 없으므로 `sync.sh` 대신 PowerShell 스크립트를 쓴다. 이 스크립트는 `config.yml`의 `auth:` 블록을 `auth.broker.url`로 바꿔 쓰고, `mcp.json`은 기존 토큰을 유지한 채 병합한다. systemd 유닛, `context7-rotate`, `cap-context.py`, `agy-agent`는 turing에서만 동작하므로 설치하지 않는다.
+
+```powershell
+# 1. token: copy it out of band to %USERPROFILE%\.omp\auth-broker.token (e.g. hc file write --on windows from turing)
+# 2. restore
+powershell -ExecutionPolicy Bypass -File omp\sync-windows.ps1 -BrokerUrl http://100.65.137.27:8765
+```
+
+서브에이전트 할당량은 `headroom.sh` 대신 `managed-skills\model-routing\headroom.ps1`로 확인한다. 개발 도구는 `winget install jdx.mise` 뒤에 `mise/config.windows.toml`을 `%USERPROFILE%\.config\mise\config.toml`로 복사하고, `%LOCALAPPDATA%\mise\shims`를 사용자 PATH 맨 앞에 넣는다. 그래야 omp의 Python eval이 Microsoft Store용 `python.exe` 대신 mise의 Python을 찾는다.
+
 ### 주의 사항
 
 - **`agent/config.yml`에 broker URL을 적지 않는다.** 이 파일은 turing을 포함한 모든 머신에 그대로 동기화되므로, 여기에 주소를 넣으면 turing 본인마저 로컬 볼트 대신 broker 모드로 동작하게 된다.
