@@ -1,125 +1,81 @@
 #!/usr/bin/env python3
-"""Rotate Claude and Codex OAuth accounts by quota (model-routing skill §0).
+"""Rotate Claude and Codex accounts by reported usage and weekly reset time.
 
-Goal: spend the primary account (<identity:YH_ID>) to its wall first, then hand load to helpers
-without a stall. Helpers stay disabled while the primary has quota, because omp routes
-away from an account once its 5-hour window is >= 85% used whenever another account is
-enabled; keeping helpers off is what lets yh burn to 100%. Instead, checks tighten as the
-primary approaches its wall (projected from its measured burn rate) and helpers come on as
-soon as it is reached. Helpers whose weekly quota would otherwise expire unused are burned
-too. omp does not report usage for disabled accounts, so a helper with no recent data is
-enabled for a few seconds to read its usage (probe).
-
-`--loop` (systemd omp-account-rotate.service) runs forever and picks its own next check;
-`--once` runs one pass; `--dry-run` runs one pass without changing anything.
-Codex saved resets are redeemed by omp itself (codexResets.autoRedeem). Claude saved resets are spent by hand
-(`omp usage reset anthropic/<credential id>`; autoRedeem is Codex-only) when the user asks.
+`--loop` runs the service, `--once` runs one pass, and `--dry-run` previews the changes.
+Codex saved resets are user-authorized; exhausted usage is not usable until recovery is confirmed.
 """
 
 import json
+import math
 import os
 import sqlite3
 import subprocess
+import re
 import sys
 import time
+from pathlib import Path
 
 HOME = os.path.expanduser("~")
 DB = f"{HOME}/.omp/agent/agent.db"
 STATE = f"{HOME}/.omp/agent/rotate-accounts.state.json"
+MODELS_DB = f"{HOME}/.omp/agent/models.db"
+CODEX_STEER_MODELS = ("gpt-6.1-sol", "gpt-6-astra")
+CODEX_CATALOG_MAX_AGE_S = 24 * 3600
+CODEX_CATALOG_REFRESH_S = 6 * 3600
+OMP_INSTALLS = Path(HOME) / ".local/share/mise/installs/github-can1357-oh-my-pi"
 CAUSE = "manual: account rotation (model-routing skill)"
-# Rows disabled by omp itself (OAuth failures, user deletes) are never touched.
-OWN_CAUSES = ("manual:", "temporarily disabled by user")
-
-WALL = 0.99  # a primary window at or above this is spent
-# omp redeems a Codex reset on the first blocked request; a wall that outlives this means
-# the redeem did not happen and helpers take over.
-REDEEM_GRACE_S = 2 * 60
-HELPER_LIMIT = 0.95
-BURN_HOURS = 24
-BURN_MIN_LEFT = 0.10
-MIN_INTERVAL_S = 5 * 60
-MAX_INTERVAL_S = 10 * 60
-NEAR_POLL_S = 60  # cadence once the primary is about to hit its wall
-NEAR_MARGIN = 0.15  # within this of the wall: check at MIN_INTERVAL_S or tighter
-UNKNOWN_RATE_POLL_S = 2 * 60  # no burn rate yet: resample soon to measure one
-PROBE_MAX_AGE_S = 3 * 3600
+HARD_CAP = 0.90
+EXPIRY_FOCUS_S = 24 * 3600
+EXPIRY_COHORT_S = 3600
+# This service is the only regular `omp usage` caller now (headroom.sh and the bar read SNAPSHOT), so it can refresh
+# the snapshot every few minutes without tripping the per-IP 429 (user, 2026-10-22: usage display too slow).
+MIN_INTERVAL_S = 3 * 60
 BUDGET = f"{HOME}/.omp/agent/rotate-budget.json"
-WIDE_CAP = 32  # primary has quota: run wide to spend it
-HELPER_TOTAL = 12  # concurrent subagents across all working sessions while on helper accounts
-HELPER_MIN = 4
-# Families held to the shared HELPER_TOTAL (12) cap so task.maxConcurrency stays 12 unless in wide burn.
+# Incident-ledger re-verification (skill://failure-ladder); headroom.sh prints its status file.
+REVERIFY = f"{HOME}/.omp/agent/managed-skills/failure-ladder/reverify.py"
+REVERIFY_S = 6 * 3600
+WIDE_CAP = 10  # user, 2026-10-28: Claude family 4-10 per session
+HELPER_TOTAL = 6
+HELPER_MIN = 2
+# Claude is UNLIMITED in every session now that the turing-worker pool is large (user, 2026-10-22: "워커 계정 많아서
+# 모든 세션에 무한 모드"). Codex: zkwmak08 moved to Pro Max on 2026-10-23, so with <identity:YH_ID> both Codex accounts are
+# Pro Max and normal sessions get openai-codex <= 12 (user, 2026-10-25: three Codex accounts, spawn many subagents).
+NORMAL_CAPS = {"anthropic": 10, "openai-codex": "unlimited"}  # user, 2026-10-28: Claude 4, Codex unlimited (worker pool)
+NORMAL_COMBINED_CAP = 0  # task.maxConcurrency 0 = uncapped; Claude stays at 4 via headroom
 SHARED_CAP_FAMILIES = {"openai-codex", "anthropic"}
-# Save mode (user, 2026-10-14 -> lifted 2026-10-20: "spend Claude actively too, especially in gpai-monorepo"):
-# None turns save mode off so anthropic gets 6-12 concurrent subagents per session alongside gemini/swe/deepseek/minimax.
 SAVE_CAP = None
-FREE_SESSIONS = {"/feat-personal-agent": 6}
+FREE_SESSIONS = {"/feat-personal-agent": {"anthropic": 10, "openai-codex": "unlimited"}}
+# Per-session routing added to that pane's steer messages (user, 2026-10-29: feat-personal-agent is too slow on sol alone).
+SESSION_NOTES = {"/feat-personal-agent": (
+    " This session (user, 2026-10-29): sol alone is too slow here — use \"opus\" (omit effort, ~85 tok/s vs "
+    "sol ~15) for implementation slices on any layer plus scenario runs and verification, but never more than 6 opus "
+    "at once (user, 2026-10-30); put further Claude-side slices on \"sonnet\". Claude-family cap is 10. Keep sol/terra for the slices that need GPT-side reasoning and astra "
+    "as the per-slice reviewer (opus-authored slices still get an astra review).")}
 SAVE_NOTE = (" Save mode (user): quota was overspent, so spend sparingly: spawn a subagent only when the work truly needs "
              "one, do small or sequential work inline, use one reviewer instead of a panel unless the slot is critical, no "
-             "wide waves, astra/opus only for genuinely critical slots. The feat-personal-agent session is exempt and keeps "
-             "a normal pace; headroom.sh shows each session its own caps.")
+             "wide waves, astra/opus only for genuinely critical slots. The feat-personal-agent session is exempt; "
+             "headroom.sh shows each session its own caps.")
 # Codex limits reset 2026-10-15 (user: "burn it, but moderately"): Codex leaves save mode but keeps the shared
 # HELPER_TOTAL cap (SHARED_CAP_FAMILIES), and the directive is codex-moderate; save mode then covers Claude only.
 CODEX_MODERATE = True  # 2026-10-16: spend Codex actively on sol within the shared 12-cap, without over-burning on astra
-# All accounts on (user, 2026-10-15: "yh is a sturdy buffer; I recommend keeping every account on"): every account
-# stays enabled unless one of its windows is walled or it is at its shared cap, and omp balances among them. Sprint,
-# weekly-burn and backup ordering are skipped; a walled primary is switched off while a helper carries the provider
-# (omp does not fall over from a walled account on its own). False restores yh-first rotation.
-ALL_ON = True
-# Providers exempt from ALL_ON: only the primary runs and helpers come on solely as backup once it is walled (user,
-# 2026-10-16: "Codex on <identity:YH_ID> only for now; zkwmak08 is used too much" — zk had 69% of its week used vs yh 0%
-# within a day of the reset, since omp kept picking zk's rows).
-PRIMARY_ONLY = {"openai-codex"}
 CLAUDE_SAVE_NOTE = (" Save mode still applies to Claude (user): spawn Claude agents only for the seats named above, one "
                     "reviewer instead of a panel unless the slot is critical. The feat-personal-agent session is exempt; "
                     "headroom.sh shows each session its own caps.")
-# Claude primary burn (user, 2026-10-14: "burn Claude yh fast" with its weekly window resetting at 23:00 KST unused):
-# while yh's 7-day window resets within CLAUDE_BURN_HOURS with at least BURN_MIN_LEFT left, the directive is
-# claude-burn and the Anthropic family is exempt from save mode (WIDE_CAP). Codex stays in save mode.
-CLAUDE_BURN_HOURS = 6
-WEEK_S = 7 * 86400
-MIN_AVG_ELAPSED_S = 2 * 3600  # a younger weekly window gives too noisy an average burn
-SPRINT_START_S = 35 * 60  # a helper's 5-hour window this close to reset may take a sprint
-SPRINT_END_S = 60  # hand back to the primary this long before the helper's reset
-SPRINT_MAX_USED = 0.70  # sprint only on a helper with at least 30% of its 5-hour window unused
-SPRINT_MIN_7D_LEFT = 0.03  # weekly room left below the account's cap (shared caps are enforced separately)
-SPRINT_PRIMARY_5H = 0.75  # only worth it while the primary's own 5-hour window is tight
-# A non-shared Claude helper whose weekly window resets within this many hours, before the primary's,
-# with at least BURN_MIN_LEFT unused takes all Claude traffic (primary off) until a window of it walls
-# (user, 2026-10-09: spend admin-developers' week before its reset).
-BURN_EXCLUSIVE_HOURS = 48
-BURN_WATCH = 0.80  # a burning helper window at or above this is polled every NEAR_POLL_S
-# Claude plan (user, 2026-10-12): yh runs alone until its weekly window is CLAUDE_SOLO_UNTIL full (helpers only
-# as backup or to spend weekly quota that would otherwise expire), then mixes as usual; at CLAUDE_PRIMARY_STOP
-# it is parked and admin-developers carries Claude. Once every Claude account in use is past its SLOW_MARKS
-# entry, Claude use slows down to the helper-phase subagent cap. This replaced "overrun alongside", which spent
-# helpers while yh still had quota.
-# 2026-10-13 (user: burn yh fully, its reset gets refilled): no parking, yh burns to its wall; the user is
-# notified there to decide on spending a saved Claude reset. Set CLAUDE_PRIMARY_STOP below WALL to park again.
-CLAUDE_SOLO_UNTIL = 0.40
-CLAUDE_PRIMARY_STOP = 1.0
-# The shared global only ever carries Claude in slow mode.
-SLOW_MARKS = {"admin-developers@teamturing.com": 0.60, "global@teamturing.com": 0.0}
+# Claude accounts added 2026-11-04 (user: "싹다 claude worker로 이송"); the rest followed 2026-11-13
+# (user: "claude만 두지말고 대부분 claude-worker로 옮겨줘야해").
+NEW_CLAUDE_WORKERS = {"<identity:ADMIN_AI_0002_EMAIL>", "<identity:AI_TEAMTURING_GMAIL_EMAIL>", "<identity:AI_TEAMTURING2_GMAIL_EMAIL>", "<identity:BELLA_TEAMTURING_COM_EMAIL>",
+                      "<identity:ETHAN_TEAMTURING_COM_EMAIL>", "<identity:GABIN_TEAMTURING_COM_EMAIL>", "<identity:HUE_TEAMTURING_COM_EMAIL>", "<identity:JULIE_TEAMTURING_COM_EMAIL>",
+                      "<identity:LEA_TEAMTURING_COM_EMAIL>", "<identity:MELISSA_TEAMTURING_COM_EMAIL>", "<identity:SENA_TEAMTURING_COM_EMAIL>",
+                      "<identity:EVELYN_TEAMTURING_COM_EMAIL>", "<identity:MARY_TEAMTURING_COM_EMAIL>", "<identity:INA_TEAMTURING_COM_EMAIL>", "<identity:CHLOE_TEAMTURING_COM_EMAIL>",
+                      "<identity:TOM_TEAMTURING_COM_EMAIL>", "<identity:WENDY_TEAMTURING_COM_EMAIL>", "<identity:JEANNE_TEAMTURING_COM_EMAIL>"}
+# Exclude reserved credentials without overriding manual or OAuth disable reasons.
+BANNED_HERE = {"openai-codex": {"<identity:TURING_WORKER_02_EMAIL>"}}
 
-PROVIDERS = {
-    "anthropic": {
-        "primary": "<identity:YH_EMAIL>",
-        # Preference order when the primary is spent or parked: admin-developers first, then the shared global.
-        "helpers": ["admin-developers@teamturing.com", "global@teamturing.com"],
-        "windows": {"Claude 5 Hour": "5h", "Claude 7 Day": "7d"},
-    },
-    "openai-codex": {
-        "primary": "<identity:YH_EMAIL>",
-        "helpers": ["zkwmak08@gmail.com"],
-        # yh first (user, 2026-10-13): zk only as backup once yh is walled with no reset left to redeem
-        # (codexResets.keepCredits 0). Before that zk ran alongside yh all the time (2026-10-07).
-        "windows": {"7 days": "7d"},
-    },
+PROVIDER_WINDOWS = {
+    "anthropic": {"Claude 5 Hour": "5h", "Claude 7 Day": "7d"},
+    "openai-codex": {"7 days": "7d"},
 }
-# Accounts shared with other people: never push past these fractions, and refresh their usage
-# often because others spend them while they are disabled here.
-SHARED_CAPS = {"global@teamturing.com": {"7d": 0.90}}
-SHARED_MAX_AGE_S = 15 * 60
-
+CLAUDE_WORKERS = {"<identity:ADMIN_DEVELOPERS_TEAMTURING_EMAIL>", "<identity:TURING_EMAIL>", "<identity:GLOBAL_TEAMTURING_COM_EMAIL>", "<identity:YH_EMAIL>", "<identity:ADMIN_AI_TEAMTURING_EMAIL>", "<identity:CONTENTS_TURING_TEAMTURING_EMAIL>", "<identity:JUNE_TEAMTURING_COM_EMAIL>", "<identity:LEE_TEAMTURING_COM_EMAIL>", *NEW_CLAUDE_WORKERS}
 DRY = "--dry-run" in sys.argv
 LOOP = "--loop" in sys.argv and not DRY
 now = time.time()
@@ -135,12 +91,324 @@ def notify(msg):
         subprocess.run(["notify-send", "-u", "critical", "omp account rotation", msg], capture_output=True, timeout=10)
 
 
+def reverify_ledger():
+    # reverify.py runs each check twice (check and negative) with 30-60 s each; this bounds how long rotation waits on it.
+    try:
+        p = subprocess.run([sys.executable, REVERIFY], capture_output=True, text=True, timeout=400)
+    except subprocess.TimeoutExpired:
+        notify("incident ledger: re-verification took longer than 400 s")
+        return
+    if p.returncode:
+        # stdout carries one readable line per problem; stderr may hold a stack trace and is only logged.
+        if p.stderr.strip():
+            log(p.stderr.strip()[-2000:])
+        notify(f"incident ledger: {p.stdout.strip()[:400] or f'reverify.py exited {p.returncode}'}")
+
+
 def omp(*args):
     return subprocess.run(["omp", *args], capture_output=True, text=True, timeout=90).stdout.strip()
 
 
+def quota_pool(candidates, cache, *, provider="anthropic", caps=None):
+    default_cap = 1.0 if provider == "openai-codex" else HARD_CAP
+    open_accounts = set()
+    soon = {}
+    for email in candidates:
+        cap = default_cap if caps is None else caps.get(email, 0.0)
+        win = current(cache.get(email, {}))
+        if cap <= 0 or any(w["used"] >= cap for w in win.values()):
+            continue
+        open_accounts.add(email)
+        reset = win.get("7d", {}).get("resetsAt")
+        if reset and reset > now and (provider == "openai-codex" or reset - now <= EXPIRY_FOCUS_S):
+            soon[email] = reset
+    if not soon:
+        return open_accounts
+    # Providers can report slightly different reset times for accounts in the same cohort.
+    first = min(soon.values())
+    return {email for email, reset in soon.items() if reset - first < EXPIRY_COHORT_S}
+
+
+def auth_ready_quota_pool(candidates, cache, blocked, minimum=1, *, provider="anthropic", caps=None):
+    ready = candidates - blocked
+    active = quota_pool(ready, cache, provider=provider, caps=caps)
+    if len(active) >= minimum:
+        return active
+    # A narrow expiry cohort should not leave Claude without an immediate backup.
+    default_cap = 1.0 if provider == "openai-codex" else HARD_CAP
+    backups = []
+    for email in ready - active:
+        cap = default_cap if caps is None else caps.get(email, 0.0)
+        win = current(cache.get(email, {}))
+        if cap > 0 and win and all(w["used"] < cap for w in win.values()):
+            reset = win.get("7d", {}).get("resetsAt")
+            backups.append((reset or float("inf"), email))
+    return active | {email for _, email in sorted(backups)[:minimum - len(active)]}
+
+def codex_policy_caps(db):
+    identities = {
+        rid: (kind, json.loads(identity))
+        for rid, kind, identity in db.execute(
+            "SELECT id, credential_type, json_object('email', json_extract(data, '$.email'), "
+            "'accountId', json_extract(data, '$.accountId'), 'orgId', json_extract(data, '$.orgId'), "
+            "'projectId', json_extract(data, '$.projectId')) FROM auth_credentials "
+            "WHERE provider = 'openai-codex' AND (disabled_cause IS NULL OR disabled_cause = ?)", (CAUSE,)
+        )
+    }
+    try:
+        policies = json.loads(omp("config", "get", "auth.accountPolicies", "--json"))["value"]
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        return None
+    if not isinstance(policies, list):
+        return None
+    matches = {rid: [] for rid in identities}
+    for policy in policies:
+        if not isinstance(policy, dict) or policy.get("provider") != "openai-codex":
+            continue
+        account = policy.get("account")
+        if (not isinstance(account, dict) or not any(key in account for key in ("email", "accountId", "projectId"))
+                or not all(key in ("email", "accountId", "orgId", "projectId")
+                           and isinstance(value, str) and value for key, value in account.items())):
+            continue
+        selected = [rid for rid, (kind, identity) in identities.items()
+                    if kind == "oauth" and all(identity.get(key) == value for key, value in account.items())]
+        reserve = policy.get("reservePct")
+        cap = ((100 - reserve) / 100
+               if type(reserve) in (int, float) and math.isfinite(reserve) and 0 <= reserve <= 100 else None)
+        for rid in selected:
+            matches[rid].append(cap if len(selected) == 1 else None)
+    return {rid: caps[0] for rid, caps in matches.items() if len(caps) == 1 and caps[0] is not None}
+
+def save_state(state):
+    with open(STATE + ".tmp", "w") as stream:
+        json.dump(state, stream, indent=1)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(STATE + ".tmp", STATE)
+    directory = os.open(os.path.dirname(STATE), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def fresh_codex_report(account, email):
+    started = time.time()
+    subprocess.run(["omp", "usage", "invalidate", "--provider", "openai-codex"],
+                   capture_output=True, timeout=90, check=True)
+    reports = json.loads(omp("usage", "--provider", "openai-codex", "--json"))["reports"]
+    matching = []
+    for report in reports:
+        meta = report.get("metadata") or {}
+        if (report.get("provider") == "openai-codex" and not meta.get("stale")
+                and (meta.get("accountId") == account if account else meta.get("email") == email)
+                and isinstance(report.get("fetchedAt"), (int, float))
+                and started * 1000 <= report["fetchedAt"] <= time.time() * 1000 + 1000):
+            matching.append(report)
+    return max(matching, key=lambda report: report["fetchedAt"], default=None)
+
+
+def codex_reset_windows(report):
+    at = time.time()
+    exhausted = []
+    seen = set()
+    for limit in report.get("limits", []):
+        fallback = {"openai-codex:primary": "5h", "openai-codex:secondary": "weekly"}.get(limit.get("id"))
+        if fallback is None:
+            continue
+        window = limit.get("window") or {}
+        duration = window.get("durationMs")
+        kind = ("weekly" if isinstance(duration, (int, float)) and abs(duration - 7 * 86400000) <= 60000
+                else "5h" if isinstance(duration, (int, float)) and abs(duration - 5 * 3600000) <= 60000
+                else fallback)
+        used = (limit.get("amount") or {}).get("usedFraction")
+        if type(used) not in (int, float) or not math.isfinite(used) or used < 0:
+            return None
+        seen.add(fallback)
+        reset = window.get("resetsAt")
+        if isinstance(used, (int, float)) and used >= 1:
+            if not isinstance(reset, (int, float)) or not at < reset / 1000 <= at + (8 * 86400 if kind == "weekly" else 6 * 3600):
+                return None
+            exhausted.append((kind, reset / 1000))
+    return exhausted if seen else None
+
+
+def recover_codex_account(db, state, candidates, cache, row_accounts, policy_caps, auth_blocked, catalog_holds,
+                          quota_blocked=()):
+    if DRY:
+        return None
+    try:
+        settings = {
+            key: json.loads(omp("config", "get", "codexResets." + key, "--json"))["value"]
+            for key in ("autoRedeem5h", "autoRedeemWeekly", "keepCredits", "minBlockedMinutes")
+        }
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        return None
+    if not any(settings[key] == "yes" for key in ("autoRedeem5h", "autoRedeemWeekly")):
+        return None
+    if any(type(settings[key]) not in (int, float) or not math.isfinite(settings[key]) or settings[key] < 0
+           for key in ("keepCredits", "minBlockedMinutes")):
+        return None
+    if settings["keepCredits"] > 0:
+        log("Codex reset bridge skipped: native CLI cannot atomically enforce a positive credit reserve.")
+        return None
+    eligible = [
+        (email, rid) for email, ids in candidates.items() for rid in ids
+        if policy_caps.get(rid, 0) > 0 and rid not in auth_blocked and rid not in catalog_holds
+        and (rid in quota_blocked or any(window["used"] >= 1 for window in current(cache.get(email, {})).values()))
+    ]
+    eligible.sort(key=lambda item: (cache.get(item[0], {}).get("7d", {}).get("resetsAt") or float("inf"), item[1]))
+    attempts = state.setdefault("codexResetAttempts", {}) if eligible else {}
+    for email, rid in eligible:
+        account = row_accounts[rid][0]
+        key = account or email
+        previous = attempts.get(key, {})
+        if now - previous.get("lastProbeAt", 0) < 300:
+            continue
+        if now - previous.get("attemptedAt", 0) < 1800 and not previous.get("awaitingRecovery"):
+            continue
+        temporary = False
+        attempted = False
+        try:
+            if db.execute(
+                "SELECT 1 FROM auth_credential_blocks WHERE credential_id = ? AND block_scope = 'auth' "
+                "AND blocked_until_ms > ? LIMIT 1", (rid, now * 1000),
+            ).fetchone():
+                continue
+            cause = db.execute("SELECT disabled_cause FROM auth_credentials WHERE id = ?", (rid,)).fetchone()
+            if cause is None or cause[0] not in (None, CAUSE):
+                continue
+            previous = attempts.setdefault(key, {})
+            previous["lastProbeAt"] = now
+            save_state(state)
+            if cause[0] == CAUSE:
+                temporary = bool(db.execute(
+                    "UPDATE auth_credentials SET disabled_cause = NULL WHERE id = ? AND disabled_cause = ?", (rid, CAUSE)
+                ).rowcount)
+                db.commit()
+                if not temporary:
+                    continue
+            report = fresh_codex_report(account, email)
+            if report is None:
+                continue
+            exhausted = codex_reset_windows(report)
+            if exhausted is None:
+                continue
+            if not exhausted:
+                if previous.get("awaitingRecovery"):
+                    previous["awaitingRecovery"] = False
+                    save_state(state)
+                    log(f"Codex reset recovery credential={rid} recovered=True")
+                return email, rid, report
+            # A timeout can follow a successful spend; never re-spend this episode on a stale full report.
+            if (now - previous.get("attemptedAt", 0) < 1800
+                    or (previous.get("awaitingRecovery") and now < previous.get("unblockAt", 0) + 300)):
+                continue
+            if any(settings["autoRedeem5h" if kind == "5h" else "autoRedeemWeekly"] != "yes"
+                   for kind, _ in exhausted):
+                continue
+            if max(reset for _, reset in exhausted) - now < settings["minBlockedMinutes"] * 60:
+                continue
+            credits = (report.get("resetCredits") or {}).get("availableCount")
+            if type(credits) not in (int, float) or not math.isfinite(credits) or credits < 1 or credits <= settings["keepCredits"]:
+                continue
+            listed_at = time.time() * 1000
+            listing = json.loads(omp("usage", "reset", "--provider", "openai-codex", "--json"))
+            if not isinstance(listing.get("generatedAt"), (int, float)) or listing["generatedAt"] < listed_at:
+                continue
+            balances = [item for item in listing.get("accounts", [])
+                        if item.get("provider") == "openai-codex" and item.get("credentialId") == rid]
+            if len(balances) != 1 or balances[0].get("error") or balances[0].get("unavailableReason"):
+                continue
+            available, redeemable = balances[0].get("availableCount"), balances[0].get("redeemableCount")
+            if (type(available) not in (int, float) or not math.isfinite(available)
+                    or available <= settings["keepCredits"]
+                    or type(redeemable) not in (int, float) or not math.isfinite(redeemable) or redeemable < 1):
+                continue
+            if db.execute(
+                "SELECT 1 FROM auth_credential_blocks WHERE credential_id = ? AND block_scope = 'auth' "
+                "AND blocked_until_ms > ? LIMIT 1", (rid, time.time() * 1000),
+            ).fetchone():
+                continue
+            if db.execute("SELECT disabled_cause FROM auth_credentials WHERE id = ?", (rid,)).fetchone() != (None,):
+                continue
+            attempts[key] = {"attemptedAt": now, "unblockAt": max(reset for _, reset in exhausted),
+                             "awaitingRecovery": True, "lastProbeAt": now}
+            save_state(state)
+            attempted = True
+            log(f"Codex reset attempt credential={rid}")
+            exit_class = "unknown"
+            # The supported command owns the cross-process fence and live credit recheck; its prose is not an API.
+            try:
+                result = subprocess.run(["omp", "usage", "reset", f"openai-codex/{rid}", "--json"],
+                                        capture_output=True, timeout=90, check=False)
+                exit_class = "success" if result.returncode == 0 else "unknown"
+            except subprocess.TimeoutExpired:
+                exit_class = "timeout"
+            except (OSError, subprocess.SubprocessError):
+                exit_class = "error"
+            try:
+                refreshed = fresh_codex_report(account, email)
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+                refreshed = None
+            recovered = refreshed is not None and codex_reset_windows(refreshed) == []
+            log(f"Codex reset outcome credential={rid} exit={exit_class} recovered={recovered}")
+            if recovered:
+                attempts[key]["awaitingRecovery"] = False
+                save_state(state)
+            return email, rid, refreshed or report
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+            if attempted:
+                return None
+        finally:
+            if temporary or attempted:
+                db.execute("UPDATE auth_credentials SET disabled_cause = ? WHERE id = ? AND disabled_cause IS NULL",
+                           (CAUSE, rid))
+                db.commit()
+    return None
+
+
+
+SNAPSHOT = f"{HOME}/.omp/agent/usage-snapshot.json"
+
+
 def fetch_usage():
-    return json.loads(omp("usage", "--json"))
+    """`omp usage --json`, also merged into SNAPSHOT so headroom.sh and the bar widget read a cache instead of
+    hitting the 429-prone usage endpoint themselves (user, 2026-10-22). Accounts missing from this fetch (disabled,
+    or throttled) keep their last report, flagged metadata.stale, so they do not vanish from the widget."""
+    usage = json.loads(omp("usage", "--json"))
+    try:
+        with open(SNAPSHOT) as f:
+            old = json.load(f).get("reports", [])
+    except (OSError, ValueError):
+        old = []
+    key = lambda r: (r.get("provider"), (r.get("metadata") or {}).get("email") or (r.get("metadata") or {}).get("accountId"))
+    fresh = {key(r) for r in usage.get("reports", []) if r.get("limits")}
+    reports = [r for r in usage.get("reports", []) if r.get("limits") or key(r) not in {key(o) for o in old}]
+    # Only accounts that still have a credential row carry over; a deleted account (turing-worker-01 Claude, put on
+    # hold 2026-10-30) would otherwise stay on the dashboard forever.
+    with sqlite3.connect(f"file:{HOME}/.omp/agent/agent.db?mode=ro", uri=True) as ro:
+        known = {(p, k.split("|")[0].removeprefix("email:")) for p, k in
+                 ro.execute("select provider, identity_key from auth_credentials where identity_key is not null")}
+    for r in old:
+        if key(r) not in fresh and r.get("limits") and key(r) in known:
+            reports.append({**r, "metadata": {**(r.get("metadata") or {}), "stale": True}})
+    if not DRY:
+        try:
+            with open(f"{HOME}/.omp/agent/config.yml") as f:
+                codex_tier = config_codex_tier(f.read())
+        except OSError:
+            codex_tier = None
+        # The bar widget and the dashboard group and badge accounts from these, so the policy lives in one place.
+        claude_workers = {r["metadata"]["email"] for r in reports if r.get("provider") == "anthropic"
+                          and str((r.get("metadata") or {}).get("email", "")).startswith("turing-worker-")}
+        groups = {"anthropic": {e: "worker" for e in claude_workers | CLAUDE_WORKERS},
+                  "openai-codex": {e: "worker" for e in CODEX_ALWAYS_ON}}
+        tmp = SNAPSHOT + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({**usage, "reports": reports, "codexTier": codex_tier, "accountGroups": groups}, f)
+        os.replace(tmp, SNAPSHOT)
+    return usage
 
 
 def load_state():
@@ -154,10 +422,17 @@ def load_state():
 def windows_of(report, labels):
     out = {}
     for lim in report.get("limits", []):
-        wid = labels.get(lim.get("label"))
-        if wid:
-            resets = (lim.get("window") or {}).get("resetsAt")
-            out[wid] = {"used": lim["amount"]["usedFraction"], "resetsAt": resets / 1000 if resets else None, "t": now}
+        label = lim.get("label")
+        if not label:
+            continue
+        amount = lim.get("amount") or {}
+        used = amount.get("usedFraction")
+        if used is None and (remaining := amount.get("remainingFraction")) is not None:
+            used = 1 - remaining
+        if not isinstance(used, (int, float)) or not 0 <= used <= 1:
+            continue
+        resets = (lim.get("window") or {}).get("resetsAt")
+        out[labels.get(label, label)] = {"used": used, "resetsAt": resets / 1000 if resets else None}
     return out
 
 
@@ -168,125 +443,41 @@ def current(win):
         for wid, w in win.items()
     }
 
-
-def cap(email, wid):
-    return SHARED_CAPS.get(email, {}).get(wid, 1.0)
-
-
-def stale(win, email, near=False):
-    """No usable data for a disabled helper: never seen, or old and not known to have reset.
-
-    Every helper is re-read after PROBE_MAX_AGE_S so mixing it in can be judged (user, 2026-10-12: check
-    admin-developers and global now and then); a shared one is re-read after SHARED_MAX_AGE_S once it may be
-    needed, because others spend it meanwhile.
-    """
-    if not win:
-        return True
-    max_age = SHARED_MAX_AGE_S if near and email in SHARED_CAPS else PROBE_MAX_AGE_S
-    return all(now - w.get("t", 0) > max_age and not (w.get("resetsAt") and w["resetsAt"] < now) for w in win.values())
-
-
-def five_hour_shot(state, provider, email, win):
-    """Helper asked to run alongside until its current 5-hour window resets.
-
-    One-off requests live in the state file as burn5h[provider][email] = reset epoch (user, 2026-10-12: burn
-    admin-developers' current 5-hour window); passed entries are dropped.
-    """
-    shots = state.get("burn5h", {}).get(provider, {})
-    until = shots.get(email)
-    if until is None:
-        return False
-    if now >= until:
-        del shots[email]
-        log(f"{provider} {email}: 5-hour burn over")
-        return False
-    return healthy(win, email)
-
-
-def left7(win, email):
-    w7 = win.get("7d")
-    return cap(email, "7d") - w7["used"] if w7 else 0.0
-
-
-def burnable(win, email):
-    w7 = win.get("7d")
-    if not w7 or not w7.get("resetsAt"):
-        return False
-    soon = w7["resetsAt"] - now < BURN_HOURS * 3600
-    return soon and left7(win, email) >= BURN_MIN_LEFT and healthy(win, email)
-
-
-def healthy(win, email):
-    return all(w["used"] < min(HELPER_LIMIT, cap(email, wid)) for wid, w in win.items())
-
-
-def account_open(win, email):
-    """No window walled and below the account's shared cap (unknown windows count as usable)."""
-    return all(w["used"] < min(WALL, cap(email, wid)) for wid, w in win.items())
-
+# Per-agent concurrency per session (user, 2026-11-10: Fable 5.2 plans and reviews; 2026-11-11: opus implements).
+AGENT_CAPS = {"fable": {"cap": 10, "note": "plans, design advice, cross-verification of opus/astra slices, whole-change reviews; never writing"},
+              "opus": {"cap": 10, "note": "frontend owner; shares non-frontend implementation with Sol and agy Orchestrator; actively use available Codex for implementation and reviews"}}
+CODEX_ALWAYS_ON = {"<identity:ZKWMAK08_GMAIL_COM_EMAIL>", "<identity:TURING_EMAIL>", "<identity:YH04060_NAVER_COM_EMAIL>", "<identity:YH_EMAIL>", *[f"turing-worker-0{i}@gpai.app" for i in range(1, 7)]}
 
 def rows(db, provider, email):
+    key = f"email:{email}"
     return db.execute(
-        "select id, disabled_cause from auth_credentials where provider=? and identity_key like ?",
-        (provider, f"email:{email}%"),
+        "select id, disabled_cause from auth_credentials where provider=? "
+        "and (identity_key=? or substr(identity_key, 1, ?)=?)",
+        (provider, key, len(key) + 1, key + "|"),
     ).fetchall()
 
 
-def set_enabled(db, provider, email, enable, quiet=False):
+def set_enabled(db, provider, email, enable, blocked_ids):
     changed = False
     for rid, cause in rows(db, provider, email):
-        if cause is not None and not cause.startswith(OWN_CAUSES):
+        if cause not in (None, CAUSE):
             continue
-        if enable and cause is not None:
+        allowed = enable and rid not in blocked_ids
+        if allowed and cause is not None:
             db.execute("update auth_credentials set disabled_cause=NULL, updated_at=strftime('%s','now') where id=?", (rid,))
             changed = True
-        elif not enable and cause is None:
+        elif not allowed and cause is None:
             db.execute("update auth_credentials set disabled_cause=?, updated_at=strftime('%s','now') where id=?", (CAUSE, rid))
             changed = True
-    if changed and not quiet:
+    if changed:
         log(f"{provider} {email}: {'enable' if enable else 'disable'}")
     return changed
-
-
-def is_enabled(db, provider, email):
-    return any(cause is None for _, cause in rows(db, provider, email))
-
-
-def probe(db, targets, state):
-    """Enable disabled helpers for one usage fetch to learn their windows, then restore."""
-    flipped = [(p, e) for p, e in targets if not is_enabled(db, p, e)]
-    if DRY:
-        log(f"would probe {targets}")
-        return
-    for p, e in flipped:
-        set_enabled(db, p, e, True, quiet=True)
-    db.commit()
-    try:
-        usage = fetch_usage()
-    finally:
-        for p, e in flipped:
-            set_enabled(db, p, e, False, quiet=True)
-        db.commit()
-    for p, e in targets:
-        for r in usage["reports"]:
-            if r.get("provider") == p and (r.get("metadata") or {}).get("email") == e:
-                state.setdefault(p, {})[e] = windows_of(r, PROVIDERS[p]["windows"])
-                log(f"probed {p} {e}: {json.dumps({k: v['used'] for k, v in state[p][e].items()})}")
-                break
-
-
-def rate(prev, win):
-    """Usage fraction per second since the previous sample of the same window, or None."""
-    if not prev or prev.get("resetsAt") != win["resetsAt"] or win["used"] < prev["used"]:
-        return None
-    dt = now - prev["t"]
-    return (win["used"] - prev["used"]) / dt if dt > 30 else None
 
 
 def _pane_has_spinner(pid):
     """True when an omp pane's status bar shows an active Braille spinner (e.g. background subagents running)."""
     try:
-        lines = subprocess.run(["herdr", "agent", "read", pid], capture_output=True, text=True, timeout=5).stdout.splitlines()
+        lines = subprocess.run(["hc", "read", pid], capture_output=True, text=True, timeout=5).stdout.splitlines()
         for l in reversed(lines):
             if l.startswith("\ue0b6"):
                 return any(c in l[:12] for c in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
@@ -296,68 +487,54 @@ def _pane_has_spinner(pid):
 
 
 def omp_panes():
-    """herdr panes running omp, as (pane_id, status, cwd)."""
+    """herdr-core terminals running omp, as (terminal address, status, cwd)."""
     try:
-        out = subprocess.run(["herdr", "agent", "list"], capture_output=True, text=True, timeout=10).stdout
-        agents = json.loads(out)["result"]["agents"]
+        out = subprocess.run(["hc", "ls", "--json"], capture_output=True, text=True, timeout=10).stdout
         res = []
-        for a in agents:
-            if a.get("agent") != "omp":
+        for t in json.loads(out)["terminals"]:
+            if t.get("agent") != "omp" or t.get("state") != "live":
                 continue
-            pid = a["pane_id"]
-            st = a.get("agent_status")
+            pid = t["address"]
+            st = t.get("status")
             if st != "working" and _pane_has_spinner(pid):
                 st = "working"
-            res.append((pid, st, a.get("cwd", "")))
+            res.append((pid, st, t.get("cwd", "")))
         return res
     except (OSError, ValueError, KeyError, subprocess.SubprocessError):
         return []
 
 
-# Standing directives (user, 2026-10-14; replaces the quota-projection race between astra-first and claude-first):
-# normal slots on sol and swe; astra and opus only for top-intelligence slots, opus only for frontend/UI/copy.
-# swe takes regular slots outside gpai-monorepo; there it stays overflow (user rule, 2026-10-12).
-SOL_SWE_NORMAL = (
-    "spend Claude (\"opus\", \"sonnet\", \"fable\", \"haiku\") and \"gemini\" (Gemini 4 Argon, index 53, DeepSWE 77.9%) "
-    "actively in parallel waves alongside \"sol\" (omit effort)! Claude save mode is OFF (anthropic budget is open for "
-    "parallel opus + sonnet waves — do NOT hold off on opus while sonnet is running). Especially in gpai-monorepo (where "
-    "deepseek/minimax are forbidden, swe is overflow only, and Codex is LOW while Claude has 3 open accounts with <identity:YH_ID> "
-    "resetting in ~36h): use \"opus\" (omit effort), \"sonnet\", \"fable\", and \"gemini\" (Argon) heavily across BOTH "
-    "backend/python-worker and frontend/web for implementation, audits, tests, migrations, planning, reviews, and "
-    "verification, alongside \"sol\"/\"astra\". Outside gpai-monorepo, run \"opus\" (omit effort), \"sonnet\", \"gemini\" "
-    "(Argon), \"sol\" (omit effort), \"deepseek\" (DeepSeek V4.1-Flash-1017 on CommandCode; omit effort for normal, \"lo\" "
-    "for fill-in/scans, strict Target paths), \"minimax\" (MiniMax M3.1-Flash on CommandCode, index 42, DeepSWE 73.7%, "
-    "strict Target paths), and \"swe\" (effort \"hi\", \"med\" for fill-in) in parallel. A verifier comes from a family "
-    "other than the author's.")
-TOP_SLOTS = (
-    " Top-intelligence slots (hardest logic, architecture, audits, security/authz/concurrency/crash-consistency, critical "
-    "reviews): use \"opus\" (omit effort), \"astra\" (omit effort), and \"fable\" (omit effort).")
-SOL_FIRST = (
-    "sol-first",
-    "Claude + Argon + Sol + DeepSeek/MiniMax/SWE routing: " + SOL_SWE_NORMAL + TOP_SLOTS)
+IMPLEMENTATION_STEER = (
+    "Codex capacity priority (user, 2026-11-24): use the available ChatGPT subscription quota fully on useful "
+    "implementation and reviews, with no Codex reserve. The rotation service selects accounts with the nearest "
+    "weekly reset first, even when it is more than 24 hours away; no account-name preference. Backend "
+    "implementation always runs as a pair (user, 2026-11-24): GPT-6 Astra plus Opus on the same slice, never Astra "
+    "alone; fall back to GPT-6.1 Sol for the Astra seat only when Astra is unavailable, blocked or out of quota. "
+    "Astra also takes deep backend logic, authz, concurrency, planning, reviews and bug hunts. Keep agy "
+    "Orchestrator in real independent implementation slices; "
+    "frontend, UI and product copy stay on Opus. Use Astra and Sol on distinct review questions when useful, but "
+    "never count two OpenAI reviewers as cross-family independence. Reviews and bug hunts use the highest "
+    "supported effort (task effort hi, capped at xhigh); ordinary implementation omits effort. Keep one owner "
+    "per path, obey live budgets, stop at provider exhaustion, and never create filler work or repeat completed "
+    "reviews solely to spend quota. Native automatic Codex saved resets are authorized through the last credit. "
+    "Do not redeem other providers' resets, buy credits, or enable automatic top-ups. "
+    "Main runs `agy-agent coder` in a Herdr pane for implementation, `agy-agent gemini` (Hydrogen) for "
+    "research, vision and summaries, and `agy-agent reviewer` (Neon) for independent reviews. "
+    "Fable and Astra are the core planning/review pair; skip the author's family for independent review. "
+    "Fable never implements. Devin is SWE-only; outside gpai-monorepo deepseek/minimax/swe are extra review seats only."
+)
+SOL_FIRST = ("sol-first", IMPLEMENTATION_STEER)
 CODEX_BLOCKED = (
     "codex-blocked",
-    "Codex has no usable account right now: do not spawn astra, sol or luna. Put implementation, planning, and review "
-    "waves on \"opus\" (omit effort), \"sonnet\", \"fable\", and \"gemini\" (Gemini 4 Argon), and outside gpai-monorepo "
-    "also on \"deepseek\" (omit effort for normal, \"lo\" for fill-in), \"minimax\", and \"swe\" (effort \"hi\", \"med\" "
-    "for fill-in). In gpai-monorepo use \"opus\", \"sonnet\", \"fable\", \"haiku\", and \"gemini\" (Argon) generously.")
+    "Codex has no usable account: do not spawn astra, sol or luna. Split ordinary implementation between Opus "
+    "and `agy-agent coder` (Orchestrator); frontend, UI and copy stay on Opus. Use Fable for plans and independent "
+    "reviews of Google work, and `agy-agent reviewer` (Neon) for independent reviews of Claude work.")
 CODEX_MODE = (
     "codex-mode",
-    "Claude has no usable account right now: do not spawn opus, sonnet, fable or haiku at all. "
-    + SOL_SWE_NORMAL + " Top-intelligence slots, frontend included, go to \"astra\" (omit effort) or \"sol\" (omit effort).")
-CODEX_MODERATE_STEER = (
-    "codex-moderate",
-    "Claude + Argon + Sol active routing (user, 2026-10-20): Claude save mode is OFF — anthropic concurrency is wide open "
-    "(up to 12 concurrent Claude subagents per session), so spawn \"opus\" (omit effort), \"sonnet\", \"fable\", and "
-    "\"haiku\" in parallel without waiting for one Claude agent to finish before spawning another! Especially in "
-    "gpai-monorepo (where deepseek/minimax are NEVER used, swe is overflow only, and Codex is LOW at 28% while Claude has "
-    "3 healthy accounts with <identity:YH_ID> resetting in ~36h): use \"opus\" (omit effort), \"sonnet\", \"fable\" (advisor/"
-    "architecture/second-plan), and \"gemini\" (Gemini 4 Argon, AA index 53, DeepSWE 77.9%) heavily across BOTH backend/"
-    "python-worker and frontend/web for implementation, audits, tests, migrations, planning, reviews, and verification, "
-    "alongside \"sol\" (omit effort) and \"astra\" (omit effort). Outside gpai-monorepo, actively run \"opus\" (omit "
-    "effort) and \"sonnet\" in parallel alongside \"gemini\" (Argon), \"sol\" (omit effort), \"deepseek\" (DeepSeek "
-    "V4.1-Flash-1017 on CommandCode), \"minimax\" (MiniMax M3.1-Flash on CommandCode), and \"swe\" (effort \"hi\", "
-    "\"med\" for fill-in).")
+    "Claude has no usable account: do not spawn opus, sonnet, fable or haiku. Continue non-frontend implementation "
+    "with Sol and `agy-agent coder` (Orchestrator), and Astra for deep work. Use `agy-agent reviewer` (Neon) for "
+    "independent reviews of Codex work. Hold frontend, UI and copy for Opus or ask the user before reassigning.")
+CODEX_MODERATE_STEER = ("codex-moderate", IMPLEMENTATION_STEER)
 CODEX_AG_OPUS_STEER = (
     "codex-ag-opus",
     "Codex + Antigravity Opus burn (user, 2026-10-16): \"opus\" and \"sonnet\" currently spend google-antigravity's "
@@ -366,14 +543,36 @@ CODEX_AG_OPUS_STEER = (
     "test/contract/migration slots on \"sol\" (omit effort); put frontend/UI/copy work, planning drafts, architecture/"
     "design, verification of GPT-authored work, and review panels on \"opus\" (omit effort) and \"sonnet\". To avoid "
     "over-burning Codex, reserve \"astra\" (omit effort) strictly for top-intelligence backend/logic/security/"
-    "concurrency slots and critical reviews. Keep \"luna\" and \"gemini\" for search/scans. Outside gpai-monorepo "
+    "concurrency slots and critical reviews. Keep \"luna\" and `agy-agent gemini` for search/scans. Outside gpai-monorepo "
     "\"swe\" (effort \"hi\", \"med\" for fill-in) takes fill-in and fixed-contract slots and what exceeds the budgets; "
     "in gpai-monorepo swe is overflow only.")
-# Codex priority ("fast") tier ended 2026-10-14 (user); task.agentServiceTierOverrides is back to {}. The note
-# tells live sessions, which may still run with the old override or use /fast.
-CODEX_STANDARD_TIER = (" Codex runs at the standard tier again: do not use the fast/priority tier for \"astra\" or \"sol\" "
-                       "(no /fast, no per-agent tier override). If your own model is gemini-4-argon, NEVER spawn "
-                       "\"naturalizer\" — write Korean/non-English text directly.")
+# Codex tier is chosen by the user (user, 2026-10-30: "fast ultrafast standard 모두 선택할수있게"): the dashboard and
+# the bar widget write CODEX_TIER_FILE through `rotate-accounts.py --set-tier <tier>`; every pass applies it.
+CODEX_TIER_FILE = f"{os.path.expanduser('~')}/.omp/agent/codex-tier"
+CODEX_TIERS = ("standard", "fast", "ultrafast")
+CODEX_TIER_DEFAULT = "standard"
+CODEX_TIER_NOTES = {
+    "standard": (" Codex agents (\"sol\", \"astra\", \"terra\", \"luna\") run at the standard tier (set by the user): "
+                 "never use /fast or a priority override; if your session is on fast, run /fast to turn it off."),
+    "fast": (" Codex agents (\"sol\", \"astra\", \"terra\", \"luna\") run at the priority (fast) tier, subagents and Codex "
+             "Mains alike (set by the user). If your session is not on fast, run /fast."),
+    "ultrafast": (" Codex agents run at the fastest tier the model offers (set by the user): \"sol\" and \"astra\" at "
+                  "ultrafast, \"terra\" and \"luna\" at priority (fast; they have no ultrafast). Ultrafast spends Codex "
+                  "quota several times faster than fast, so keep waves purposeful."),
+}
+CODEX_STANDARD_TIER = (" If your own model is gemini-4-argon, NEVER spawn "
+                       "\"naturalizer\" — write Korean/non-English text directly. Wrap-up work goes to the wrap-up roles "
+                       "(user, 2026-10-25: enforce them; 2026-10-29: never opus/sol for these), which Main runs itself from bash as "
+                       "`agy-agent <role> < packet-file` via ACP (never as task subagents): CI preflight and CI "
+                       "watching through \"ci\"; Gemini 4 Hydrogen drafts the commit plan through \"committer\" and "
+                       "the PR draft through \"pr\". Main applies them; agy does not commit or publish. All agent-to-agent "
+                       "packets, messages, plans, reviews and handoffs are in English, including across OpenAI, Anthropic "
+                       "and Gemini. Naturalize only at the human boundary: Main sends English intent with target_language: "
+                       "ko to `agy-agent naturalizer` (Gemini Hydrogen) for session replies, Slack, GitHub and other "
+                       "human-facing text, then verifies and delivers the Korean result. No non-Gemini prose fallback. "
+                       "In a new Herdr coder pane, inspect setup before counting it as dispatched. If only the color "
+                       "scheme picker is shown with terminal selected, confirm it once with `hc keys <terminal> enter` "
+                       "and re-read. Stop on sign-in, Terms of Service, or data consent; never accept them on the user's behalf.")
 
 
 def claude_burn_steer(until, why):
@@ -381,13 +580,10 @@ def claude_burn_steer(until, why):
     at = time.strftime("%H:%M", time.localtime(until))
     return (
         "claude-burn",
-        f"Claude burn (user) until {at} local time: {why}, so spend Claude now. Use subagents generously: put every "
-        "normal slot (implementation, tests, contracts, migrations, reviews, verification, planning drafts, second "
-        "opinions, frontend) on \"sonnet\" and run waves wide on it; top-intelligence slots of any kind go to \"opus\" "
-        "(omit effort); \"fable\" takes advisor and second-plan seats; \"haiku\" joins gemini for search and scans. Verify "
-        "Claude-authored work with \"gemini\", or \"astra\" for critical slots. Codex stays in save mode: sol/astra/luna "
-        f"only where no Claude agent fits; swe only as overflow. The sol/swe directive returns after {at} or when the "
-        "Claude account hits a wall.")
+        f"Claude priority until {at} local time: {why}. Favor Opus for suitable implementation while the window "
+        "lasts, without dropping Sol or `agy-agent coder` from independent non-frontend slices when available. "
+        "Frontend, UI and copy stay on Opus. Astra still handles deep backend work and plans/reviews with Fable; "
+        "use `agy-agent gemini` for research and `agy-agent reviewer` as an independent Google review seat.")
 
 
 def pick_steer(claude_gone, codex_blocked, claude_burn_until=None, claude_burn_why="", codex_moderate=False,
@@ -406,6 +602,128 @@ def pick_steer(claude_gone, codex_blocked, claude_burn_until=None, claude_burn_w
     return SOL_FIRST
 
 
+def omp_pane_builds(addresses, proc=Path("/proc")):
+    candidates = {os.fsencode(address): set() for address in addresses}
+    if not candidates:
+        return {}
+    prefix = b"HC_TERMINAL_ID="
+    for entry in proc.iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            if entry.stat().st_uid != os.getuid() or (entry / "comm").read_text().strip() != "omp":
+                continue
+            # Child workers can inherit the pane address without owning the interactive PTY.
+            if not str((entry / "fd" / "0").readlink()).startswith("/dev/pts/"):
+                continue
+            address = next((v[len(prefix):] for v in (entry / "environ").read_bytes().split(b"\0")
+                            if v.startswith(prefix)), None)
+            if address not in candidates:
+                continue
+            exe = (entry / "exe").readlink()
+        except OSError:
+            continue
+        build = exe.parent.name
+        if (exe.name == "omp" and exe.parent.parent.name == "github-can1357-oh-my-pi"
+                and re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][\w.]+)?", build)):
+            candidates[address].add(build)
+        else:
+            candidates[address].add("unknown")
+    return {os.fsdecode(address): builds for address, builds in candidates.items()}
+
+
+def enabled_codex_accounts(db):
+    return {account for account, in db.execute(
+        "SELECT json_extract(data, '$.accountId') FROM auth_credentials "
+        "WHERE provider = 'openai-codex' AND disabled_cause IS NULL"
+    )}
+
+
+def codex_catalogs(db_path, at):
+    catalogs = {}
+    uri = Path(db_path).as_uri() + "?mode=ro"
+    try:
+        with sqlite3.connect(uri, uri=True, timeout=1) as db:
+            for policy, authoritative, raw in db.execute(
+                "SELECT materialization_policy, authoritative, models FROM model_cache "
+                "WHERE provider_id LIKE 'openai-codex:%' AND updated_at >= ? "
+                "ORDER BY updated_at DESC",
+                (int((at - CODEX_CATALOG_MAX_AGE_S) * 1000),),
+            ):
+                match = re.match(r"app-([^:]+):", policy or "")
+                if not match or match[1] in catalogs:
+                    continue
+                # The newest materialization for a build wins; a bundled fallback is not entitlement evidence.
+                catalogs[match[1]] = {}
+                if not authoritative:
+                    continue
+                for model in json.loads(raw):
+                    mid, access = model.get("id"), model.get("accountAccess")
+                    if mid in CODEX_STEER_MODELS and isinstance(access, dict):
+                        catalogs[match[1]][mid] = set(access)
+    except (OSError, sqlite3.Error, TypeError, ValueError, AttributeError):
+        return {}
+    return catalogs
+
+
+def refresh_codex_catalogs(builds, state):
+    refreshed = state.setdefault("codexCatalogRefreshedAt", {})
+    for build in sorted(builds - {"unknown"}):
+        if now - refreshed.get(build, 0) < CODEX_CATALOG_REFRESH_S:
+            continue
+        binary = OMP_INSTALLS / build / "omp"
+        if not binary.is_file():
+            continue
+        refreshed[build] = now
+        try:
+            result = subprocess.run(
+                [str(binary), "models", "refresh", "openai-codex", "--no-extensions"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
+            )
+            if result.returncode:
+                log(f"Codex catalog refresh for OMP {build} exited {result.returncode}")
+        except (OSError, subprocess.SubprocessError) as e:
+            log(f"Codex catalog refresh for OMP {build}: {type(e).__name__}")
+
+
+def codex_catalog_holds(accounts, metered, catalogs, observed):
+    verified = set()
+    for access in catalogs.values():
+        verified.update(set.intersection(*(access.get(model, set()) for model in CODEX_STEER_MODELS)))
+    if not verified.intersection(accounts.values()):
+        return set()
+    # A credential absent from both discovery and live usage must not veto verified siblings.
+    return {rid for rid, account in accounts.items()
+            if rid in observed and rid not in metered and account not in verified}
+
+
+def codex_model_gap(builds, catalogs, accounts):
+    if not builds or "unknown" in builds:
+        return "could not verify the OMP build for this terminal"
+    if not accounts or not all(isinstance(a, str) and a for a in accounts):
+        return "could not verify the enabled Codex account IDs"
+    for build in sorted(builds):
+        missing = [m for m in CODEX_STEER_MODELS if not accounts <= catalogs.get(build, {}).get(m, set())]
+        if missing:
+            return f"OMP {build} has no current authoritative catalog coverage for {', '.join(missing)} across all enabled accounts"
+    return ""
+
+
+def guard_codex_steer(text, gap, claude_available, ag_spent):
+    if not gap:
+        return text
+    result = f"ROUTING: Sol/Astra unavailable in this terminal: {gap}. Do not dispatch either slot. "
+    if claude_available:
+        result += ("Use Opus for implementation, including frontend, UI and copy, and Fable for planning and "
+                   "reviews independent of the author. ")
+    if not ag_spent:
+        result += ("Use `agy-agent coder` for non-frontend implementation and `agy-agent reviewer` for independent "
+                   "Google reviews only when its quota check passes. ")
+    if not claude_available:
+        result += "Hold frontend, UI and copy for Opus. Hold any slot without an eligible route. "
+    return result.rstrip()
+
+
 AG_CLAUDE_ENABLED = False  # 2026-10-18: user switched off Antigravity Claude routing (keep Antigravity for Gemini only)
 AG_CLAUDE_EMAIL = "<identity:YH_EMAIL>"
 AG_CLAUDE_AGENTS = {
@@ -420,47 +738,63 @@ AG_CLAUDE_AGENTS = {
 }
 
 
-def antigravity_claude_status(db, usage):
-    """Check <identity:YH_ID>'s google-antigravity 3p Claude (5h + weekly) windows and live block table: (is_open, wake_s, used_map)."""
-    if not AG_CLAUDE_ENABLED:
-        return False, MAX_INTERVAL_S, {}
-    blk_row = db.execute(
-        "SELECT b.blocked_until_ms FROM auth_credential_blocks b JOIN auth_credentials c ON c.id = b.credential_id "
-        "WHERE c.provider = 'google-antigravity' AND c.identity_key LIKE ? AND b.block_scope LIKE '%anthropic%' AND b.blocked_until_ms > ?",
-        (f"%{AG_CLAUDE_EMAIL}%", now * 1000.0),
-    ).fetchone()
-    blk_until = (blk_row[0] / 1000.0) if blk_row else 0.0
-    for r in usage.get("reports", []):
-        if r.get("provider") != "google-antigravity" or (r.get("metadata") or {}).get("email") != AG_CLAUDE_EMAIL:
-            continue
-        win = {}
-        for lim in r.get("limits", []):
-            lid = lim.get("id") or ""
-            if ":anthropic:" in lid and (lid.endswith(":3p-5h") or lid.endswith(":3p-weekly")):
-                key = "5h" if lid.endswith(":3p-5h") else "7d"
-                win[key] = {
-                    "used": float((lim.get("amount") or {}).get("usedFraction", 0.0) or 0.0),
-                    "resetsAt": ((lim.get("window") or {}).get("resetsAt") or 0) / 1000.0,
-                }
-        if blk_until > now:
-            win.setdefault("5h", {"used": 1.0, "resetsAt": blk_until})
-            win["5h"]["used"] = max(win["5h"]["used"], 1.0)
-            win["5h"]["resetsAt"] = max(win["5h"]["resetsAt"], blk_until)
-        if not win:
-            return False, MAX_INTERVAL_S, {}
-        walled = [w for w in win.values() if w["used"] >= WALL]
-        wake = MAX_INTERVAL_S
-        if walled:
-            for w in walled:
-                if w["resetsAt"] > now:
-                    wake = min(wake, max(NEAR_POLL_S, w["resetsAt"] - now + 5))
-            return False, wake, {k: round(v["used"], 3) for k, v in win.items()}
-        if any(w["used"] >= BURN_WATCH for w in win.values()):
-            wake = min(wake, NEAR_POLL_S)
-        return True, wake, {k: round(v["used"], 3) for k, v in win.items()}
-    if blk_until > now:
-        return False, min(MAX_INTERVAL_S, max(NEAR_POLL_S, blk_until - now + 5)), {"5h": 1.0}
-    return False, MAX_INTERVAL_S, {}
+# config.yml text per tier: per-agent overrides for subagents, `tier.openai` for Codex Mains. terra and luna have no
+# ultrafast (Codex /models, 2026-10-30), so they stay on priority there instead of silently dropping to standard.
+CODEX_TIER_CONFIG = {
+    "standard": ("  agentServiceTierOverrides: {}\n", "tier:\n  openai: none"),
+    "fast": ("  agentServiceTierOverrides:\n    sol: priority\n    astra: priority\n    terra: priority\n    luna: priority\n",
+             "tier:\n  openai: priority"),
+    "ultrafast": ("  agentServiceTierOverrides:\n    sol: ultrafast\n    astra: ultrafast\n    terra: priority\n    luna: priority\n",
+                  "tier:\n  openai: ultrafast"),
+}
+
+
+def read_codex_tier():
+    try:
+        with open(CODEX_TIER_FILE) as f:
+            tier = f.read().strip()
+    except OSError:
+        return CODEX_TIER_DEFAULT
+    return tier if tier in CODEX_TIERS else CODEX_TIER_DEFAULT
+
+
+_TIER_BLOCK_RE = re.compile(r"^  agentServiceTierOverrides:(?: \{\}\n|\n(?:    [\w-]+: [\w-]+\n)+)", re.M)
+_TIER_MAIN_RE = re.compile(r"^tier:\n  openai: [\w-]+", re.M)
+
+
+def _tier_overrides(block):
+    return dict(re.findall(r"^    ([\w-]+): ([\w-]+)$", block, re.M))
+
+
+def config_codex_tier(text):
+    """The tier config.yml currently carries, or None when it matches none of CODEX_TIER_CONFIG.
+
+    Compares parsed agent->tier pairs, not raw text: hand edits reorder the override lines."""
+    block, main = _TIER_BLOCK_RE.search(text), _TIER_MAIN_RE.search(text)
+    if not block or not main:
+        return None
+    have = (_tier_overrides(block.group()), main.group())
+    return next((t for t, (b, m) in CODEX_TIER_CONFIG.items() if (_tier_overrides(b), m) == have), None)
+
+
+def set_codex_tier(tier):
+    """Rewrite config.yml's subagent overrides and Codex Main tier to `tier`."""
+    cfg_path = f"{HOME}/.omp/agent/config.yml"
+    try:
+        with open(cfg_path) as f:
+            text = f.read()
+        if config_codex_tier(text) is None:
+            log("codex tier update skipped: config.yml tier lines not recognised")
+            return
+        if config_codex_tier(text) == tier:
+            return
+        new = _TIER_BLOCK_RE.sub(lambda _: CODEX_TIER_CONFIG[tier][0], text, count=1)
+        new = _TIER_MAIN_RE.sub(lambda _: CODEX_TIER_CONFIG[tier][1], new, count=1)
+        with open(cfg_path, "w") as f:
+            f.write(new)
+        log(f"codex tier -> {tier}")
+    except OSError as e:
+        log(f"codex tier update failed: {e}")
 
 
 def set_claude_agent_models(ag_first):
@@ -501,7 +835,45 @@ def set_claude_agent_models(ag_first):
 
 
 AG_YH_ONLY_MODELS = {"gemini-4-argon"}
-AG_FLASH_ACCOUNTS = {"zkwmak08@gmail.com": {}, "sharosoo14@gmail.com": {}}
+# <identity:YH_ID> also serves Flash so the Argon -> 3.8 Flash fallback stays on Antigravity while zk/sh are spent (2026-10-25).
+AG_FLASH_ACCOUNTS = {"<identity:ZKWMAK08_GMAIL_COM_EMAIL>": {}, "<identity:SHAROSOO14_GMAIL_COM_EMAIL>": {}, "<identity:YH_EMAIL>": {}}
+# Antigravity Gemini spent everywhere (2026-10-23): config.yml falls back from google-antigravity Gemini to the same
+# models on CommandCode, which gpai-monorepo forbids, so live sessions are told how to route meanwhile.
+AG_GEMINI_SPENT_AT = 0.98
+AG_SPENT_NOTE = (" Antigravity Gemini is spent on every account: `agy-agent gemini`/`reviewer` exit 3, so skip those "
+                 "seats and use \"haiku\"/\"luna\" for scans and \"opus\"/\"fable\"/\"sol\" for the rest until "
+                 "Antigravity resets.")
+
+
+# deepseek/minimax ride CommandCode and swe rides Devin; when a provider's every current window is spent, live
+# sessions are told to skip those agents instead of failing on them (2026-10-25).
+SPENT_AGENT_NOTES = {
+    "commandcode": " CommandCode quota is spent: do not spawn \"deepseek\", \"minimax\", or \"muse\" until it resets.",
+    "devin": " Devin quota is spent: do not spawn \"swe\" until it resets.",
+}
+
+
+def provider_spent(usage, provider):
+    """True when every reported account has a current window at or above the cap."""
+    reps = [r for r in usage.get("reports", []) if r.get("provider") == provider]
+    return bool(reps) and all(any((l.get("amount") or {}).get("usedFraction") is not None
+                                  and l["amount"]["usedFraction"] >= HARD_CAP
+                                  and ((l.get("window") or {}).get("resetsAt") or 0) / 1000 > now
+                                  for l in r.get("limits", [])) for r in reps)
+
+
+def antigravity_gemini_spent(usage):
+    """True when every google-antigravity account has a current Gemini window at or above AG_GEMINI_SPENT_AT."""
+    seen = False
+    for r in usage.get("reports", []):
+        if r.get("provider") != "google-antigravity":
+            continue
+        seen = True
+        gem = [l for l in r.get("limits", []) if l.get("label") == "Gemini" and (l.get("amount") or {}).get("usedFraction") is not None
+               and ((l.get("window") or {}).get("resetsAt") or 0) / 1000 > now]
+        if not any(l["amount"]["usedFraction"] >= AG_GEMINI_SPENT_AT for l in gem):
+            return False
+    return seen
 
 
 def pin_antigravity_account_access():
@@ -531,45 +903,22 @@ def pin_antigravity_account_access():
             if dirty and not DRY:
                 mdb.execute("UPDATE model_cache SET models = ? WHERE provider_id = ?", (json.dumps(kept), pid))
                 mdb.commit()
-                log("pinned google-antigravity models.db (stripped Claude/GPT; <identity:YH_ID>: Argon; zk/sh: 3.8 Flash)")
+                log("pinned google-antigravity models.db (stripped Claude/GPT; <identity:YH_ID>: Argon; zk/sh/yh: 3.8 Flash)")
         mdb.close()
     except Exception as e:
         log(f"pin_antigravity_account_access failed: {e}")
-
-
-def user_hold(db, provider, cfg, cache):
-    """The user switched the primary off by hand: their helpers carry the provider.
-
-    Accounts stay as the user set them, except shared caps: a shared helper at its cap is switched off,
-    and one this script switched off comes back once it is below the cap again. Returns (usable, near):
-    whether an enabled helper still has weekly quota, and whether a shared one is close to its cap.
-    """
-    usable = near = False
-    for email in cfg["helpers"]:
-        win = current(cache.get(email, {}))
-        w7 = win.get("7d")
-        if email in SHARED_CAPS and w7:
-            over = left7(win, email) <= 0
-            if over and is_enabled(db, provider, email):
-                set_enabled(db, provider, email, False)
-            elif not over and not is_enabled(db, provider, email) and owned_off(db, provider, email):
-                set_enabled(db, provider, email, True)
-            near |= is_enabled(db, provider, email) and left7(win, email) < 0.08
-        if is_enabled(db, provider, email) and w7 and w7["used"] < min(WALL, cap(email, "7d")):
-            usable = True
-    return usable, near
 
 
 
 def pane_busy_input(pid):
     """Why typing into the pane now would go astray, or None when its editor is empty.
 
-    `herdr agent prompt` types into the editor and presses Enter: a half-typed user draft gets the directive
+    Typing into the terminal presses Enter after the text: a half-typed user draft gets the directive
     appended (2026-10-07 it became part of a `/btw` side question the main loop never saw), and an open side
     panel takes the keys as its own shortcuts. Those passes defer; the next one retries.
     """
     try:
-        lines = subprocess.run(["herdr", "agent", "read", pid], capture_output=True, text=True, timeout=10).stdout.splitlines()
+        lines = subprocess.run(["hc", "read", pid], capture_output=True, text=True, timeout=10).stdout.splitlines()
         while lines and not lines[-1].strip():
             lines.pop()
     except (OSError, subprocess.SubprocessError):
@@ -590,72 +939,81 @@ def pane_busy_input(pid):
     return None
 
 
-def broadcast(state, steer, text):
+def broadcast(state, default, directives, panes):
     """Tell working omp sessions about a steering change (config edits do not reach live sessions).
 
     Panes that were idle when a directive went out still act on the older one once they resume,
     so every working pane whose last received directive text differs from the current one is caught up.
     """
+    steer, text = default
     last = state.get("steer", {})
     sent = state.setdefault("steerSent", {})
     changed = last.get("key") != steer or last.get("text") != text
-    panes = omp_panes()
     live = {pid for pid, _, _ in panes}
     for pid in list(sent):
         if pid not in live:
             del sent[pid]
-    targets = [pid for pid, status, _ in panes if status == "working" and sent.get(pid) != text]
+    targets = [(pid, key, body) for pid, status, _ in panes
+               for key, body in (directives[pid],) if status == "working" and sent.get(pid) != body]
     if not targets and not changed:
         return
-    msg = (f"[Routing directive from the account-rotation service ({steer}); it replaces every earlier routing directive. "
-           f"Do not stop current work.] {text} Before each spawn wave run ~/.omp/agent/managed-skills/model-routing/headroom.sh "
-           "and stay within its SUBAGENT BUDGET lines.")
-    log(f"steer -> {steer}; directing {targets}")
+    log(f"steer -> {steer}; directing {[pid for pid, _, _ in targets]}")
     if DRY:
         return
-    for pid in targets:
+    for pid, key, body in targets:
         busy = pane_busy_input(pid)
         if busy:
             log(f"steer {pid}: deferred ({busy})")
             continue
-        subprocess.run(["herdr", "agent", "prompt", pid, msg], capture_output=True, timeout=10)
-        sent[pid] = text
+        msg = (f"[Routing directive from the account-rotation service ({key}); it replaces every earlier routing directive. "
+               f"Do not stop current work.] {body} Before each spawn wave run "
+               "~/.omp/agent/managed-skills/model-routing/headroom.sh and stay within its SUBAGENT BUDGET lines.")
+        sent_msg = subprocess.run(["hc", "send", "--if", "working", pid, msg], capture_output=True, timeout=30)
+        if sent_msg.returncode == 0:
+            sent[pid] = body
     if changed:
         state["steer"] = {"key": steer, "text": text, "at": now}
 
 
-def apply_budget(plan, steer_text, unsaved=(), wide=()):
+def apply_budget(plan, steer_text, pane_steer, panes, unsaved=(), wide=(), spurt=()):
     """Per-family subagent caps for Main (read via headroom.sh) plus the hard task.maxConcurrency.
 
     Families in `unsaved` skip save mode; families in `wide` also skip SHARED_CAP_FAMILIES (e.g. claude-burn).
     """
-    panes = omp_panes()
     working = max(1, sum(status == "working" for _, status, _ in panes))
-    helper_cap = max(HELPER_MIN, HELPER_TOTAL // working)
-    caps = {p: (WIDE_CAP if p in wide else max(6 if p == "anthropic" else HELPER_MIN, helper_cap)
+    caps = {p: (WIDE_CAP if p in wide else NORMAL_CAPS.get(p, HELPER_MIN)
                 if p in SHARED_CAP_FAMILIES or (spent and p not in unsaved) else WIDE_CAP)
             for p, spent in plan.items()}
-    phases = {p: "burn-yh" if p in wide else "helpers" if plan[p] else "capped" if p in SHARED_CAP_FAMILIES
+    phases = {p: "burn-yh" if p in wide else "helpers" if plan[p] else "session-cap" if p in SHARED_CAP_FAMILIES
               else "burn-yh" for p in plan}
+    caps.update({p: "unlimited" for p in spurt if p in caps})
+    phases.update({p: "last-spurt" for p in spurt if p in phases})
     pane_caps = {}
     if SAVE_CAP is not None:
         saved = [p for p in plan if p not in unsaved]
         caps.update({p: min(caps[p], SAVE_CAP) for p in saved})
         phases.update({p: "save" for p in saved})
-        for pid, _, cwd in panes:
-            free = next((c for suffix, c in FREE_SESSIONS.items() if cwd.endswith(suffix)), None)
-            if free is not None:
-                pane_caps[pid] = {p: ({"cap": max(free, caps[p]), "phase": phases[p]} if p in unsaved
-                                      else {"cap": free, "phase": "save-exempt"}) for p in plan}
-    # Never below HELPER_TOTAL: the hard cap also binds swe/gemini/haiku, which have no family cap here.
-    hard = max(max(caps.values(), default=WIDE_CAP), HELPER_TOTAL)
+    for pid, _, cwd in panes:
+        free = next((c for suffix, c in FREE_SESSIONS.items() if cwd.endswith(suffix)), None)
+        if free is not None:
+            pane_caps[pid] = {
+                p: {"cap": free.get(p, caps[p]) if isinstance(free, dict) else free, "phase": "feat-personal-agent"}
+                for p in plan
+            }
+    hard = NORMAL_COMBINED_CAP  # user, 2026-10-28: Codex uncapped, so no global cap
     budget = {
         "updatedAt": int(now),
         "workingSessions": working,
+        "combinedCap": NORMAL_COMBINED_CAP,
         "perSession": {p: {"cap": c, "phase": phases[p]} for p, c in caps.items()},
+        "agentCaps": AGENT_CAPS,
         "panes": pane_caps,
+        "freeSessions": {k: {p: {"cap": v[p], "phase": "feat-personal-agent"} for p in v}
+                         for k, v in FREE_SESSIONS.items() if isinstance(v, dict)},
+        "freeSuffixes": list(FREE_SESSIONS.keys()),
         "maxConcurrency": hard,
         "steer": steer_text,
+        "steerByPane": pane_steer,
     }
     try:
         with open(BUDGET) as f:
@@ -673,308 +1031,179 @@ def apply_budget(plan, steer_text, unsaved=(), wide=()):
         omp("config", "set", "task.maxConcurrency", str(hard))
 
 
-def owned_off(db, provider, email):
-    rs = rows(db, provider, email)
-    return bool(rs) and all(cause == CAUSE for _, cause in rs)
-
-
-def pick_sprint(cache, cfg, p):
-    """Helper whose 5-hour window resets soon with much unused, while the primary's 5-hour is tight.
-
-    Its expiring 5-hour capacity takes all Claude traffic (primary off) until just before its reset,
-    which saves the primary's scarce 5-hour quota. Returns (helper or None, seconds until the next
-    sprint decision point).
-    """
-    wake = MAX_INTERVAL_S
-    best = None
-    tight = p.get("5h", {"used": 0})["used"] >= SPRINT_PRIMARY_5H
-    for email in cfg["helpers"]:
-        win = current(cache.get(email, {}))
-        w5, w7 = win.get("5h"), win.get("7d")
-        if not w5 or not w5.get("resetsAt") or not w7:
-            continue
-        left = w5["resetsAt"] - now
-        if left > SPRINT_START_S:
-            wake = min(wake, left - SPRINT_START_S + 5)
-        elif left > SPRINT_END_S:
-            wake = min(wake, left - SPRINT_END_S + 5)
-            ok = tight and w5["used"] <= SPRINT_MAX_USED and left7(win, email) >= SPRINT_MIN_7D_LEFT and healthy(win, email)
-            if ok and (best is None or w5["used"] < best[1]):
-                best = (email, w5["used"])
-    return (best[0] if best else None), max(30, wake)
-
-
-def pick_burn(cache, cfg, p):
-    """Helper whose weekly window would expire unused: it takes all traffic until a window of it walls.
-
-    Shared accounts never qualify. The weekly window burns to WALL (the point is to leave nothing unused);
-    the 5-hour window stops at HELPER_LIMIT so the primary takes over before requests fail, and the helper is
-    picked again once that window resets (cached windows past their reset count as empty). Returns (helper or
-    None, seconds until the next check this needs).
-    """
-    wake = MAX_INTERVAL_S
-    best = None
-    primary_reset = (p.get("7d") or {}).get("resetsAt")
-    for email in cfg["helpers"]:
-        if email in SHARED_CAPS:
-            continue
-        win = current(cache.get(email, {}))
-        w7 = win.get("7d")
-        if not w7 or not w7.get("resetsAt"):
-            continue
-        left_s = w7["resetsAt"] - now
-        if left_s >= BURN_EXCLUSIVE_HOURS * 3600 or (primary_reset and w7["resetsAt"] >= primary_reset):
-            continue
-        limits = {wid: (WALL if wid == "7d" else HELPER_LIMIT) for wid in win}
-        walled = [w for wid, w in win.items() if w["used"] >= limits[wid]]
-        if walled:
-            for w in walled:  # come back when the wall resets
-                if w.get("resetsAt"):
-                    wake = min(wake, w["resetsAt"] - now + 5)
-            continue
-        if best is None or left_s < best[1]:
-            best = (email, left_s)
-    if best:
-        hot = any(w["used"] >= BURN_WATCH for w in current(cache.get(best[0], {})).values())
-        wake = min(wake, NEAR_POLL_S if hot else MIN_INTERVAL_S)
-    return (best[0] if best else None), max(30, wake)
-
-
 def run_once():
     """One rotation pass; returns seconds until the next check."""
     global now
     now = time.time()
+    db = sqlite3.connect(DB, timeout=10)
+    codex_caps = codex_policy_caps(db)
+    if codex_caps is None:
+        log("Codex policy unavailable; rotation skipped without changing account state.")
+        db.close()
+        return MIN_INTERVAL_S
     try:
         usage = fetch_usage()
     except (ValueError, subprocess.SubprocessError) as e:
+        db.close()
         log(f"usage fetch failed, no changes: {e}")
         return MIN_INTERVAL_S
     state = load_state()
-    keep = int(float(omp("config", "get", "codexResets.keepCredits") or 0))
-    auto_redeem = omp("config", "get", "codexResets.autoRedeem") == "yes"
-    db = sqlite3.connect(DB, timeout=10)
-    samples = state.setdefault("samples", {})
-    interval = MAX_INTERVAL_S
+    interval = MIN_INTERVAL_S
     plan = {}
-    claude_gone = False
-    claude_burn_until = None
-    claude_burn_why = "Claude <identity:YH_ID>'s weekly window resets then with most of it unused"
-
-    for provider, cfg in PROVIDERS.items():
-        reports = {r["metadata"].get("email"): r for r in usage["reports"] if r.get("provider") == provider and r.get("metadata")}
-        cache = state.setdefault(provider, {})
-        for email, r in reports.items():
-            cache[email] = windows_of(r, cfg["windows"])
-        primary = reports.get(cfg["primary"])
-        # A primary the script itself switched off (sprint) is tracked from cache; one the user
-        # switched off pauses the provider.
-        if primary is None and owned_off(db, provider, cfg["primary"]):
-            primary = {}
-        if primary is None and rows(db, provider, cfg["primary"]) and not is_enabled(db, provider, cfg["primary"]):
-            usable, near = user_hold(db, provider, cfg, cache)
-            # Claude on helpers gets the helper-phase subagent cap; for Codex the flag also means "blocked" to the steer.
-            plan[provider] = provider == "anthropic" or not usable
-            if provider == "anthropic":
-                claude_gone = not usable
-            interval = min(interval, NEAR_POLL_S if near else MIN_INTERVAL_S)
-            continue
-        if primary is None or not cache.get(cfg["primary"]):
-            log(f"{provider}: no usage for primary, skipped")
-            interval = min(interval, MIN_INTERVAL_S)
-            continue
-        p = current(cache[cfg["primary"]])
-        prev = samples.get(provider, {})
-        rates = {wid: rate(prev.get(wid), w) for wid, w in p.items()}
-        # Keep the older sample until 30 s have passed so short polls still yield a rate.
-        samples[provider] = {
-            wid: (prev[wid] if wid in prev and rates[wid] is None and prev[wid].get("resetsAt") == w["resetsAt"]
-                  and now - prev[wid]["t"] <= 30 else w)
-            for wid, w in p.items()
-        }
-
-        at_wall = any(w["used"] >= WALL for w in p.values())
-        if provider == "openai-codex":
-            at_wall |= (primary.get("metadata") or {}).get("limitReached") is True
-            credits = (primary.get("resetCredits") or {}).get("availableCount", 0)
-            if at_wall:
-                state.setdefault("codexWallSince", now)
-            else:
-                state.pop("codexWallSince", None)
-            # With a redeemable reset, hold yh alone at its wall so omp redeems one.
-            redeemable = auto_redeem and credits > keep
-            blocked = at_wall and (not redeemable or now - state["codexWallSince"] > REDEEM_GRACE_S)
-            if at_wall and not blocked:
-                interval = min(interval, NEAR_POLL_S)
-        else:
-            blocked = at_wall
-        # Claude primary at CLAUDE_PRIMARY_STOP: parked while a helper can carry Claude.
-        parked = provider == "anthropic" and not at_wall and (p.get("7d") or {}).get("used", 0) >= CLAUDE_PRIMARY_STOP
-
-        # Next check: right before the earliest projected wall, never later than needed.
-        for wid, w in p.items():
-            if w["used"] >= WALL:
-                interval = min(interval, MIN_INTERVAL_S)  # watch for the reset/recovery
-                continue
-            r = rates[wid]
-            if r is None:
-                if w["used"] >= WALL - NEAR_MARGIN:
-                    interval = min(interval, NEAR_POLL_S)
-                elif not prev.get(wid):
-                    interval = min(interval, UNKNOWN_RATE_POLL_S)
-                continue
-            if r > 0:
-                eta = (WALL - w["used"]) / r
-                interval = min(interval, max(NEAR_POLL_S, eta * 0.8))
-            if w["used"] >= WALL - NEAR_MARGIN:
-                interval = min(interval, MIN_INTERVAL_S)
-
-        # Helpers needed now or soon must have known windows; probe stale ones.
-        near = blocked or any(w["used"] >= WALL - NEAR_MARGIN for w in p.values())
-        need_probe = [(provider, e) for e in cfg["helpers"]
-                      if not is_enabled(db, provider, e) and stale(cache.get(e, {}), e, near)]
-        if need_probe:
-            probe(db, need_probe, state)
-
-        # Hours until the primary's weekly window walls at its average burn since the window opened.
-        wall_eta_h = None
-        w7 = p.get("7d")
-        if provider == "openai-codex" and w7 and w7.get("resetsAt"):
-            elapsed = WEEK_S - (w7["resetsAt"] - now)
-            if elapsed >= MIN_AVG_ELAPSED_S and w7["used"] > 0:
-                wall_eta_h = (WALL - w7["used"]) / (w7["used"] / elapsed) / 3600
-
-        solo = provider == "anthropic" and (w7 or {}).get("used", 1.0) < CLAUDE_SOLO_UNTIL
-        if provider == "anthropic":
-            # autoRedeem covers Codex only: a saved Claude reset is spent by hand, so tell the user once per wall.
-            if at_wall and not state.get("claudeWallNotified"):
-                notify(f"Claude {cfg['primary']} hit its wall {json.dumps({k: v['used'] for k, v in p.items()})}: "
-                       "spend a saved reset with `omp usage reset anthropic/<id>` (helpers cover until then).")
-                state["claudeWallNotified"] = True
-            elif not at_wall:
-                state.pop("claudeWallNotified", None)
-        helpers = {}
-        backup_taken = False
-        for email in cfg["helpers"]:
-            win = current(cache.get(email, {}))
-            # A helper that resets before the primary walls would never be reached: burn it alongside.
-            hw7 = win.get("7d")
-            expires_unused = (
-                wall_eta_h is not None and hw7 and hw7.get("resetsAt") and left7(win, email) >= BURN_MIN_LEFT
-                and (hw7["resetsAt"] - now) / 3600 < wall_eta_h and healthy(win, email)
-            )
-            # A spent or parked primary gets the first healthy helper in preference order.
-            backup = (blocked or parked) and not backup_taken and healthy(win, email)
-            backup_taken |= backup
-            helpers[email] = (backup or burnable(win, email) or bool(expires_unused)
-                              or five_hour_shot(state, provider, email, win))
-        if provider == "openai-codex" and blocked and not any(helpers.values()):
-            # zk looks spent; enable it anyway rather than stall Codex on a dead primary.
-            helpers = {e: True for e in helpers}
-        sprint = None
-        burn = None
-        if provider == "anthropic" and not ALL_ON:
-            burn, burn_wake = pick_burn(cache, cfg, p)
-            interval = min(interval, burn_wake)
-            if burn:
-                helpers = {e: e == burn for e in helpers}
-            elif not solo and not parked:
-                sprint, sprint_wake = pick_sprint(cache, cfg, p)
-                interval = min(interval, sprint_wake)
-                if sprint:
-                    helpers = {e: e == sprint for e in helpers}
-        if ALL_ON and provider in PRIMARY_ONLY:
-            helpers = {e: blocked and account_open(current(cache.get(e, {})), e) for e in helpers}
-        elif ALL_ON:
-            helpers = {e: account_open(current(cache.get(e, {})), e) for e in helpers}
-        for email, on in helpers.items():
-            if on and email in SHARED_CAPS and left7(current(cache.get(email, {})), email) < 0.08:
-                interval = min(interval, NEAR_POLL_S)  # close to the shared cap: watch it closely
-        slow = False
-        if provider == "anthropic":
-            # Slow down once every helper carrying a spent/parked yh is past its mark (none left counts too).
-            slow = (blocked or parked) and all(
-                current(cache.get(e, {})).get("7d", {}).get("used", 1.0) >= SLOW_MARKS.get(e, cap(e, "7d"))
-                for e, on in helpers.items() if on)
-            parked &= any(helpers.values())  # no helper left: yh's reserve is the last resort
-        # Codex counts as blocked (codex-blocked steer, helper-phase cap) only when no healthy helper carries it.
-        plan[provider] = slow if provider == "anthropic" else blocked and not any(
-            on and healthy(current(cache.get(e, {})), e) for e, on in helpers.items())
-        if provider == "anthropic":
-            claude_gone = blocked and not any(helpers.values())
-            w7 = p.get("7d") or {}
-            if (not (blocked or parked or sprint or burn) and w7.get("resetsAt")
-                    and 0 < w7["resetsAt"] - now <= CLAUDE_BURN_HOURS * 3600 and 1 - w7["used"] >= BURN_MIN_LEFT):
-                claude_burn_until = w7["resetsAt"]
-                interval = min(interval, max(NEAR_POLL_S, int(w7["resetsAt"] - now) + 30))
-
-        changed = False
-        # A walled primary left enabled still gets picked and fails (Codex usage_limit_reached, 2026-10-14): omp does
-        # not fall over on its own. Switch it off while a helper carries the provider; it is then tracked from cache
-        # and comes back when its cached window resets. Credits refilled meanwhile are not seen until then.
-        codex_off = (provider == "openai-codex" or ALL_ON) and blocked and any(helpers.values())
-        if not DRY:
-            changed = set_enabled(db, provider, cfg["primary"], not (sprint or burn or parked or codex_off))
-            for email, on in helpers.items():
-                changed |= set_enabled(db, provider, email, on)
-        if changed or DRY:
-            log(f"{provider}: primary {'burn-rest (' + burn + ')' if burn else 'sprint-rest' if sprint else 'spent' if blocked else 'parked' if parked else 'expiry-burn' if claude_burn_until and provider == 'anthropic' else 'burning'}{' slow' if slow else ''} {json.dumps({k: v['used'] for k, v in p.items()})} "
-                f"rates/10min {json.dumps({k: (round(v * 600, 3) if v is not None else None) for k, v in rates.items()})}; helpers {helpers}")
-
-    # Persist (id -> provider, email) so per-account usage reports survive credential row deletion/re-login.
+    active_pools = {}
+    db_emails = {}
     cred_map = state.setdefault("credentialIds", {})
-    for cid, prov, ikey in db.execute(
-        "SELECT id, provider, identity_key FROM auth_credentials WHERE identity_key LIKE '%email:%'"
-    ).fetchall():
-        for part in (ikey or "").split("|"):
-            if part.startswith("email:"):
-                cred_map[str(cid)] = {"provider": prov, "email": part[6:]}
-                break
-    # One-off timed Claude burn (user, 2026-10-15: "burn global for 56 minutes, many subagents"): state
-    # claudeBurn = {"until": epoch, "why": text}; it outranks the expiry burn and ends by itself.
-    manual = state.get("claudeBurn") or {}
-    if manual.get("until", 0) > now and not claude_gone:
-        claude_burn_until, claude_burn_why = manual["until"], manual.get("why", "the user asked for it")
-        interval = min(interval, max(NEAR_POLL_S, int(manual["until"] - now) + 5))
-    elif manual:
-        state.pop("claudeBurn", None)
-        log("manual Claude burn over")
-    ag_claude_open, ag_wake, ag_win = antigravity_claude_status(db, usage)
+    for cid, provider, identity in db.execute(
+        "SELECT id, provider, identity_key FROM auth_credentials WHERE identity_key LIKE 'email:%'"
+    ):
+        email = identity.split("|", 1)[0][6:]
+        cred_map[str(cid)] = {"provider": provider, "email": email}
+        db_emails.setdefault(provider, set()).add(email)
+    block_rows = db.execute(
+        "SELECT b.credential_id, b.block_scope, MAX(b.blocked_until_ms) FROM auth_credential_blocks b "
+        "JOIN auth_credentials c ON c.id = b.credential_id "
+        "WHERE b.blocked_until_ms > ? AND (b.block_scope = 'auth' OR "
+        "(c.provider = 'openai-codex' AND b.block_scope IN ('chat', 'shared'))) "
+        "GROUP BY b.credential_id, b.block_scope", (now * 1000,)
+    ).fetchall()
+    auth_blocks = {}
+    for rid, _, until in block_rows:
+        auth_blocks[rid] = max(auth_blocks.get(rid, 0), until)
+    auth_only = {rid for rid, scope, _ in block_rows if scope == "auth"}
+    panes = omp_panes()
+    pane_builds = omp_pane_builds(pid for pid, _, _ in panes)
+    builds = set().union(*pane_builds.values())
+    if not DRY and builds:
+        refresh_codex_catalogs(builds, state)
+    catalogs = {b: c for b, c in codex_catalogs(MODELS_DB, time.time()).items() if b in builds}
+    codex_rows = {rid: (account, cause) for rid, account, cause in db.execute(
+        "SELECT id, json_extract(data, '$.accountId'), disabled_cause FROM auth_credentials "
+        "WHERE provider = 'openai-codex' AND (disabled_cause IS NULL OR disabled_cause = ?)", (CAUSE,)
+    )}
+    held_ids = set(auth_blocks) | (codex_rows.keys() - codex_caps.keys())
+
+    for provider, labels in PROVIDER_WINDOWS.items():
+        fresh = {}
+        for report in usage["reports"]:
+            meta = report.get("metadata") or {}
+            email = meta.get("email")
+            if report.get("provider") == provider and email in db_emails.get(provider, ()) and not meta.get("stale"):
+                windows = fresh.setdefault(email, {})
+                for wid, window in windows_of(report, labels).items():
+                    if wid not in windows or window["used"] > windows[wid]["used"]:
+                        windows[wid] = window
+        cache = state.setdefault(provider, {})
+        for email, windows in fresh.items():
+            # Missing windows are not evidence that a previously capped bucket recovered.
+            cache.setdefault(email, {}).update(windows)
+        present = db_emails.get(provider, set())
+        banned = BANNED_HERE.get(provider, set())
+        candidates = {}
+        for email in present - banned:
+            owned = [rid for rid, cause in rows(db, provider, email) if cause in (None, CAUSE)]
+            if owned:
+                candidates[email] = owned
+        caps = None
+        if provider == "openai-codex":
+            ready = {rid: codex_rows[rid][0] for ids in candidates.values() for rid in ids
+                     if rid in codex_rows and rid not in held_ids}
+            metered = {rid for email, ids in candidates.items() if fresh.get(email) for rid in ids}
+            prior_catalog_holds = set(state.get("codexCatalogHeld", ()))
+            observed = set(prior_catalog_holds)
+            observed.update(rid for rid in ready if codex_rows[rid][1] is None)
+            catalog_holds = codex_catalog_holds(ready, metered, catalogs, observed)
+            held_ids.update(catalog_holds)
+            state["codexCatalogHeld"] = sorted(catalog_holds)
+            recovered = recover_codex_account(db, state, candidates, cache, codex_rows, codex_caps,
+                                              auth_only, catalog_holds | prior_catalog_holds,
+                                              set(auth_blocks) - auth_only)
+            if recovered is not None:
+                email, rid, report = recovered
+                cache.setdefault(email, {}).update(windows_of(report, labels))
+                still_blocked = db.execute(
+                    "SELECT 1 FROM auth_credential_blocks WHERE credential_id = ? "
+                    "AND block_scope IN ('auth', 'chat', 'shared') AND blocked_until_ms > ? LIMIT 1",
+                    (rid, now * 1000),
+                ).fetchone()
+                if still_blocked is None:
+                    held_ids.discard(rid)
+                    auth_blocks.pop(rid, None)
+            caps = {
+                email: max((codex_caps[rid] for rid in ids if rid not in held_ids), default=0.0)
+                for email, ids in candidates.items()
+            }
+        blocked = {email for email, ids in candidates.items() if all(rid in held_ids for rid in ids)}
+        active = auth_ready_quota_pool(candidates.keys(), cache, blocked,
+                                       minimum=3 if provider == "anthropic" else 1, provider=provider, caps=caps)
+        if provider == "openai-codex" and any(
+            window["used"] >= .95 for email in active for window in current(cache.get(email, {})).values()
+        ):
+            interval = min(interval, 60)
+        for ids in candidates.values():
+            for rid in ids:
+                if rid in auth_blocks:
+                    interval = min(interval, max(30, int(auth_blocks[rid] / 1000 - now) + 1))
+        active_pools[provider] = sorted(active)
+        for email in candidates.keys() | (present & banned):
+            if DRY:
+                log(f"would {'enable' if email in active else 'disable'} {provider} {email}")
+            else:
+                set_enabled(db, provider, email, email in active, held_ids)
+        plan[provider] = not active
+        for email in candidates:
+            for w in current(cache.get(email, {})).values():
+                if (reset := w.get("resetsAt")):
+                    interval = min(interval, max(1, int(reset - now) + 1))
+    state["quotaActive"] = active_pools
     if not DRY:
         db.commit()
+    claude_gone = plan["anthropic"]
+    claude_burn_until = None
+    claude_burn_why = ""
+    ag_claude_open = False
+    codex_accounts = enabled_codex_accounts(db) if panes else set()
     db.close()
-    interval = min(interval, ag_wake)
-    set_claude_agent_models(ag_claude_open and not claude_burn_until)
+    set_claude_agent_models(False)
     pin_antigravity_account_access()
-    if DRY or state.get("agClaudeOpen") != ag_claude_open:
-        log(f"google-antigravity claude (<identity:YH_ID>): {'open' if ag_claude_open else 'walled'} {json.dumps(ag_win)}")
-    state["agClaudeOpen"] = ag_claude_open
 
     if plan:
         codex_moderate = CODEX_MODERATE and not plan.get("openai-codex", False)
-        steer = pick_steer(claude_gone, plan.get("openai-codex", False), claude_burn_until, claude_burn_why,
-                           codex_moderate, ag_claude_open)
+        base = pick_steer(claude_gone, plan.get("openai-codex", False), claude_burn_until, claude_burn_why,
+                          codex_moderate, ag_claude_open)
         claude_unsaved = bool(claude_burn_until or ag_claude_open)
         save = ("" if SAVE_CAP is None or claude_unsaved
                 else CLAUDE_SAVE_NOTE if codex_moderate else SAVE_NOTE)
-        steer = (steer[0], steer[1] + CODEX_STANDARD_TIER + save)
-        if state.get("steer", {}).get("key") != steer[0]:
-            log(f"steer pick {steer[0]}")
-        broadcast(state, *steer)
-        apply_budget(plan, steer[1],
+        ag_spent = antigravity_gemini_spent(usage)
+        spent = [pv for pv in SPENT_AGENT_NOTES if provider_spent(usage, pv)]
+        tier = read_codex_tier()
+        if not DRY:
+            set_codex_tier(tier)
+        def directive(gap):
+            key, text = base
+            rendered = guard_codex_steer(text, gap, not claude_gone or ag_claude_open, ag_spent)
+            suffixes = (["ag-spent"] if ag_spent else []) + [f"{pv}-spent" for pv in spent]
+            if gap:
+                suffixes.append("codex-models-unverified")
+            else:
+                rendered += CODEX_TIER_NOTES[tier] + save
+                if tier != "fast":
+                    suffixes.append(f"codex-{tier}")
+            rendered += CODEX_STANDARD_TIER
+            if ag_spent and not gap:
+                rendered += AG_SPENT_NOTE
+            rendered += "".join(SPENT_AGENT_NOTES[pv] for pv in spent)
+            return "+".join([key, *suffixes]), rendered
+
+        default = directive(codex_model_gap(set(), catalogs, codex_accounts))
+        directives = {pid: directive(codex_model_gap(pane_builds.get(pid, set()), catalogs, codex_accounts))
+                      for pid, _, _ in panes}
+        broadcast(state, default, directives, panes)
+        apply_budget(plan, default[1], {pid: text for pid, (_, text) in directives.items()}, panes,
                      (("anthropic",) if claude_unsaved else ()) + (("openai-codex",) if codex_moderate else ()),
                      wide=("anthropic",) if claude_burn_until else ())
 
     if not DRY:
-        with open(STATE, "w") as f:
-            json.dump(state, f, indent=1)
-        try:
-            subprocess.run(
-                [sys.executable, os.path.join(os.path.dirname(__file__), "yh-usage.py"), "--quiet"],
-                timeout=45,
-                check=False,
-            )
-        except Exception as e:
-            log(f"yh-usage refresh failed: {e}")
+        save_state(state)
     return int(interval)
 
 
@@ -982,13 +1211,47 @@ def main():
     if not LOOP:
         log(f"next check in {run_once()} s")
         return
+    last_reverify = 0.0
     while True:
         try:
             interval = run_once()
         except Exception as e:  # keep the daemon alive; a bad pass retries soon
             log(f"pass failed: {e!r}")
-            interval = NEAR_POLL_S
+            interval = MIN_INTERVAL_S
+        # Outside run_once(): a failed usage fetch returns early or raises there, and device checks must not depend
+        # on the usage endpoint.
+        if time.time() - last_reverify >= REVERIFY_S:
+            last_reverify = time.time()
+            try:
+                reverify_ledger()
+            except Exception as e:
+                log(f"ledger re-verification failed: {e!r}")
         time.sleep(interval)
 
 
-main()
+if "--set-tier" in sys.argv:
+    # Called by the dashboard and the bar widget: record the choice and apply it now, without waiting for a pass.
+    tier = sys.argv[sys.argv.index("--set-tier") + 1] if sys.argv.index("--set-tier") + 1 < len(sys.argv) else ""
+    if tier not in CODEX_TIERS:
+        sys.exit(f"--set-tier takes one of {', '.join(CODEX_TIERS)}")
+    with open(CODEX_TIER_FILE, "w") as f:
+        f.write(tier + "\n")
+    set_codex_tier(tier)
+    try:
+        with open(SNAPSHOT) as f:
+            snap = json.load(f)
+        snap["codexTier"] = tier
+        with open(SNAPSHOT + ".tmp", "w") as f:
+            json.dump(snap, f)
+        os.replace(SNAPSHOT + ".tmp", SNAPSHOT)
+    except (OSError, ValueError):
+        pass
+    print(tier)
+elif "--snapshot" in sys.argv:
+    # Live refresh for the bar widget when the user asks (panel open / r / middle-click): one `omp usage` call merged
+    # into SNAPSHOT and printed; no rotation side effects.
+    fetch_usage()
+    with open(SNAPSHOT) as f:
+        sys.stdout.write(f.read())
+elif __name__ == "__main__":
+    main()
