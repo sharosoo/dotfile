@@ -5,6 +5,7 @@
 Codex saved resets are user-authorized; exhausted usage is not usable until recovery is confirmed.
 """
 
+import filecmp
 import json
 import math
 import os
@@ -628,15 +629,48 @@ def omp_pane_builds(addresses, proc=Path("/proc")):
                 and re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][\w.]+)?", build)):
             candidates[address].add(build)
         else:
-            candidates[address].add("unknown")
+            candidates[address].add(installed_build_of(exe) or "unknown")
     return {os.fsdecode(address): builds for address, builds in candidates.items()}
 
 
-def enabled_codex_accounts(db):
-    return {account for account, in db.execute(
-        "SELECT json_extract(data, '$.accountId') FROM auth_credentials "
-        "WHERE provider = 'openai-codex' AND disabled_cause IS NULL"
-    )}
+_COPY_BUILDS = {}
+
+
+def installed_build_of(exe):
+    """Build whose install is byte-identical to ``exe``. Herdr resumes panes with ``~/.local/bin`` first on
+    PATH, so they run ``~/.local/bin/omp`` (a copy of an install); 2026-11-25 eight such panes read as
+    'unknown' and withheld Sol/Astra from every session. A copy that matches no install stays unknown."""
+    try:
+        st = exe.stat()
+    except OSError:
+        return None
+    key = (str(exe), st.st_size, st.st_mtime_ns, st.st_ino)
+    if key not in _COPY_BUILDS:
+        _COPY_BUILDS[key] = None
+        for install in sorted(OMP_INSTALLS.glob("*/omp")):
+            build = install.parent.name
+            if install.is_symlink() or not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][\w.]+)?", build):
+                continue
+            try:
+                if install.stat().st_size == st.st_size and filecmp.cmp(install, exe, shallow=False):
+                    _COPY_BUILDS[key] = build
+                    break
+            except OSError:
+                continue
+    return _COPY_BUILDS[key]
+
+
+# OMP 19.x leaves model_cache.updated_at alone when a refresh returns an unchanged catalog and records
+# the successful fetch in model_cache_freshness.updated_at instead (2026-11-25: 19.1.1 refreshed fine,
+# the payload stayed at 17:20, and the stale check fired). Freshness is the later of the two.
+CODEX_CATALOG_FRESH_SQL = (
+    "SELECT c.materialization_policy, c.authoritative, c.models, "
+    "MAX(c.updated_at, COALESCE(f.updated_at, 0)) AS fresh FROM model_cache c "
+    "LEFT JOIN model_cache_freshness f ON f.provider_id = c.provider_id "
+    "AND f.materialization_policy = c.materialization_policy AND f.authoritative = c.authoritative "
+    "WHERE c.provider_id LIKE 'openai-codex:%' AND c.materialization_policy LIKE ? AND fresh >= ? "
+    "ORDER BY fresh DESC, c.updated_at DESC"
+)
 
 
 def codex_catalogs(db_path, at):
@@ -644,11 +678,8 @@ def codex_catalogs(db_path, at):
     uri = Path(db_path).as_uri() + "?mode=ro"
     try:
         with sqlite3.connect(uri, uri=True, timeout=1) as db:
-            for policy, authoritative, raw in db.execute(
-                "SELECT materialization_policy, authoritative, models FROM model_cache "
-                "WHERE provider_id LIKE 'openai-codex:%' AND updated_at >= ? "
-                "ORDER BY updated_at DESC",
-                (int((at - CODEX_CATALOG_MAX_AGE_S) * 1000),),
+            for policy, authoritative, raw, _ in db.execute(
+                CODEX_CATALOG_FRESH_SQL, ("app-%", int((at - CODEX_CATALOG_MAX_AGE_S) * 1000)),
             ):
                 match = re.match(r"app-([^:]+):", policy or "")
                 if not match or match[1] in catalogs:
@@ -666,8 +697,21 @@ def codex_catalogs(db_path, at):
     return catalogs
 
 
+def codex_catalog_updated_at(build):
+    try:
+        with sqlite3.connect(Path(MODELS_DB).as_uri() + "?mode=ro", uri=True, timeout=1) as db:
+            row = db.execute(CODEX_CATALOG_FRESH_SQL, (f"app-{build}:%", 0)).fetchone()
+    except sqlite3.Error:
+        return 0
+    return (row and row[3]) or 0
+
+
 def refresh_codex_catalogs(builds, state):
     refreshed = state.setdefault("codexCatalogRefreshedAt", {})
+    # A refresh can exit 0 without writing a catalog (2026-11-23: 19.1.0 stayed stale and every
+    # session lost Sol/Astra for a day). Builds whose refresh did not advance the catalog are kept
+    # here; the codex-catalog-refresh-verified check reports them through the ledger.
+    stale = state.setdefault("codexCatalogStale", {})
     for build in sorted(builds - {"unknown"}):
         if now - refreshed.get(build, 0) < CODEX_CATALOG_REFRESH_S:
             continue
@@ -675,6 +719,7 @@ def refresh_codex_catalogs(builds, state):
         if not binary.is_file():
             continue
         refreshed[build] = now
+        before = codex_catalog_updated_at(build)
         try:
             result = subprocess.run(
                 [str(binary), "models", "refresh", "openai-codex", "--no-extensions"],
@@ -684,6 +729,11 @@ def refresh_codex_catalogs(builds, state):
                 log(f"Codex catalog refresh for OMP {build} exited {result.returncode}")
         except (OSError, subprocess.SubprocessError) as e:
             log(f"Codex catalog refresh for OMP {build}: {type(e).__name__}")
+        if codex_catalog_updated_at(build) > before:
+            stale.pop(build, None)
+        else:
+            stale[build] = now
+            log(f"Codex catalog refresh for OMP {build} did not update the catalog")
 
 
 def codex_catalog_holds(accounts, metered, catalogs, observed):
@@ -695,33 +745,6 @@ def codex_catalog_holds(accounts, metered, catalogs, observed):
     # A credential absent from both discovery and live usage must not veto verified siblings.
     return {rid for rid, account in accounts.items()
             if rid in observed and rid not in metered and account not in verified}
-
-
-def codex_model_gap(builds, catalogs, accounts):
-    if not builds or "unknown" in builds:
-        return "could not verify the OMP build for this terminal"
-    if not accounts or not all(isinstance(a, str) and a for a in accounts):
-        return "could not verify the enabled Codex account IDs"
-    for build in sorted(builds):
-        missing = [m for m in CODEX_STEER_MODELS if not accounts <= catalogs.get(build, {}).get(m, set())]
-        if missing:
-            return f"OMP {build} has no current authoritative catalog coverage for {', '.join(missing)} across all enabled accounts"
-    return ""
-
-
-def guard_codex_steer(text, gap, claude_available, ag_spent):
-    if not gap:
-        return text
-    result = f"ROUTING: Sol/Astra unavailable in this terminal: {gap}. Do not dispatch either slot. "
-    if claude_available:
-        result += ("Use Opus for implementation, including frontend, UI and copy, and Fable for planning and "
-                   "reviews independent of the author. ")
-    if not ag_spent:
-        result += ("Use `agy-agent coder` for non-frontend implementation and `agy-agent reviewer` for independent "
-                   "Google reviews only when its quota check passes. ")
-    if not claude_available:
-        result += "Hold frontend, UI and copy for Opus. Hold any slot without an eligible route. "
-    return result.rstrip()
 
 
 AG_CLAUDE_ENABLED = False  # 2026-10-18: user switched off Antigravity Claude routing (keep Antigravity for Gemini only)
@@ -939,7 +962,7 @@ def pane_busy_input(pid):
     return None
 
 
-def broadcast(state, default, directives, panes):
+def broadcast(state, default, panes):
     """Tell working omp sessions about a steering change (config edits do not reach live sessions).
 
     Panes that were idle when a directive went out still act on the older one once they resume,
@@ -953,29 +976,28 @@ def broadcast(state, default, directives, panes):
     for pid in list(sent):
         if pid not in live:
             del sent[pid]
-    targets = [(pid, key, body) for pid, status, _ in panes
-               for key, body in (directives[pid],) if status == "working" and sent.get(pid) != body]
+    targets = [pid for pid, status, _ in panes if status == "working" and sent.get(pid) != text]
     if not targets and not changed:
         return
-    log(f"steer -> {steer}; directing {[pid for pid, _, _ in targets]}")
+    log(f"steer -> {steer}; directing {targets}")
     if DRY:
         return
-    for pid, key, body in targets:
+    for pid in targets:
         busy = pane_busy_input(pid)
         if busy:
             log(f"steer {pid}: deferred ({busy})")
             continue
-        msg = (f"[Routing directive from the account-rotation service ({key}); it replaces every earlier routing directive. "
-               f"Do not stop current work.] {body} Before each spawn wave run "
+        msg = (f"[Routing directive from the account-rotation service ({steer}); it replaces every earlier routing directive. "
+               f"Do not stop current work.] {text} Before each spawn wave run "
                "~/.omp/agent/managed-skills/model-routing/headroom.sh and stay within its SUBAGENT BUDGET lines.")
         sent_msg = subprocess.run(["hc", "send", "--if", "working", pid, msg], capture_output=True, timeout=30)
         if sent_msg.returncode == 0:
-            sent[pid] = body
+            sent[pid] = text
     if changed:
         state["steer"] = {"key": steer, "text": text, "at": now}
 
 
-def apply_budget(plan, steer_text, pane_steer, panes, unsaved=(), wide=(), spurt=()):
+def apply_budget(plan, steer_text, panes, unsaved=(), wide=(), spurt=()):
     """Per-family subagent caps for Main (read via headroom.sh) plus the hard task.maxConcurrency.
 
     Families in `unsaved` skip save mode; families in `wide` also skip SHARED_CAP_FAMILIES (e.g. claude-burn).
@@ -1013,7 +1035,6 @@ def apply_budget(plan, steer_text, pane_steer, panes, unsaved=(), wide=(), spurt
         "freeSuffixes": list(FREE_SESSIONS.keys()),
         "maxConcurrency": hard,
         "steer": steer_text,
-        "steerByPane": pane_steer,
     }
     try:
         with open(BUDGET) as f:
@@ -1071,8 +1092,7 @@ def run_once():
         auth_blocks[rid] = max(auth_blocks.get(rid, 0), until)
     auth_only = {rid for rid, scope, _ in block_rows if scope == "auth"}
     panes = omp_panes()
-    pane_builds = omp_pane_builds(pid for pid, _, _ in panes)
-    builds = set().union(*pane_builds.values())
+    builds = set().union(*omp_pane_builds(pid for pid, _, _ in panes).values())
     if not DRY and builds:
         refresh_codex_catalogs(builds, state)
     catalogs = {b: c for b, c in codex_catalogs(MODELS_DB, time.time()).items() if b in builds}
@@ -1161,7 +1181,6 @@ def run_once():
     claude_burn_until = None
     claude_burn_why = ""
     ag_claude_open = False
-    codex_accounts = enabled_codex_accounts(db) if panes else set()
     db.close()
     set_claude_agent_models(False)
     pin_antigravity_account_access()
@@ -1178,27 +1197,17 @@ def run_once():
         tier = read_codex_tier()
         if not DRY:
             set_codex_tier(tier)
-        def directive(gap):
-            key, text = base
-            rendered = guard_codex_steer(text, gap, not claude_gone or ag_claude_open, ag_spent)
-            suffixes = (["ag-spent"] if ag_spent else []) + [f"{pv}-spent" for pv in spent]
-            if gap:
-                suffixes.append("codex-models-unverified")
-            else:
-                rendered += CODEX_TIER_NOTES[tier] + save
-                if tier != "fast":
-                    suffixes.append(f"codex-{tier}")
-            rendered += CODEX_STANDARD_TIER
-            if ag_spent and not gap:
-                rendered += AG_SPENT_NOTE
-            rendered += "".join(SPENT_AGENT_NOTES[pv] for pv in spent)
-            return "+".join([key, *suffixes]), rendered
-
-        default = directive(codex_model_gap(set(), catalogs, codex_accounts))
-        directives = {pid: directive(codex_model_gap(pane_builds.get(pid, set()), catalogs, codex_accounts))
-                      for pid, _, _ in panes}
-        broadcast(state, default, directives, panes)
-        apply_budget(plan, default[1], {pid: text for pid, (_, text) in directives.items()}, panes,
+        key, rendered = base
+        suffixes = (["ag-spent"] if ag_spent else []) + [f"{pv}-spent" for pv in spent]
+        rendered += CODEX_TIER_NOTES[tier] + save
+        if tier != "fast":
+            suffixes.append(f"codex-{tier}")
+        rendered += CODEX_STANDARD_TIER
+        if ag_spent:
+            rendered += AG_SPENT_NOTE
+        rendered += "".join(SPENT_AGENT_NOTES[pv] for pv in spent)
+        broadcast(state, ("+".join([key, *suffixes]), rendered), panes)
+        apply_budget(plan, rendered, panes,
                      (("anthropic",) if claude_unsaved else ()) + (("openai-codex",) if codex_moderate else ()),
                      wide=("anthropic",) if claude_burn_until else ())
 
