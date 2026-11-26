@@ -71,6 +71,7 @@ NEW_CLAUDE_WORKERS = {"<identity:ADMIN_AI_0002_EMAIL>", "<identity:AI_TEAMTURING
                       "<identity:TOM_TEAMTURING_COM_EMAIL>", "<identity:WENDY_TEAMTURING_COM_EMAIL>", "<identity:JEANNE_TEAMTURING_COM_EMAIL>"}
 # Exclude reserved credentials without overriding manual or OAuth disable reasons.
 BANNED_HERE = {"openai-codex": {"<identity:TURING_WORKER_02_EMAIL>"}}
+CODEX_UNENTITLED_PLANS = {"free"}
 
 PROVIDER_WINDOWS = {
     "anthropic": {"Claude 5 Hour": "5h", "Claude 7 Day": "7d"},
@@ -409,7 +410,8 @@ def fetch_usage():
         with open(tmp, "w") as f:
             json.dump({**usage, "reports": reports, "codexTier": codex_tier, "accountGroups": groups}, f)
         os.replace(tmp, SNAPSHOT)
-    return usage
+    # Stale carry-overs keep the last known plan of disabled accounts visible to the Codex plan exclusion.
+    return {**usage, "merged": reports}
 
 
 def load_state():
@@ -1118,6 +1120,16 @@ def run_once():
             cache.setdefault(email, {}).update(windows)
         present = db_emails.get(provider, set())
         banned = BANNED_HERE.get(provider, set())
+        if provider == "openai-codex":
+            # A free ChatGPT plan has no Sol/Astra (model_not_found) yet reports an unused 30-day window, so
+            # headroom showed Codex GREEN while every spawn failed (2026-11-26). The last reported plan sticks,
+            # since disabled accounts only report stale data.
+            plans = state.setdefault("codexPlans", {})
+            for report in usage.get("merged", usage["reports"]):
+                meta = report.get("metadata") or {}
+                if report.get("provider") == provider and meta.get("email") and meta.get("planType"):
+                    plans[meta["email"]] = meta["planType"]
+            banned = banned | {email for email, kind in plans.items() if kind in CODEX_UNENTITLED_PLANS}
         candidates = {}
         for email in present - banned:
             owned = [rid for rid, cause in rows(db, provider, email) if cause in (None, CAUSE)]

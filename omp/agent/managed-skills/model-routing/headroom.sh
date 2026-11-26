@@ -18,19 +18,25 @@ fi | jq -r '
     | { provider,
         account: (.metadata.accountId // .metadata.email // "?"),
         email: (.metadata.email // "?"),
+        # A free Codex plan has no Sol/Astra; its unused 30-day window made Codex read GREEN while every
+        # spawn failed (2026-11-26). It is listed but never counts toward the provider state.
+        unusable: (.provider == "openai-codex" and .metadata.planType == "free"),
+        stale: (.metadata.stale == true),
         windows: [ .limits[]?
                    | (.amount.remainingFraction // (if .amount.usedFraction != null then 1 - .amount.usedFraction else null end)) as $rf
                    | select($rf != null)
-                   | {label, rem: ($rf * 100), reset: .window.resetsAt} ] } ]
+                   # A passed reset means the window is empty again (same rule as rotate-accounts.py current()).
+                   | (.window.resetsAt != null and .window.resetsAt / 1000 < now) as $passed
+                   | {label, rem: (if $passed then 100 else $rf * 100 end), reset: (if $passed then null else .window.resetsAt end)} ] } ]
   | unique_by([.provider, .account])
   | map(. + { worst: (.windows | min_by(.rem) // null) })
   | group_by(.provider)
-  | sort_by(-(map(.worst.rem // -1) | max))
+  | sort_by(-(map(select(.unusable | not) | .worst.rem // -1) | max // -1))
   | .[]
   | .[0].provider as $provider
-  | (map(.worst.rem // null) | max) as $best
-  | "\($best | state($provider))\t\(.[0].provider)\t\(length) account(s)\tbest \(if $best == null then "-" else $best | floor end)%",
-    ( .[] | "\t  \(.email)\t\(if .worst.rem == null then "-" else .worst.rem | floor end)% \(.worst.label // "no % reported")\treset \(.worst.reset | hours)\t[\(.windows | map("\(.label)=\(.rem | floor)%") | unique | join(", "))]" )
+  | (map(select(.unusable | not) | .worst.rem // null) | max) as $best
+  | "\($best | state($provider))\t\(.[0].provider)\t\(map(select(.unusable | not)) | length) usable account(s)\tbest \(if $best == null then "-" else $best | floor end)%",
+    ( .[] | "\t  \(.email)\t\(if .unusable then "free plan, no Sol/Astra" elif .worst.rem == null then "-" else "\(.worst.rem | floor)% \(.worst.label // "no % reported")" end)\treset \(.worst.reset | hours)\t[\(.windows | map("\(.label)=\(.rem | floor)%") | unique | join(", "))]\(if .stale then " stale" else "" end)" )
 ' | column -t -s $'\t'
 echo
 echo "Codex: use all available subscription quota; nearest weekly reset first, including beyond 24h. LOW is usable until the provider limit. Automatic saved resets are authorized through the last credit. Assign useful Sol/Astra implementation and review work; no filler. Other providers keep their reserve policies."

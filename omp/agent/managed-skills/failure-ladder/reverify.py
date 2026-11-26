@@ -26,7 +26,8 @@ REGISTRY = {name: f"{CHECKS}/{name}.sh" for name in (
     "pristine-providers", "profile-launch-prompt", "agents-cpu-cap", "agent-build-jobs", "host-load-gate",
     "benside-send-live-thread-check", "subagent-worktree-cwd", "patch-push-refuses-empty",
     "account-quota-cap", "expiry-auth-failover", "codex-catalog-refresh-verified", "test-lane-load-gate",
-    "migrate-post-pending-scope-gate", "pgtyped-atomic-generate", "cutover-memory-floor", "pve-boot-health-gate")}
+    "migrate-post-pending-scope-gate", "pgtyped-atomic-generate", "cutover-memory-floor", "pve-boot-health-gate",
+    "codex-free-plan-excluded")}
 # Checks that read PI_CONFIG_FILES; a shell started before the wall lacks it, which is not a broken device.
 NEEDS_WALLS = {"pristine-providers"}
 WALLS_ENV = f"{HOME}/.config/environment.d/omp-walls.conf"
