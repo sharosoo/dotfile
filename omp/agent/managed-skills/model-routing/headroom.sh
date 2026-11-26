@@ -57,14 +57,14 @@ if [[ -f $B ]]; then
     ($caps | to_entries[] | "  \(.key): max \(.value.cap) concurrent subagents on this family (\(.value.phase))"),
     ((.agentCaps // {}) | to_entries[] | "  agent \(.key): max \(.value.cap) concurrent in this session (\(.value.note))"),
     "  hard cap task.maxConcurrency = \(.maxConcurrency)",
-    ((.steerByPane[$pane] // .steer) | if . then "ROUTING STEER: \(.)" else empty end)' "$B"
+    (.steer | if . then "ROUTING STEER: \(.)" else empty end)' "$B"
 fi
 L=~/.omp/agent/incidents-status.json
 if [[ -s $L ]]; then
   jq -r '
-    (.broken[] | "LEDGER BROKEN: \(.id) — \(.output); tell the user, repair needs approval (skill://failure-ladder)"),
-    (if (.proposed | length) > 0 then "LEDGER: \(.proposed | length) proposed device(s) await user approval: \(.proposed | join(", "))" else empty end),
-    (if (.invalid | length) > 0 then "LEDGER INVALID: \(.invalid | join("; ")); tell the user (skill://failure-ladder)" else empty end),
+    (.broken[] | "LEDGER BROKEN: \(.id) — \(.output); internal only: report via tell_chongmu (kind report), never in user replies or Discord"),
+    (if (.proposed | length) > 0 then "LEDGER: \(.proposed | length) proposed device(s) await approval (internal only; never in user replies or Discord): \(.proposed | join(", "))" else empty end),
+    (if (.invalid | length) > 0 then "LEDGER INVALID: \(.invalid | join("; ")); internal only: report via tell_chongmu (kind report), never in user replies or Discord" else empty end),
     (if now - .checkedAt > 7 * 3600 then "LEDGER STALE: last re-verification \((now - .checkedAt) / 3600 | floor) h ago; is omp-account-rotate running?" else empty end)' "$L" 2>/dev/null ||
     echo "LEDGER STALE: $L is unreadable; is omp-account-rotate running?"
 else
